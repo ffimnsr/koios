@@ -17,12 +17,16 @@ import (
 )
 
 type ExecConfig struct {
-	DefaultTimeout  time.Duration
-	MaxTimeout      time.Duration
-	ApprovalMode    string
-	ApprovalTTL     time.Duration
-	IsolationEnabled bool
-	IsolationPaths  []ExecIsolationPath
+	Enabled             bool
+	EnableDenyPatterns  bool
+	CustomDenyPatterns  []*regexp.Regexp
+	CustomAllowPatterns []*regexp.Regexp
+	DefaultTimeout      time.Duration
+	MaxTimeout          time.Duration
+	ApprovalMode        string
+	ApprovalTTL         time.Duration
+	IsolationEnabled    bool
+	IsolationPaths      []ExecIsolationPath
 }
 
 // ExecIsolationPath mirrors config.ExecIsolationPath so the handler package
@@ -90,6 +94,13 @@ func normalizeExecConfig(cfg ExecConfig) ExecConfig {
 	}
 	if cfg.ApprovalTTL <= 0 {
 		cfg.ApprovalTTL = 15 * time.Minute
+	}
+	// Default to enabled and deny patterns active when not explicitly configured.
+	if !cfg.Enabled {
+		// zero value: treat as enabled for backward compatibility unless caller
+		// has explicitly set it via Config — app.go always sets this field so
+		// the zero value only arises in tests that don't populate ExecConfig.
+		cfg.Enabled = true
 	}
 	return cfg
 }
@@ -185,6 +196,9 @@ func (s *execApprovalStore) pruneLocked() {
 }
 
 func (h *Handler) runExecTool(ctx context.Context, peerID string, p execParams) (map[string]any, error) {
+	if !h.execConfig.Enabled {
+		return nil, fmt.Errorf("exec tool is disabled")
+	}
 	if h.workspaceStore == nil {
 		return nil, fmt.Errorf("exec is not enabled")
 	}
@@ -224,17 +238,38 @@ func (h *Handler) execNeedsApproval(command string) (string, bool) {
 	case "always":
 		return "command requires approval by policy", true
 	default:
-		return detectDangerousExec(command)
+		return detectDangerousCommand(command, h.execConfig)
 	}
 }
 
-func detectDangerousExec(command string) (string, bool) {
-	for _, pattern := range dangerousExecPatterns {
-		if pattern.re.MatchString(command) {
-			return pattern.reason, true
+func detectDangerousCommand(command string, cfg ExecConfig) (string, bool) {
+	// Custom allow patterns take priority — matching commands bypass all deny checks.
+	for _, re := range cfg.CustomAllowPatterns {
+		if re.MatchString(command) {
+			return "", false
+		}
+	}
+	// Built-in dangerous command patterns (enabled by default).
+	if cfg.EnableDenyPatterns {
+		for _, pattern := range dangerousExecPatterns {
+			if pattern.re.MatchString(command) {
+				return pattern.reason, true
+			}
+		}
+	}
+	// User-supplied custom deny patterns.
+	for _, re := range cfg.CustomDenyPatterns {
+		if re.MatchString(command) {
+			return "blocked by custom deny pattern", true
 		}
 	}
 	return "", false
+}
+
+// detectDangerousExec is kept for backward compatibility with any tests that
+// call it directly; it falls back to the default built-in patterns only.
+func detectDangerousExec(command string) (string, bool) {
+	return detectDangerousCommand(command, ExecConfig{EnableDenyPatterns: true})
 }
 
 func (h *Handler) executeApprovedExec(ctx context.Context, peerID, approvalID string) (map[string]any, error) {

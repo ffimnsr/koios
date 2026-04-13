@@ -39,9 +39,6 @@ func NewRootCommand(build app.BuildInfo, runDaemon runDaemonFunc) *cobra.Command
 		Short:         "Koios daemon and operator CLI",
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return ctx.runDaemon(build)
-		},
 	}
 	root.SetVersionTemplate("{{printf \"%s\\n\" .Version}}")
 	root.Version = fmt.Sprintf("%s (%s) %s", build.Version, build.GitHash, build.BuildTime)
@@ -55,6 +52,7 @@ func NewRootCommand(build app.BuildInfo, runDaemon runDaemonFunc) *cobra.Command
 		return nil
 	}
 
+	root.AddCommand(newServeCommand(ctx))
 	root.AddCommand(newVersionCommand(ctx))
 	root.AddCommand(newHealthCommand(ctx))
 	root.AddCommand(newStatusCommand(ctx))
@@ -73,6 +71,17 @@ func NewRootCommand(build app.BuildInfo, runDaemon runDaemonFunc) *cobra.Command
 type flagOnlyVersionError struct{}
 
 func (flagOnlyVersionError) Error() string { return "" }
+
+func newServeCommand(ctx *commandContext) *cobra.Command {
+	return &cobra.Command{
+		Use:   "serve",
+		Short: "Start the Koios daemon",
+		Long:  "Load koios.config.toml and start the WebSocket control-plane daemon.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ctx.runDaemon(ctx.build)
+		},
+	}
+}
 
 func newVersionCommand(ctx *commandContext) *cobra.Command {
 	return &cobra.Command{
@@ -1339,9 +1348,9 @@ func scaffoldWorkspace(root string, force bool) error {
 		}
 	}
 	templates := map[string]string{
-		"AGENTS.md": "# Agent Instructions\n\nDescribe how the agent should behave in this workspace.\n",
-		"SOUL.md":   "# Personality\n\nDescribe the agent's personality and communication style.\n",
-		"USER.md":   "# User Context\n\nDescribe who the user is and any preferences the agent should respect.\n",
+		"AGENTS.md":   "# Agent Instructions\n\nDescribe how the agent should behave in this workspace.\n",
+		"SOUL.md":     "# Personality\n\nDescribe the agent's personality and communication style.\n",
+		"USER.md":     "# User Context\n\nDescribe who the user is and any preferences the agent should respect.\n",
 		"IDENTITY.md": "# Identity\n\nDescribe the agent's identity and purpose.\n",
 	}
 	for name, content := range templates {

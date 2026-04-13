@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -238,18 +239,29 @@ func RunDaemon(build BuildInfo) error {
 			Deny:    cfg.ToolsDeny,
 		},
 		ExecConfig: handler.ExecConfig{
-			DefaultTimeout:   cfg.ExecDefaultTimeout,
-			MaxTimeout:       cfg.ExecMaxTimeout,
-			ApprovalMode:     cfg.ExecApprovalMode,
-			ApprovalTTL:      cfg.ExecApprovalTTL,
-			IsolationEnabled: cfg.ExecIsolationEnabled,
-			IsolationPaths:   isolationPaths(cfg.ExecIsolationPaths),
+			Enabled:             cfg.ExecEnabled,
+			EnableDenyPatterns:  cfg.ExecEnableDenyPatterns,
+			CustomDenyPatterns:  compilePatterns(cfg.ExecCustomDenyPatterns),
+			CustomAllowPatterns: compilePatterns(cfg.ExecCustomAllowPatterns),
+			DefaultTimeout:      cfg.ExecDefaultTimeout,
+			MaxTimeout:          cfg.ExecMaxTimeout,
+			ApprovalMode:        cfg.ExecApprovalMode,
+			ApprovalTTL:         cfg.ExecApprovalTTL,
+			IsolationEnabled:    cfg.ExecIsolationEnabled,
+			IsolationPaths:      isolationPaths(cfg.ExecIsolationPaths),
 		},
 		WorkspaceStore: wsStore,
 		Hooks:          hooks,
 		Presence:       presenceMgr,
 		WorkspaceRoot:  cfg.WorkspaceRoot,
 	})
+
+	// Wire the full agent loop into heartbeat and cron so the LLM can invoke
+	// tools (and spawn subagents) during scheduled and heartbeat turns.
+	if hbRunner != nil {
+		hbRunner.SetAgentRuntime(agentRuntime, wsHandler)
+	}
+	sched.SetAgentRuntime(agentRuntime, wsHandler)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/ws", wsHandler)
@@ -430,6 +442,24 @@ func isolationPaths(in []config.ExecIsolationPath) []handler.ExecIsolationPath {
 			Target: p.Target,
 			Mode:   p.Mode,
 		}
+	}
+	return out
+}
+
+// compilePatterns compiles a list of regex strings into []*regexp.Regexp,
+// silently skipping any patterns that fail to compile and logging a warning.
+func compilePatterns(patterns []string) []*regexp.Regexp {
+	if len(patterns) == 0 {
+		return nil
+	}
+	out := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			slog.Warn("exec: skipping invalid pattern", "pattern", p, "err", err)
+			continue
+		}
+		out = append(out, re)
 	}
 	return out
 }

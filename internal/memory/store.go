@@ -40,7 +40,7 @@ type SearchResult struct {
 // Store is a SQLite-backed memory store with optional Milvus vector search.
 type Store struct {
 	db       *sql.DB
-	embedder Embedder      // nil = BM25-only mode
+	embedder Embedder       // nil = BM25-only mode
 	milvus   *milvus.Client // nil = no Milvus
 }
 

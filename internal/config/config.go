@@ -48,9 +48,9 @@ type Config struct {
 	EmbedModel                   string
 	MemoryInject                 bool
 	MemoryTopK                   int
-	MilvusURL        string
-	MilvusCollection string
-	MilvusEnabled    bool
+	MilvusURL                    string
+	MilvusCollection             string
+	MilvusEnabled                bool
 	SessionPruneKeepToolMessages int
 
 	CronMaxConcurrentRuns int
@@ -64,15 +64,19 @@ type Config struct {
 
 	AllowedOrigins []string
 
-	ToolProfile        string
-	ToolsAllow         []string
-	ToolsDeny          []string
-	ExecDefaultTimeout  time.Duration
-	ExecMaxTimeout      time.Duration
-	ExecApprovalMode    string
-	ExecApprovalTTL     time.Duration
-	ExecIsolationEnabled bool
-	ExecIsolationPaths  []ExecIsolationPath
+	ToolProfile             string
+	ToolsAllow              []string
+	ToolsDeny               []string
+	ExecEnabled             bool
+	ExecEnableDenyPatterns  bool
+	ExecCustomDenyPatterns  []string
+	ExecCustomAllowPatterns []string
+	ExecDefaultTimeout      time.Duration
+	ExecMaxTimeout          time.Duration
+	ExecApprovalMode        string
+	ExecApprovalTTL         time.Duration
+	ExecIsolationEnabled    bool
+	ExecIsolationPaths      []ExecIsolationPath
 
 	WorkspaceRoot     string
 	WorkspacePerAgent bool
@@ -137,14 +141,18 @@ type fileConfig struct {
 		Profile string   `toml:"profile"`
 		Allow   []string `toml:"allow"`
 		Deny    []string `toml:"deny"`
-		Exec struct {
-			DefaultTimeout string             `toml:"default_timeout"`
-			MaxTimeout     string             `toml:"max_timeout"`
-			ApprovalMode   string             `toml:"approval_mode"`
-			ApprovalTTL    string             `toml:"approval_ttl"`
-			Isolation      struct {
-				Enabled      bool                 `toml:"enabled"`
-				ExposePaths  []ExecIsolationPath  `toml:"expose_paths"`
+		Exec    struct {
+			Enabled             *bool    `toml:"enabled"`
+			EnableDenyPatterns  *bool    `toml:"enable_deny_patterns"`
+			CustomDenyPatterns  []string `toml:"custom_deny_patterns"`
+			CustomAllowPatterns []string `toml:"custom_allow_patterns"`
+			DefaultTimeout      string   `toml:"default_timeout"`
+			MaxTimeout          string   `toml:"max_timeout"`
+			ApprovalMode        string   `toml:"approval_mode"`
+			ApprovalTTL         string   `toml:"approval_ttl"`
+			Isolation           struct {
+				Enabled     bool                `toml:"enabled"`
+				ExposePaths []ExecIsolationPath `toml:"expose_paths"`
 			} `toml:"isolation"`
 		} `toml:"exec"`
 	} `toml:"tools"`
@@ -184,6 +192,8 @@ func Default() *Config {
 		AgentRetryInitialBackoff:     500 * time.Millisecond,
 		AgentRetryMaxBackoff:         5 * time.Second,
 		ToolProfile:                  "full",
+		ExecEnabled:                  true,
+		ExecEnableDenyPatterns:       true,
 		ExecDefaultTimeout:           30 * time.Second,
 		ExecMaxTimeout:               5 * time.Minute,
 		ExecApprovalMode:             "dangerous",
@@ -290,6 +300,10 @@ allow = []
 deny = []
 
 [tools.exec]
+enabled = true
+enable_deny_patterns = true
+custom_deny_patterns = []
+custom_allow_patterns = []
 default_timeout = "30s"
 max_timeout = "5m"
 approval_mode = "dangerous"
@@ -546,6 +560,18 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.Tools.Deny != nil {
 		dst.ToolsDeny = src.Tools.Deny
+	}
+	if src.Tools.Exec.Enabled != nil {
+		dst.ExecEnabled = *src.Tools.Exec.Enabled
+	}
+	if src.Tools.Exec.EnableDenyPatterns != nil {
+		dst.ExecEnableDenyPatterns = *src.Tools.Exec.EnableDenyPatterns
+	}
+	if src.Tools.Exec.CustomDenyPatterns != nil {
+		dst.ExecCustomDenyPatterns = src.Tools.Exec.CustomDenyPatterns
+	}
+	if src.Tools.Exec.CustomAllowPatterns != nil {
+		dst.ExecCustomAllowPatterns = src.Tools.Exec.CustomAllowPatterns
 	}
 	if src.Tools.Exec.DefaultTimeout != "" {
 		if d, err := time.ParseDuration(src.Tools.Exec.DefaultTimeout); err == nil {

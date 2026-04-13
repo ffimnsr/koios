@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -493,7 +494,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				if reqCopy.Stream && sink != nil {
 					rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunBlock, SessionKey: sessionKey, Step: step, Message: assistantText})
 				}
-				rt.persistTurn(sessionKey, reqCopy.Messages, assistantText, resp)
+				rt.persistTurn(reqCopy.PeerID, sessionKey, reqCopy.Messages, workingMessages, assistantText, resp)
 				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunFinish, SessionKey: sessionKey, Step: step, Message: assistantText})
 				return result, nil
 			}
@@ -581,17 +582,71 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 	return text, resp, nil
 }
 
-func (rt *Runtime) persistTurn(sessionKey string, userMsgs []types.Message, assistantText string, resp *types.ChatResponse) {
+func (rt *Runtime) persistTurn(peerID, sessionKey string, userMsgs, workingMessages []types.Message, assistantText string, resp *types.ChatResponse) {
+	// Session persistence — unchanged behavior.
 	if len(userMsgs) > 0 {
 		rt.store.AppendCtx(context.Background(), sessionKey, userMsgs...)
 	}
 	if assistantText != "" {
 		rt.store.Append(sessionKey, types.Message{Role: "assistant", Content: assistantText})
+	} else if resp != nil && len(resp.Choices) > 0 {
+		rt.store.Append(sessionKey, resp.Choices[0].Message)
+		assistantText = resp.Choices[0].Message.Content
+	}
+
+	// Long-term memory persistence — write a compact turn summary on every
+	// completed run so that past interactions are retrievable via semantic
+	// search without waiting for a compaction event.
+	// Tool result payloads are intentionally excluded; only tool names are
+	// recorded so that entries stay small and signal-rich.
+	if rt.memStore == nil || peerID == "" {
 		return
 	}
-	if resp != nil && len(resp.Choices) > 0 {
-		rt.store.Append(sessionKey, resp.Choices[0].Message)
+	chunk := buildTurnMemoryChunk(userMsgs, workingMessages, assistantText)
+	if chunk == "" {
+		return
 	}
+	if err := rt.memStore.Insert(context.Background(), peerID, chunk); err != nil {
+		slog.Warn("agent: long-term memory insert failed", "peer", peerID, "err", err)
+	}
+}
+
+// buildTurnMemoryChunk formats a completed agent turn as a compact memory
+// entry: the last user message, any tool names invoked (not their payloads),
+// and the final assistant response.
+func buildTurnMemoryChunk(userMsgs, workingMsgs []types.Message, assistantText string) string {
+	// Use the last non-empty user message as the anchor.
+	var userContent string
+	for _, m := range userMsgs {
+		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
+			userContent = strings.TrimSpace(m.Content)
+		}
+	}
+	if userContent == "" {
+		return ""
+	}
+
+	// Collect unique tool names from assistant messages that include tool calls.
+	var toolNames []string
+	seen := make(map[string]bool)
+	for _, m := range workingMsgs {
+		for _, tc := range m.ToolCalls {
+			if tc.Function.Name != "" && !seen[tc.Function.Name] {
+				toolNames = append(toolNames, tc.Function.Name)
+				seen[tc.Function.Name] = true
+			}
+		}
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "User: %s\n", userContent)
+	if len(toolNames) > 0 {
+		fmt.Fprintf(&sb, "Tools: %s\n", strings.Join(toolNames, ", "))
+	}
+	if a := strings.TrimSpace(assistantText); a != "" {
+		fmt.Fprintf(&sb, "Assistant: %s", a)
+	}
+	return strings.TrimSpace(sb.String())
 }
 
 func (rt *Runtime) sessionKey(req RunRequest) string {

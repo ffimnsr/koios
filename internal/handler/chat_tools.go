@@ -423,7 +423,7 @@ var toolDefs = []toolDef{
 			"additionalProperties": false,
 		}),
 		argHint:   `{"command":"go test ./...","workdir":".","timeout_seconds":30}`,
-		available: func(h *Handler) bool { return h.workspaceStore != nil },
+		available: func(h *Handler) bool { return h.workspaceStore != nil && h.execConfig.Enabled },
 	},
 	{
 		name:        "web_search",

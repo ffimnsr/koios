@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 
+	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/types"
@@ -65,6 +66,9 @@ type Scheduler struct {
 	model         string
 	maxConcurrent int
 
+	agentRuntime *agent.Runtime
+	toolExec     agent.ToolExecutor
+
 	wakeCh  chan struct{}
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -90,6 +94,15 @@ func New(store *JobStore, prov provider, sessionStore *session.Store, standingMg
 		sem:           make(chan struct{}, maxConcurrent),
 		cronLib:       cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
 	}
+}
+
+// SetAgentRuntime wires a full agent runtime and tool executor into the Scheduler.
+// When set, agentTurn jobs are executed through the agent loop so that the
+// LLM can invoke tools (including spawning subagents for long-running work).
+// Call this after both the Scheduler and the handler are fully constructed.
+func (s *Scheduler) SetAgentRuntime(rt *agent.Runtime, exec agent.ToolExecutor) {
+	s.agentRuntime = rt
+	s.toolExec = exec
 }
 
 // Start launches the background scheduling loop. It returns immediately; the
@@ -298,6 +311,29 @@ func (s *Scheduler) runAgentTurn(ctx context.Context, job *Job) (string, error) 
 		}
 	}
 	messages = append(messages, types.Message{Role: "user", Content: prompt})
+
+	if s.agentRuntime != nil {
+		// Full agent loop: the LLM can invoke tools and spawn subagents.
+		// Use ScopeIsolated so intermediate messages go to a throwaway session
+		// key and do not clutter the peer's session; then append the final
+		// assistant text to the peer's session via AppendWithSource as before.
+		result, err := s.agentRuntime.Run(ctx, agent.RunRequest{
+			PeerID:       job.PeerID,
+			Scope:        agent.ScopeIsolated,
+			Messages:     messages,
+			ToolExecutor: s.toolExec,
+			Model:        s.model,
+		})
+		if err != nil {
+			return "", err
+		}
+		assistantText := result.AssistantText
+		if assistantText != "" {
+			s.sessionStore.AppendWithSource(job.PeerID, "cron", types.Message{Role: "assistant", Content: assistantText})
+		}
+		return assistantText, nil
+	}
+
 	req := &types.ChatRequest{
 		Model:    s.model,
 		Messages: messages,

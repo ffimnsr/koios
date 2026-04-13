@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/types"
@@ -39,6 +40,9 @@ type Runner struct {
 	timeout      time.Duration
 	workspaceDir string
 	standingMgr  *standing.Manager
+
+	agentRuntime *agent.Runtime
+	toolExec     agent.ToolExecutor
 
 	mu    sync.RWMutex
 	peers map[string]*peerEntry
@@ -71,6 +75,15 @@ func New(
 		ctx:          ctx,
 		cancel:       cancel,
 	}
+}
+
+// SetAgentRuntime wires a full agent runtime and tool executor into the Runner.
+// When set, heartbeat turns are executed through the agent loop so that the
+// LLM can invoke tools (including spawning subagents for long-running work).
+// Call this after both the Runner and the handler are fully constructed.
+func (r *Runner) SetAgentRuntime(rt *agent.Runtime, exec agent.ToolExecutor) {
+	r.agentRuntime = rt
+	r.toolExec = exec
 }
 
 // Stop shuts down all peer goroutines and waits for them to exit.
@@ -191,29 +204,47 @@ func (r *Runner) runHeartbeat(ctx context.Context, peerID string) {
 
 	prompt := cfg.EffectivePrompt()
 	msgs := r.buildHeartbeatMessages(peerID, prompt)
-	req := &types.ChatRequest{
-		Messages: msgs,
-	}
 
 	callCtx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	resp, err := r.prov.Complete(callCtx, req)
-	if err != nil {
-		slog.Warn("heartbeat: LLM call failed", "peer", peerID, "error", err)
-		return
-	}
-	if len(resp.Choices) == 0 {
-		return
+	var text string
+	if r.agentRuntime != nil {
+		// Full agent loop: the LLM can invoke tools and spawn subagents.
+		// Use ScopeIsolated so intermediate tool messages go to a throwaway
+		// session key and do not clutter the peer's main session.
+		result, err := r.agentRuntime.Run(callCtx, agent.RunRequest{
+			PeerID:       peerID,
+			Scope:        agent.ScopeIsolated,
+			Messages:     msgs,
+			ToolExecutor: r.toolExec,
+			Timeout:      r.timeout,
+		})
+		if err != nil {
+			slog.Warn("heartbeat: agent run failed", "peer", peerID, "error", err)
+			return
+		}
+		text = result.AssistantText
+	} else {
+		req := &types.ChatRequest{Messages: msgs}
+		resp, err := r.prov.Complete(callCtx, req)
+		if err != nil {
+			slog.Warn("heartbeat: LLM call failed", "peer", peerID, "error", err)
+			return
+		}
+		if len(resp.Choices) == 0 {
+			return
+		}
+		text = resp.Choices[0].Message.Content
 	}
 
-	text := resp.Choices[0].Message.Content
 	if isHeartbeatOK(text, cfg.EffectiveAckMaxChars()) {
 		slog.Debug("heartbeat: HEARTBEAT_OK, dropping silently", "peer", peerID)
 		return
 	}
 
-	// Prepend the heartbeat marker and store as an assistant message.
+	// Prepend the heartbeat marker and store as an assistant message in the
+	// peer's main session so the next real conversation turn sees the alert.
 	stored := "[heartbeat] " + text
 	r.sessionStore.AppendWithSource(peerID, "heartbeat", types.Message{Role: "assistant", Content: stored})
 	slog.Info("heartbeat: stored alert for peer", "peer", peerID, "chars", len(text))
