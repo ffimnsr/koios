@@ -14,38 +14,29 @@ Its key feature is **per-peer session isolation**: each client is identified by 
 
 ## Configuration
 
-All configuration is done via environment variables. Copy `.env.sample` to `.env` and fill in the required values:
+All configuration is now done via TOML.
+Generate a starter config:
 
 ```sh
-cp .env.sample .env
+koios init
 ```
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `LLM_API_KEY` | **Yes** | — | API key for the LLM provider |
-| `LLM_MODEL` | **Yes** | — | Model name (e.g. `gpt-4o`, `claude-3-5-sonnet-20241022`) |
-| `LLM_PROVIDER` | No | `openai` | Backend: `openai`, `anthropic`, `openrouter`, or `nvidia` |
-| `LLM_BASE_URL` | No | provider default | Override base URL (useful for local proxies) |
-| `LISTEN_ADDR` | No | `:8080` | TCP address to listen on |
-| `SESSION_MAX_MESSAGES` | No | `100` | Max messages per peer session before pruning |
-| `SESSION_DIR` | No | — | Directory for JSONL session persistence (omit for in-memory only) |
-| `REQUEST_TIMEOUT` | No | `2m` | Max duration for a single LLM round-trip |
-| `COMPACTION_THRESHOLD` | No | `0` | Message count that triggers LLM-based session compaction (0 = off) |
-| `COMPACTION_RESERVE` | No | `20` | Messages kept verbatim after compaction |
-| `MEMORY_DB_PATH` | No | — | SQLite path for long-term semantic memory (omit to disable) |
-| `EMBED_MODEL` | No | `text-embedding-3-small` | Embedding model used for memory re-ranking |
-| `MEMORY_INJECT` | No | `false` | Prepend top-K memory hits as a system message on each `chat` and `agent.run` request |
-| `MEMORY_TOP_K` | No | `3` | Number of memory chunks to inject |
-| `SESSION_PRUNE_KEEP_TOOL_MESSAGES` | No | `8` | Number of recent tool-related messages kept in model-visible context |
-| `CRON_DIR` | No | — | Directory for cron job persistence (omit to disable scheduler) |
-| `CRON_MAX_CONCURRENT` | No | `1` | Max concurrent cron job executions |
-| `HEARTBEAT_ENABLED` | No | `true` | Enable per-peer heartbeat goroutines |
-| `HEARTBEAT_EVERY` | No | `30m` | Default heartbeat interval |
-| `AGENT_DIR` | No | — | Directory for subagent run record persistence |
-| `AGENT_MAX_CHILDREN` | No | `4` | Max concurrent child runs per parent |
-| `AGENT_RETRY_ATTEMPTS` | No | `3` | Max attempts for agent runtime retries |
-| `AGENT_RETRY_INITIAL_BACKOFF` | No | `500ms` | Initial retry backoff |
-| `AGENT_RETRY_MAX_BACKOFF` | No | `5s` | Maximum retry backoff cap |
+If you already have an older config format, migrate it in place:
+
+```sh
+koios init --migrate
+```
+
+This creates `koios.config.toml` with sane defaults and without private keys.
+Key sections:
+- `[server]` listen address, request timeout, allowed origins
+- `[llm]` provider/model/base URL and optional `api_key`
+- `[session]`, `[compaction]`, `[memory]` for context and storage behavior
+- `session.prune_keep_tool_messages` prunes older tool chatter from active request context without compacting the whole session
+- `session.retention`, `session.max_entries`, `session.idle_reset_after`, and `session.daily_reset_time` control session cleanup and auto-reset
+- `[cron]`, `[heartbeat]`, `[agent]` for scheduler and agent runtime settings
+- `[tools]` chat-tool profiles, allow/deny lists, and exec approval settings
+- `[workspace]` agent sandbox storage (`root`, `per_agent`, `max_file_bytes`)
 
 ---
 
@@ -73,20 +64,9 @@ go build -o koios .
 
 ### Run locally
 
-Export your environment variables (or use a tool like [`direnv`](https://direnv.net/)):
+Generate and edit `koios.config.toml`, then run:
 
 ```sh
-export LLM_API_KEY=sk-...
-export LLM_MODEL=gpt-4o
-export LLM_PROVIDER=openai
-
-go run .
-```
-
-Or source from a `.env` file:
-
-```sh
-set -a && source .env && set +a
 go run .
 ```
 
@@ -112,12 +92,7 @@ go test -v -race ./...
 ./koios
 ```
 
-### With environment file
-
-```sh
-set -a && source .env && set +a
-./koios
-```
+The daemon reads `koios.config.toml` from the current working directory.
 
 ### Health check
 
@@ -131,6 +106,51 @@ curl http://localhost:8080/healthz
 ```sh
 curl http://localhost:8080/
 # {"build_time":"2026-03-31T12:00:00Z","git_hash":"a490170","version":"0.1.0"}
+```
+
+---
+
+## CLI Commands
+
+Koios now ships with a Cobra-based operator CLI while preserving the existing
+daemon behavior: running `koios` with no subcommand still starts the daemon.
+
+Common commands:
+
+```sh
+koios --help
+koios version
+koios status
+koios health --verbose
+koios agent --peer alice --message "Summarize the last session"
+koios agent --peer alice
+koios init
+koios doctor --deep
+koios sessions
+koios backup create
+koios update status
+```
+
+The `agent` command supports both one-shot calls and an interactive terminal
+chat interface. The interactive mode is built with Bubble Tea, which is a
+widely used Go TUI framework designed for stateful terminal applications.
+
+Cron management is exposed through the daemon WebSocket API and requires a peer:
+
+```sh
+koios cron status --peer alice
+koios cron list --peer alice
+koios cron add --peer alice --name daily-briefing --cron "0 9 * * *" --tz "Asia/Manila" --message "Summarize today"
+koios cron run <job-id> --peer alice
+koios cron runs --peer alice --id <job-id>
+```
+
+Session inspection reads persisted JSONL sessions from `session.dir`:
+
+```sh
+koios sessions
+koios sessions --peer alice
+koios sessions reset --peer alice
 ```
 
 ---
@@ -170,6 +190,8 @@ GET /v1/ws?peer_id=<id>
 ```
 
 `peer_id` must be non-empty and contain only alphanumeric characters plus `-`, `_`, `.`, `@`, `:` (max 256 chars). The connection carries full session state for that peer for its lifetime.
+
+Each peer also gets a workspace sandbox under `[workspace].root` (when `per_agent=true`), where the agent can create, read, update, and delete files through workspace tools.
 
 ### Protocol
 
@@ -240,10 +262,13 @@ Example response:
       "cron": true,
       "standing": true,
       "heartbeat": false,
-      "subagents": false
+      "subagents": false,
+      "workspace": true,
+      "exec": true,
+      "web": true
     },
-    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs"],
-    "chat_tools": ["time.now", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
+    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake"],
+    "chat_tools": ["time.now", "session.history", "memory.search", "memory.insert", "memory.get", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "write", "edit", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
     "stream_notifications": ["stream.delta", "stream.event", "session.message"]
   }
 }
@@ -470,11 +495,23 @@ Search long-term semantic memory for this peer. Requires `MEMORY_DB_PATH` to be 
 {"id": "12", "method": "memory.search", "params": {"q": "project deadline", "limit": 5}}
 ```
 
+### `memory.insert` / `memory.get`
+
+Store a memory chunk for the current peer, or fetch one by id.
+
+```json
+{"id": "12a", "method": "memory.insert", "params": {"content": "Deployment windows are narrow on Fridays."}}
+```
+
+```json
+{"id": "12b", "method": "memory.get", "params": {"id": "<chunk-id>"}}
+```
+
 ---
 
 ### `cron.list` / `cron.create` / `cron.get` / `cron.update` / `cron.delete`
 
-Manage scheduled jobs. Requires `CRON_DIR` to be set.
+Manage scheduled jobs. Requires `cron.dir` to be set.
 
 **Schedule kinds:** `at` (one-shot ISO 8601), `every` (fixed interval in ms), `cron` (5-field cron expression + optional IANA timezone).
 
@@ -518,7 +555,7 @@ Read or update standing orders for this peer.
 Standing orders are modeled after OpenClaw's persistent operating instructions:
 - If `<workspace>/STANDING_ORDERS.md` exists, it is injected as a system message on each `chat`, `agent.run`, heartbeat run, and cron `agentTurn`.
 - Peer-specific standing orders are layered on top of the workspace file.
-- Peer-specific standing orders persist only when `CRON_DIR` is set; without it, `standing.get` is read-only and still returns any workspace-level standing orders.
+- Peer-specific standing orders persist only when `cron.dir` is set; without it, `standing.get` is read-only and still returns any workspace-level standing orders.
 
 ```json
 {"id": "15a", "method": "standing.get"}
@@ -538,7 +575,7 @@ Standing orders are modeled after OpenClaw's persistent operating instructions:
 
 ### `heartbeat.get` / `heartbeat.set`
 
-Read or update the heartbeat configuration for this peer. Requires `CRON_DIR` and `HEARTBEAT_ENABLED=true`.
+Read or update the heartbeat configuration for this peer. Requires `cron.dir` and `heartbeat.enabled=true`.
 
 Heartbeat runs are modeled as background main-session awareness checks:
 - Standing orders are injected before the heartbeat-specific prompt.
@@ -567,6 +604,75 @@ Trigger an immediate out-of-schedule heartbeat run.
 {"id": "17", "method": "heartbeat.wake"}
 ```
 
+### `workspace.list` / `workspace.read` / `workspace.write` / `workspace.edit` / `workspace.mkdir` / `workspace.delete`
+
+Direct workspace RPC methods for peer sandbox operations. These target the same
+workspace sandbox used by agent tools.
+
+```json
+{"id":"18","method":"workspace.write","params":{"path":"project/readme.md","content":"# Hello","append":false}}
+```
+
+```json
+{"id":"19","method":"workspace.read","params":{"path":"project/readme.md"}}
+```
+
+```json
+{"id":"20","method":"workspace.list","params":{"path":"project","recursive":true,"limit":200}}
+```
+
+```json
+{"id":"21","method":"workspace.edit","params":{"path":"project/readme.md","old_text":"Hello","new_text":"Hi","replace_all":false}}
+```
+
+### `exec` / `exec.pending` / `exec.approve` / `exec.reject`
+
+Run shell commands on the host with the peer workspace as the default working directory. Commands that match the configured dangerous-command policy can return `status: "approval_required"` instead of executing; operators can inspect or resolve those pending requests through the companion exec approval RPC methods.
+
+```json
+{"id":"22","method":"exec","params":{"command":"go test ./...","workdir":".","timeout_seconds":30}}
+```
+
+```json
+{"id":"23","method":"exec.pending"}
+```
+
+```json
+{"id":"24","method":"exec.approve","params":{"id":"<approval-id>"}}
+```
+
+### `web_search` / `web_fetch`
+
+Search the public web or fetch page content.
+
+```json
+{"id":"25","method":"web_search","params":{"query":"golang context tutorial","limit":5}}
+```
+
+```json
+{"id":"26","method":"web_fetch","params":{"url":"https://example.com"}}
+```
+
+---
+
+### Workspace Tools (Agent)
+
+When workspace is enabled, the agent can call:
+- `workspace.list`
+- `workspace.read`
+- `workspace.write`
+- `workspace.edit`
+- `workspace.mkdir`
+- `workspace.delete`
+- `read`
+- `write`
+- `edit`
+- `exec`
+- `web_search`
+- `web_fetch`
+- `memory.insert`
+- `memory.get`
+
 ---
 
 ## Providers
@@ -581,8 +687,9 @@ Trigger an immediate out-of-schedule heartbeat run.
 To use a local model served by [Ollama](https://ollama.com/) or another OpenAI-compatible server:
 
 ```sh
-LLM_PROVIDER=openai
-LLM_BASE_URL=http://localhost:11434/v1
-LLM_API_KEY=ollama   # any non-empty value
-LLM_MODEL=llama3.2
+[llm]
+provider = "openai"
+base_url = "http://localhost:11434/v1"
+api_key = "ollama" # any non-empty value
+model = "llama3.2"
 ```

@@ -3,6 +3,8 @@ package requestctx
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ffimnsr/koios/internal/memory"
@@ -11,6 +13,31 @@ import (
 
 const memoryPrefix = "Relevant context from past conversations:\n\n"
 const continuityInstruction = "Conversation continuity note: earlier messages included in this request are prior turns from the same ongoing conversation scope unless explicitly marked otherwise. Use them when answering questions about what was previously said."
+
+// identityFileNames lists the workspace identity files injected into every
+// system prompt in order, following the IronClaw/OpenClaw convention.
+var identityFileNames = []string{"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md"}
+
+// LoadIdentityMessages reads any present identity files from dir and returns
+// them as system messages. Missing files are silently skipped.
+func LoadIdentityMessages(dir string) []types.Message {
+	if dir == "" {
+		return nil
+	}
+	var msgs []types.Message
+	for _, name := range identityFileNames {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue // file absent or unreadable — skip silently
+		}
+		content := strings.TrimSpace(string(data))
+		if content == "" {
+			continue
+		}
+		msgs = append(msgs, types.Message{Role: "system", Content: content})
+	}
+	return msgs
+}
 
 // BuildOptions describes how a model request context should be assembled.
 type BuildOptions struct {
@@ -24,6 +51,10 @@ type BuildOptions struct {
 	MemoryTopK        int
 	MemoryInject      bool
 	MemoryPeerID      string
+	// IdentityDir is the workspace root directory. When non-empty, AGENTS.md,
+	// SOUL.md, USER.md, and IDENTITY.md are read from this directory and
+	// prepended to the system prompt on every turn.
+	IdentityDir string
 }
 
 // BuildResult contains the assembled request plus related metadata.
@@ -65,6 +96,10 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		return nil, err
 	}
 	sysMessages, turnMessages := SplitMessages(opts.Messages)
+	// Prepend identity files so they anchor every request.
+	if identityMsgs := LoadIdentityMessages(opts.IdentityDir); len(identityMsgs) > 0 {
+		sysMessages = append(append([]types.Message(nil), identityMsgs...), sysMessages...)
+	}
 	if len(opts.ExtraSystem) > 0 {
 		if err := ValidateMessages(opts.ExtraSystem); err != nil {
 			return nil, err

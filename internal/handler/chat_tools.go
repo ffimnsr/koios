@@ -78,6 +78,118 @@ var toolDefs = []toolDef{
 		available: func(h *Handler) bool { return h.memStore != nil },
 	},
 	{
+		name:        "memory.insert",
+		description: "Store a new long-term memory chunk for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"content": map[string]any{"type": "string"},
+			},
+			"required":             []string{"content"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"content":"string"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.get",
+		description: "Fetch one long-term memory chunk by id for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"chunk-id"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.delete",
+		description: "Delete a long-term memory chunk by id for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"chunk-id"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.list",
+		description: "List all long-term memory chunks for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"limit":50}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.timeline",
+		description: "Get chronological context around a memory chunk — returns chunks before and after the anchor.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"anchor_id":    map[string]any{"type": "string"},
+				"depth_before": map[string]any{"type": "integer"},
+				"depth_after":  map[string]any{"type": "integer"},
+			},
+			"required":             []string{"anchor_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"anchor_id":"chunk-id","depth_before":3,"depth_after":3}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.batch_get",
+		description: "Fetch multiple memory chunks by their IDs in one call.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required":             []string{"ids"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"ids":["id1","id2","id3"]}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.tag",
+		description: "Update tags and/or category on an existing memory chunk.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":       map[string]any{"type": "string"},
+				"tags":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"category": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"chunk-id","tags":["important","project"],"category":"notes"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.stats",
+		description: "Get aggregate statistics about the peer's memory store.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}),
+		argHint:   `{}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
 		name:        "cron.list",
 		description: "List cron jobs for this peer.",
 		parameters:  mustJSONSchema(map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}),
@@ -159,6 +271,187 @@ var toolDefs = []toolDef{
 		}),
 		argHint: `{}`,
 	},
+	{
+		name:        "workspace.list",
+		description: "List files/directories in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":      map[string]any{"type": "string"},
+				"recursive": map[string]any{"type": "boolean"},
+				"limit":     map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":".","recursive":false,"limit":200}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.read",
+		description: "Read a text file from the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md"}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.write",
+		description: "Create or overwrite a text file in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+				"append":  map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path", "content"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","content":"hello","append":false}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.edit",
+		description: "Apply an exact text replacement to a file in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":        map[string]any{"type": "string"},
+				"old_text":    map[string]any{"type": "string"},
+				"new_text":    map[string]any{"type": "string"},
+				"replace_all": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path", "old_text", "new_text"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","old_text":"before","new_text":"after","replace_all":false}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.mkdir",
+		description: "Create a directory in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"project/src"}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.delete",
+		description: "Delete a file or directory in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":      map[string]any{"type": "string"},
+				"recursive": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"project/old.txt","recursive":false}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "read",
+		description: "Read a text file from the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md"}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "write",
+		description: "Create or overwrite a text file in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+				"append":  map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path", "content"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","content":"hello","append":false}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "edit",
+		description: "Apply an exact text replacement to a file in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":        map[string]any{"type": "string"},
+				"old_text":    map[string]any{"type": "string"},
+				"new_text":    map[string]any{"type": "string"},
+				"replace_all": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path", "old_text", "new_text"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","old_text":"before","new_text":"after","replace_all":false}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "exec",
+		description: "Run a shell command on the host with the peer workspace as the default working directory.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command":         map[string]any{"type": "string"},
+				"workdir":         map[string]any{"type": "string"},
+				"timeout_seconds": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"command"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"command":"go test ./...","workdir":".","timeout_seconds":30}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "web_search",
+		description: "Search the public web and return result titles, URLs, and snippets.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"query"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"query":"golang context tutorial","limit":5}`,
+	},
+	{
+		name:        "web_fetch",
+		description: "Fetch a web page and return the extracted text content.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{"type": "string"},
+			},
+			"required":             []string{"url"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"url":"https://example.com"}`,
+	},
 }
 
 // activeDefs returns the subset of toolDefs whose backing subsystem is
@@ -166,9 +459,13 @@ var toolDefs = []toolDef{
 func (h *Handler) activeDefs() []toolDef {
 	var active []toolDef
 	for _, d := range toolDefs {
-		if d.available == nil || d.available(h) {
-			active = append(active, d)
+		if d.available != nil && !d.available(h) {
+			continue
 		}
+		if !h.toolPolicy.Allows(d.name) {
+			continue
+		}
+		active = append(active, d)
 	}
 	return active
 }
@@ -192,6 +489,7 @@ func (h *Handler) ToolPrompt(peerID string) string {
 		"Tool argument shapes:\n" +
 		strings.Join(hints, "\n") + "\n" +
 		"When the user asks what was said earlier, asks you to count prior words/messages, or asks what you should remember, use session.history instead of guessing or claiming you cannot inspect prior turns.\n" +
+		h.execPromptHint() + "\n" +
 		"Only call tools that are available. Use tools instead of claiming you cannot perform actions when the tool can satisfy the request."
 }
 
@@ -214,6 +512,9 @@ func (h *Handler) ToolDefinitions(peerID string) []types.Tool {
 
 func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
 	call.Name = h.NormalizeToolName(peerID, call.Name)
+	if !h.toolPolicy.Allows(call.Name) {
+		return nil, fmt.Errorf("tool %q is not allowed", call.Name)
+	}
 	switch call.Name {
 	case "time.now":
 		return map[string]string{"utc": time.Now().UTC().Format(time.RFC3339)}, nil
@@ -245,9 +546,6 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			"messages":    history,
 		}, nil
 	case "memory.search":
-		if h.memStore == nil {
-			return nil, fmt.Errorf("memory is not enabled")
-		}
 		var args struct {
 			Q     string `json:"q"`
 			Limit int    `json:"limit"`
@@ -255,20 +553,146 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		if strings.TrimSpace(args.Q) == "" {
-			return nil, fmt.Errorf("q is required")
+		return h.memorySearch(peerID, args.Q, args.Limit, ctx)
+	case "memory.insert":
+		var args struct {
+			Content string `json:"content"`
 		}
-		if args.Limit <= 0 {
-			args.Limit = 5
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		results, err := h.memStore.Search(ctx, peerID, args.Q, args.Limit)
-		if err != nil {
-			return nil, err
+		return h.memoryInsert(peerID, args.Content, ctx)
+	case "memory.get":
+		var args struct {
+			ID string `json:"id"`
 		}
-		return map[string]any{"results": results}, nil
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryGet(peerID, args.ID, ctx)
+	case "memory.delete":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryDelete(peerID, args.ID, ctx)
+	case "memory.list":
+		var args struct {
+			Limit int `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryList(peerID, args.Limit, ctx)
+	case "memory.timeline":
+		var args struct {
+			AnchorID    string `json:"anchor_id"`
+			DepthBefore int    `json:"depth_before"`
+			DepthAfter  int    `json:"depth_after"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryTimeline(peerID, args.AnchorID, args.DepthBefore, args.DepthAfter, ctx)
+	case "memory.batch_get":
+		var args struct {
+			IDs []string `json:"ids"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryBatchGet(peerID, args.IDs, ctx)
+	case "memory.tag":
+		var args struct {
+			ID       string   `json:"id"`
+			Tags     []string `json:"tags"`
+			Category string   `json:"category"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryTag(peerID, args.ID, args.Tags, args.Category, ctx)
+	case "memory.stats":
+		return h.memoryStats(peerID, ctx)
 	case "session.reset":
 		h.store.Reset(peerID)
 		return map[string]bool{"ok": true}, nil
+	case "workspace.list":
+		var args struct {
+			Path      string `json:"path"`
+			Recursive bool   `json:"recursive"`
+			Limit     int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workspaceList(peerID, args.Path, args.Recursive, args.Limit)
+	case "read", "workspace.read":
+		var args struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workspaceRead(peerID, args.Path)
+	case "write", "workspace.write":
+		var args struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+			Append  bool   `json:"append"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workspaceWrite(peerID, args.Path, args.Content, args.Append)
+	case "edit", "workspace.edit":
+		var args struct {
+			Path       string `json:"path"`
+			OldText    string `json:"old_text"`
+			NewText    string `json:"new_text"`
+			ReplaceAll bool   `json:"replace_all"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workspaceEdit(peerID, args.Path, args.OldText, args.NewText, args.ReplaceAll)
+	case "workspace.mkdir":
+		var args struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workspaceMkdir(peerID, args.Path)
+	case "workspace.delete":
+		var args struct {
+			Path      string `json:"path"`
+			Recursive bool   `json:"recursive"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workspaceDelete(peerID, args.Path, args.Recursive)
+	case "exec":
+		var args execParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runExecTool(ctx, peerID, args)
+	case "web_search":
+		var args webSearchParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runWebSearchTool(ctx, args)
+	case "web_fetch":
+		var args webFetchParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runWebFetchTool(ctx, args)
 	case "cron.list":
 		if h.jobStore == nil || h.sched == nil {
 			return nil, fmt.Errorf("cron is not enabled")
@@ -347,6 +771,10 @@ func (h *Handler) NormalizeToolName(peerID, name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return name
+	}
+	switch name {
+	case "shell":
+		name = "exec"
 	}
 	for _, tool := range h.ToolDefinitions(peerID) {
 		if tool.Type == "function" && tool.Function.Name == name {

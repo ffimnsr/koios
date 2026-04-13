@@ -17,8 +17,11 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
+	"time"
 
+	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -32,9 +35,10 @@ type journalEntry struct {
 
 // Session holds the conversation history for a single peer.
 type Session struct {
-	mu       sync.Mutex
-	Messages []types.Message
-	filePath string // empty when JSONL persistence is disabled
+	mu           sync.Mutex
+	Messages     []types.Message
+	filePath     string // empty when JSONL persistence is disabled
+	lastActivity time.Time
 }
 
 // AppendEvent describes a session append that observers may want to consume.
@@ -59,12 +63,13 @@ func (s *Session) History() []types.Message {
 
 // appendMsgs adds msgs, then compacts or prunes, and persists to disk.
 // Must be called with s.mu held.
-func (s *Session) appendMsgs(ctx context.Context, maxMsgs, compactThreshold, compactReserve int, compactor Compactor, msgs []types.Message) {
+func (s *Session) appendMsgs(ctx context.Context, peerID string, maxMsgs, compactThreshold, compactReserve int, compactor Compactor, flusher CompactionMemoryFlusher, hooks *ops.Manager, msgs []types.Message) {
 	s.Messages = append(s.Messages, msgs...)
+	s.lastActivity = time.Now().UTC()
 
 	// Compaction path: LLM summarises old turns when threshold is reached.
 	if compactor != nil && compactThreshold > 0 && len(s.Messages) >= compactThreshold {
-		if ok := s.compact(ctx, compactor, compactReserve); ok {
+		if ok := s.compact(ctx, peerID, compactor, flusher, hooks, compactReserve); ok {
 			return // compact called rewriteFile; nothing more to do
 		}
 		// Compaction failed — fall through to naive pruning + file append.
@@ -96,7 +101,7 @@ func (s *Session) appendMsgs(ctx context.Context, maxMsgs, compactThreshold, com
 // compact calls the Compactor to summarise old messages, updates s.Messages,
 // and rewrites the session file. Returns true on success.
 // Must be called with s.mu held.
-func (s *Session) compact(ctx context.Context, compactor Compactor, reserve int) bool {
+func (s *Session) compact(ctx context.Context, peerID string, compactor Compactor, flusher CompactionMemoryFlusher, hooks *ops.Manager, reserve int) bool {
 	if reserve <= 0 || reserve >= len(s.Messages) {
 		reserve = len(s.Messages) / 2
 	}
@@ -104,11 +109,29 @@ func (s *Session) compact(ctx context.Context, compactor Compactor, reserve int)
 	toCompact := make([]types.Message, splitIdx)
 	copy(toCompact, s.Messages[:splitIdx])
 	kept := s.Messages[splitIdx:]
+	if hooks != nil {
+		if err := hooks.Emit(ctx, ops.Event{
+			Name:   ops.HookBeforeCompaction,
+			PeerID: peerID,
+			Data: map[string]any{
+				"messages": len(toCompact),
+				"reserve":  reserve,
+			},
+		}); err != nil {
+			slog.Warn("session compaction hook rejected", "peer", peerID, "err", err)
+			return false
+		}
+	}
 
 	summary, err := compactor.Compact(ctx, toCompact)
 	if err != nil {
 		slog.Warn("session compaction failed, keeping full history", "err", err)
 		return false
+	}
+	if flusher != nil {
+		if err := flusher.FlushCompaction(ctx, peerID, toCompact, summary); err != nil {
+			slog.Warn("session compaction memory flush failed", "peer", peerID, "err", err)
+		}
 	}
 
 	checkpoint := types.Message{
@@ -117,6 +140,18 @@ func (s *Session) compact(ctx context.Context, compactor Compactor, reserve int)
 	}
 	s.Messages = append([]types.Message{checkpoint}, kept...)
 	s.rewriteFile()
+	if hooks != nil {
+		if err := hooks.Emit(ctx, ops.Event{
+			Name:   ops.HookAfterCompaction,
+			PeerID: peerID,
+			Data: map[string]any{
+				"summary_chars": len(summary),
+				"kept_messages": len(kept),
+			},
+		}); err != nil {
+			slog.Warn("session post-compaction hook failed", "peer", peerID, "err", err)
+		}
+	}
 	return true
 }
 
@@ -125,7 +160,14 @@ func (s *Session) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Messages = nil
+	s.lastActivity = time.Now().UTC()
 	s.truncateFile()
+}
+
+func (s *Session) LastActivity() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastActivity
 }
 
 // — JSONL file helpers ————————————————————————————————————————————————————————
@@ -179,6 +221,9 @@ func (s *Session) loadFromFile() {
 		slog.Warn("session load: scanner error, history may be incomplete", "path", s.filePath, "err", err)
 	}
 	s.Messages = messages
+	if info, err := os.Stat(s.filePath); err == nil {
+		s.lastActivity = info.ModTime().UTC()
+	}
 }
 
 // writeEntries O(1)-appends journal entries to the session file.
@@ -255,6 +300,21 @@ type Options struct {
 	// CompactReserve is the number of most-recent messages kept verbatim after
 	// compaction. Defaults to 20 when a Compactor is set.
 	CompactReserve int
+	// CompactionMemoryFlusher persists summary checkpoints before old history is
+	// replaced during compaction.
+	CompactionMemoryFlusher CompactionMemoryFlusher
+	// Hooks emits lifecycle events around compaction.
+	Hooks *ops.Manager
+	// SessionRetention, when > 0, removes sessions inactive longer than this.
+	SessionRetention time.Duration
+	// SessionMaxEntries, when > 0, removes the oldest sessions until only this
+	// many remain.
+	SessionMaxEntries int
+	// IdleResetAfter, when > 0, resets a session after this much inactivity.
+	IdleResetAfter time.Duration
+	// DailyResetMinutes, when >= 0, resets sessions whose latest activity falls
+	// before today's local reset cutover and the current time is after it.
+	DailyResetMinutes int
 }
 
 // Store maps peer IDs to their isolated sessions.
@@ -266,8 +326,28 @@ type Store struct {
 	compactor        Compactor
 	compactThreshold int
 	compactReserve   int
+	memoryFlusher    CompactionMemoryFlusher
+	hooks            *ops.Manager
+	retention        time.Duration
+	maxEntries       int
+	idleResetAfter   time.Duration
+	dailyResetMins   int
 	subscribers      map[string]map[uint64]func(AppendEvent)
 	nextSubID        uint64
+}
+
+// CompactionMemoryFlusher persists information from the to-be-compacted turns
+// before they are replaced by a summary checkpoint.
+type CompactionMemoryFlusher interface {
+	FlushCompaction(ctx context.Context, peerID string, messages []types.Message, summary string) error
+}
+
+// MaintenanceReport summarizes store maintenance work.
+type MaintenanceReport struct {
+	DeletedExpired int `json:"deleted_expired"`
+	DeletedEvicted int `json:"deleted_evicted"`
+	IdleResets     int `json:"idle_resets"`
+	DailyResets    int `json:"daily_resets"`
 }
 
 // New creates an in-memory-only Store. It is a convenience wrapper around
@@ -288,6 +368,12 @@ func NewWithOptions(opts Options) *Store {
 		compactor:        opts.Compactor,
 		compactThreshold: opts.CompactThreshold,
 		compactReserve:   opts.CompactReserve,
+		memoryFlusher:    opts.CompactionMemoryFlusher,
+		hooks:            opts.Hooks,
+		retention:        opts.SessionRetention,
+		maxEntries:       opts.SessionMaxEntries,
+		idleResetAfter:   opts.IdleResetAfter,
+		dailyResetMins:   opts.DailyResetMinutes,
 		subscribers:      make(map[string]map[uint64]func(AppendEvent)),
 	}
 	if opts.SessionDir != "" {
@@ -304,6 +390,7 @@ func (st *Store) Get(peerID string) *Session {
 	sess, ok := st.peers[peerID]
 	st.mu.RUnlock()
 	if ok {
+		st.applyLifecycle(peerID, sess, time.Now())
 		return sess
 	}
 
@@ -319,6 +406,7 @@ func (st *Store) Get(peerID string) *Session {
 		sess.loadFromFile()
 	}
 	st.peers[peerID] = sess
+	st.applyLifecycle(peerID, sess, time.Now())
 	return sess
 }
 
@@ -348,7 +436,7 @@ func (st *Store) AppendCtxWithSource(ctx context.Context, peerID, source string,
 	}
 	sess := st.Get(peerID)
 	sess.mu.Lock()
-	sess.appendMsgs(ctx, st.maxMsgs, st.compactThreshold, st.compactReserve, st.compactor, msgs)
+	sess.appendMsgs(ctx, peerID, st.maxMsgs, st.compactThreshold, st.compactReserve, st.compactor, st.memoryFlusher, st.hooks, msgs)
 	sess.mu.Unlock()
 	st.notifyAppend(AppendEvent{
 		PeerID:   peerID,
@@ -416,4 +504,168 @@ func cloneMessages(msgs []types.Message) []types.Message {
 	cp := make([]types.Message, len(msgs))
 	copy(cp, msgs)
 	return cp
+}
+
+// Maintain applies reset and cleanup policies across loaded and persisted sessions.
+func (st *Store) Maintain(now time.Time) MaintenanceReport {
+	report := MaintenanceReport{}
+	st.mu.RLock()
+	loaded := make(map[string]*Session, len(st.peers))
+	for peerID, sess := range st.peers {
+		loaded[peerID] = sess
+	}
+	st.mu.RUnlock()
+
+	for peerID, sess := range loaded {
+		switch st.applyLifecycle(peerID, sess, now) {
+		case "idle":
+			report.IdleResets++
+		case "daily":
+			report.DailyResets++
+		}
+	}
+
+	records := st.sessionRecords(now)
+	if st.retention > 0 {
+		for _, rec := range records {
+			if rec.lastActivity.IsZero() {
+				continue
+			}
+			if now.Sub(rec.lastActivity) >= st.retention {
+				if st.deleteSession(rec.peerID) {
+					report.DeletedExpired++
+				}
+			}
+		}
+		records = st.sessionRecords(now)
+	}
+	if st.maxEntries > 0 && len(records) > st.maxEntries {
+		sort.Slice(records, func(i, j int) bool {
+			return records[i].lastActivity.Before(records[j].lastActivity)
+		})
+		for _, rec := range records[:len(records)-st.maxEntries] {
+			if st.deleteSession(rec.peerID) {
+				report.DeletedEvicted++
+			}
+		}
+	}
+	return report
+}
+
+func (st *Store) MaintenanceEnabled() bool {
+	return st.retention > 0 || st.maxEntries > 0 || st.idleResetAfter > 0 || st.dailyResetMins >= 0
+}
+
+type sessionRecord struct {
+	peerID       string
+	lastActivity time.Time
+}
+
+func (st *Store) sessionRecords(now time.Time) []sessionRecord {
+	st.mu.RLock()
+	loaded := make(map[string]*Session, len(st.peers))
+	for peerID, sess := range st.peers {
+		loaded[peerID] = sess
+	}
+	sessionDir := st.sessionDir
+	st.mu.RUnlock()
+
+	records := make(map[string]sessionRecord, len(loaded))
+	for peerID, sess := range loaded {
+		last := sess.LastActivity()
+		if last.IsZero() {
+			last = now
+		}
+		records[peerID] = sessionRecord{peerID: peerID, lastActivity: last}
+	}
+	if sessionDir != "" {
+		entries, err := os.ReadDir(sessionDir)
+		if err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+					continue
+				}
+				peerID, err := url.PathUnescape(entry.Name()[:len(entry.Name())-len(".jsonl")])
+				if err != nil {
+					continue
+				}
+				if _, ok := records[peerID]; ok {
+					continue
+				}
+				info, err := entry.Info()
+				if err != nil {
+					continue
+				}
+				records[peerID] = sessionRecord{peerID: peerID, lastActivity: info.ModTime().UTC()}
+			}
+		}
+	}
+	out := make([]sessionRecord, 0, len(records))
+	for _, rec := range records {
+		out = append(out, rec)
+	}
+	return out
+}
+
+func (st *Store) applyLifecycle(peerID string, sess *Session, now time.Time) string {
+	if sess == nil {
+		return ""
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.Messages) == 0 {
+		return ""
+	}
+	if st.idleResetAfter > 0 && !sess.lastActivity.IsZero() && now.Sub(sess.lastActivity) >= st.idleResetAfter {
+		sess.Messages = nil
+		sess.lastActivity = now.UTC()
+		sess.truncateFile()
+		return "idle"
+	}
+	if st.dailyResetMins >= 0 && !sess.lastActivity.IsZero() {
+		if shouldDailyReset(now, sess.lastActivity, st.dailyResetMins) {
+			sess.Messages = nil
+			sess.lastActivity = now.UTC()
+			sess.truncateFile()
+			return "daily"
+		}
+	}
+	return ""
+}
+
+func shouldDailyReset(now, lastActivity time.Time, resetMinutes int) bool {
+	if resetMinutes < 0 {
+		return false
+	}
+	loc := now.Location()
+	nowLocal := now.In(loc)
+	cutover := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), resetMinutes/60, resetMinutes%60, 0, 0, loc)
+	if nowLocal.Before(cutover) {
+		return false
+	}
+	return lastActivity.In(loc).Before(cutover)
+}
+
+func (st *Store) deleteSession(peerID string) bool {
+	st.mu.Lock()
+	sess, ok := st.peers[peerID]
+	if ok {
+		delete(st.peers, peerID)
+	}
+	sessionDir := st.sessionDir
+	st.mu.Unlock()
+
+	var filePath string
+	if ok && sess != nil && sess.filePath != "" {
+		filePath = sess.filePath
+	} else if sessionDir != "" {
+		filePath = filepath.Join(sessionDir, url.PathEscape(peerID)+".jsonl")
+	}
+	if filePath != "" {
+		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+			slog.Warn("session delete: remove", "peer", peerID, "path", filePath, "err", err)
+			return false
+		}
+	}
+	return ok || filePath != ""
 }

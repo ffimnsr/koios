@@ -59,16 +59,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/heartbeat"
 	"github.com/ffimnsr/koios/internal/memory"
+	"github.com/ffimnsr/koios/internal/ops"
+	"github.com/ffimnsr/koios/internal/presence"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
+	"github.com/ffimnsr/koios/internal/workspace"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
 
 // ── JSON-RPC frame types ──────────────────────────────────────────────────────
@@ -144,6 +147,39 @@ func (c *wsConn) notify(method string, params any) {
 	c.send(rpcNotification{Method: method, Params: params})
 }
 
+func (h *Handler) addClient(wsc *wsConn) {
+	if h == nil || wsc == nil {
+		return
+	}
+	h.clientsMu.Lock()
+	h.clients[wsc] = struct{}{}
+	h.clientsMu.Unlock()
+}
+
+func (h *Handler) removeClient(wsc *wsConn) {
+	if h == nil || wsc == nil {
+		return
+	}
+	h.clientsMu.Lock()
+	delete(h.clients, wsc)
+	h.clientsMu.Unlock()
+}
+
+func (h *Handler) broadcast(method string, params any) {
+	if h == nil {
+		return
+	}
+	h.clientsMu.RLock()
+	clients := make([]*wsConn, 0, len(h.clients))
+	for c := range h.clients {
+		clients = append(clients, c)
+	}
+	h.clientsMu.RUnlock()
+	for _, c := range clients {
+		c.notify(method, params)
+	}
+}
+
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 var wsUpgrader = websocket.Upgrader{
@@ -162,6 +198,7 @@ type Handler struct {
 	memStore        *memory.Store
 	memTopK         int
 	memInject       bool
+	identityDir     string
 	hbRunner        *heartbeat.Runner
 	hbConfigStore   *heartbeat.ConfigStore
 	hbDefaultEvery  time.Duration
@@ -171,7 +208,13 @@ type Handler struct {
 	subRuntime      *subagent.Runtime
 	jobStore        *scheduler.JobStore
 	sched           *scheduler.Scheduler
+	workspaceStore  *workspace.Manager
+	toolPolicy      ToolPolicy
+	execConfig      ExecConfig
+	execApprovals   *execApprovalStore
 	allowedOrigins  []string // empty = allow all
+	hooks           *ops.Manager
+	presence        *presence.Manager
 
 	// dispatchWG tracks in-flight dispatch goroutines for graceful shutdown.
 	dispatchWG sync.WaitGroup
@@ -182,6 +225,8 @@ type Handler struct {
 	// the coordinator.
 	syncRunsMu sync.Mutex
 	syncRuns   map[string]context.CancelFunc
+	clientsMu  sync.RWMutex
+	clients    map[*wsConn]struct{}
 }
 
 // HandlerOptions holds all optional subsystem references.
@@ -200,10 +245,19 @@ type HandlerOptions struct {
 	SubRuntime      *subagent.Runtime
 	JobStore        *scheduler.JobStore
 	Sched           *scheduler.Scheduler
+	WorkspaceStore  *workspace.Manager
+	ToolPolicy      ToolPolicy
+	ExecConfig      ExecConfig
+	Hooks           *ops.Manager
+	Presence        *presence.Manager
 	// AllowedOrigins, when non-empty, restricts WebSocket upgrades to requests
 	// whose Origin header exactly matches one of the listed values
 	// (case-insensitive).  An empty slice permits all origins.
 	AllowedOrigins []string
+	// WorkspaceRoot is the directory from which identity files (AGENTS.md,
+	// SOUL.md, USER.md, IDENTITY.md) are read and injected into every system
+	// prompt.
+	WorkspaceRoot string
 }
 
 // NewHandler creates the WebSocket control-plane handler.
@@ -216,7 +270,8 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
-	return &Handler{
+	execCfg := normalizeExecConfig(opts.ExecConfig)
+	h := &Handler{
 		store:           store,
 		provider:        prov,
 		timeout:         timeout,
@@ -224,6 +279,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		memStore:        opts.MemStore,
 		memTopK:         topK,
 		memInject:       opts.MemInject,
+		identityDir:     opts.WorkspaceRoot,
 		hbRunner:        opts.HBRunner,
 		hbConfigStore:   opts.HBConfigStore,
 		hbDefaultEvery:  opts.HBDefaultEvery,
@@ -233,9 +289,22 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		subRuntime:      opts.SubRuntime,
 		jobStore:        opts.JobStore,
 		sched:           opts.Sched,
+		workspaceStore:  opts.WorkspaceStore,
+		toolPolicy:      opts.ToolPolicy,
+		execConfig:      execCfg,
 		allowedOrigins:  opts.AllowedOrigins,
+		hooks:           opts.Hooks,
+		presence:        opts.Presence,
 		syncRuns:        make(map[string]context.CancelFunc),
+		clients:         make(map[*wsConn]struct{}),
+		execApprovals:   newExecApprovalStore(execCfg.ApprovalTTL),
 	}
+	if h.presence != nil {
+		h.presence.Subscribe(func(state presence.State) {
+			h.broadcast("presence.update", state)
+		})
+	}
+	return h
 }
 
 // ServeHTTP upgrades the connection to WebSocket and drives the per-peer
@@ -290,6 +359,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	wsc := &wsConn{conn: conn, peerID: peerID}
+	h.addClient(wsc)
+	defer h.removeClient(wsc)
+	if h.presence != nil {
+		h.presence.Set(peerID, "online", false, "ws_connect")
+		defer h.presence.Set(peerID, "offline", false, "ws_disconnect")
+	}
 
 	// Keepalive: set an initial read deadline and reset it on every pong.
 	// If no pong arrives within the deadline the next ReadMessage call fails
@@ -361,6 +436,19 @@ func (h *Handler) readLoop(ctx context.Context, wsc *wsConn) {
 			wsc.replyErr(req.ID, errCodeInvalidRequest, "method is required")
 			continue
 		}
+		if h.hooks != nil {
+			if err := h.hooks.Emit(ctx, ops.Event{
+				Name:   ops.HookMessageReceived,
+				PeerID: wsc.peerID,
+				Data: map[string]any{
+					"method": req.Method,
+					"has_id": len(req.ID) > 0,
+				},
+			}); err != nil {
+				wsc.replyErr(req.ID, errCodeServer, "hook rejected request: "+err.Error())
+				continue
+			}
+		}
 		// Dispatch each call in its own goroutine so that long-running or
 		// streaming requests do not stall inbound frame parsing.
 		h.dispatchWG.Add(1)
@@ -393,6 +481,18 @@ func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 		h.rpcSessionHistory(ctx, wsc, req)
 	case "session.reset":
 		h.rpcSessionReset(ctx, wsc, req)
+	case "presence.get":
+		if h.presence == nil {
+			wsc.replyErr(req.ID, errCodeServer, "presence is not enabled")
+			return
+		}
+		h.rpcPresenceGet(wsc, req)
+	case "presence.set":
+		if h.presence == nil {
+			wsc.replyErr(req.ID, errCodeServer, "presence is not enabled")
+			return
+		}
+		h.rpcPresenceSet(wsc, req)
 	case "standing.get":
 		if h.standingManager == nil {
 			wsc.replyErr(req.ID, errCodeServer, "standing orders are not enabled")
@@ -423,6 +523,8 @@ func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 		h.rpcAgentWait(ctx, wsc, req)
 	case "agent.cancel":
 		h.rpcAgentCancel(ctx, wsc, req)
+	case "agent.steer":
+		h.rpcAgentSteer(ctx, wsc, req)
 
 	// ── Subagents ─────────────────────────────────────────────────────────
 	case "subagent.list":
@@ -451,6 +553,12 @@ func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 			return
 		}
 		h.rpcMemoryInsert(ctx, wsc, req)
+	case "memory.get":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryGet(ctx, wsc, req)
 	case "memory.list":
 		if h.memStore == nil {
 			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
@@ -463,6 +571,60 @@ func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 			return
 		}
 		h.rpcMemoryDelete(ctx, wsc, req)
+
+	// ── Workspace ─────────────────────────────────────────────────────────
+	case "workspace.list":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceList(ctx, wsc, req)
+	case "workspace.read":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceRead(ctx, wsc, req)
+	case "workspace.write":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceWrite(ctx, wsc, req)
+	case "workspace.edit":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceEdit(ctx, wsc, req)
+	case "workspace.mkdir":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceMkdir(ctx, wsc, req)
+	case "workspace.delete":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceDelete(ctx, wsc, req)
+	case "exec":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "exec is not enabled")
+			return
+		}
+		h.rpcExec(ctx, wsc, req)
+	case "exec.pending":
+		h.rpcExecPending(ctx, wsc, req)
+	case "exec.approve":
+		h.rpcExecApprove(ctx, wsc, req)
+	case "exec.reject":
+		h.rpcExecReject(ctx, wsc, req)
+	case "web_search":
+		h.rpcWebSearch(ctx, wsc, req)
+	case "web_fetch":
+		h.rpcWebFetch(ctx, wsc, req)
 
 	// ── Cron ──────────────────────────────────────────────────────────────
 	case "cron.list":
@@ -541,6 +703,10 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		"heartbeat":     h.hbRunner != nil && h.hbConfigStore != nil,
 		"standing":      h.standingManager != nil,
 		"subagents":     h.subRuntime != nil,
+		"workspace":     h.workspaceStore != nil,
+		"exec":          h.workspaceStore != nil,
+		"presence":      h.presence != nil,
+		"web":           true,
 	}
 
 	methods := []string{
@@ -549,6 +715,9 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		"chat",
 		"session.history",
 		"session.reset",
+	}
+	if caps["presence"] {
+		methods = append(methods, "presence.get", "presence.set")
 	}
 	if caps["standing"] {
 		methods = append(methods, "standing.get", "standing.set", "standing.clear")
@@ -560,6 +729,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 			"agent.get",
 			"agent.wait",
 			"agent.cancel",
+			"agent.steer",
 		)
 	}
 	if caps["subagents"] {
@@ -573,7 +743,16 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		)
 	}
 	if caps["memory"] {
-		methods = append(methods, "memory.search", "memory.insert", "memory.list", "memory.delete")
+		methods = append(methods, "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete")
+	}
+	if caps["workspace"] {
+		methods = append(methods, "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete")
+	}
+	if caps["exec"] {
+		methods = append(methods, "exec", "exec.pending", "exec.approve", "exec.reject")
+	}
+	if caps["web"] {
+		methods = append(methods, "web_search", "web_fetch")
 	}
 	if caps["cron"] {
 		methods = append(methods,
@@ -601,6 +780,9 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 	if caps["agent_runtime"] {
 		streamNotifications = append(streamNotifications, "stream.delta", "stream.event")
 	}
+	if caps["presence"] {
+		streamNotifications = append(streamNotifications, "presence.update")
+	}
 
 	return map[string]any{
 		"peer_id":              peerID,
@@ -609,6 +791,47 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		"chat_tools":           tools,
 		"stream_notifications": append(streamNotifications, "session.message"),
 	}
+}
+
+type presenceGetParams struct {
+	PeerID string `json:"peer_id,omitempty"`
+}
+
+func (h *Handler) rpcPresenceGet(wsc *wsConn, req *rpcRequest) {
+	var p presenceGetParams
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if p.PeerID != "" {
+		state, ok := h.presence.Get(p.PeerID)
+		wsc.reply(req.ID, map[string]any{
+			"peer_id": p.PeerID,
+			"found":   ok,
+			"state":   state,
+		})
+		return
+	}
+	wsc.reply(req.ID, map[string]any{"states": h.presence.Snapshot()})
+}
+
+type presenceSetParams struct {
+	Status string `json:"status,omitempty"`
+	Typing *bool  `json:"typing,omitempty"`
+}
+
+func (h *Handler) rpcPresenceSet(wsc *wsConn, req *rpcRequest) {
+	var p presenceSetParams
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	typing := false
+	if p.Typing != nil {
+		typing = *p.Typing
+	}
+	state := h.presence.Set(wsc.peerID, p.Status, typing, "rpc")
+	wsc.reply(req.ID, map[string]any{"state": state})
 }
 
 // ── chat ──────────────────────────────────────────────────────────────────────
@@ -634,6 +857,9 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	if h.agentRuntime == nil || h.agentCoord == nil {
 		wsc.replyErr(req.ID, errCodeServer, "agent runtime is not enabled")
 		return
+	}
+	if h.presence != nil {
+		h.presence.Set(wsc.peerID, "online", false, "chat")
 	}
 	_, turnMessages := splitByRole(p.Messages)
 	history := h.store.Get(wsc.peerID).History()
@@ -1000,6 +1226,34 @@ func (h *Handler) rpcAgentCancel(_ context.Context, wsc *wsConn, req *rpcRequest
 	wsc.reply(req.ID, record)
 }
 
+func (h *Handler) rpcAgentSteer(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	if h.agentRuntime == nil {
+		wsc.replyErr(req.ID, errCodeServer, "agent runtime is not enabled")
+		return
+	}
+	var p struct {
+		SessionKey string `json:"session_key"`
+		Note       string `json:"note"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if p.SessionKey == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "session_key is required")
+		return
+	}
+	if p.Note == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "note is required")
+		return
+	}
+	if err := h.agentRuntime.Steer(p.SessionKey, p.Note); err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, map[string]any{"session_key": p.SessionKey, "status": "queued"})
+}
+
 func (h *Handler) buildAgentRunRequest(wsc *wsConn, reqID json.RawMessage, p agentRunParams) (agent.RunRequest, error) {
 	var timeout time.Duration
 	if p.Timeout != "" {
@@ -1166,29 +1420,13 @@ func (h *Handler) rpcMemorySearch(ctx context.Context, wsc *wsConn, req *rpcRequ
 		wsc.replyErr(req.ID, errCodeInvalidParams, "q is required")
 		return
 	}
-	limit := p.Limit
-	if limit <= 0 {
-		limit = 5
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	results, err := h.memStore.Search(ctx, wsc.peerID, p.Q, limit)
+	result, err := h.memorySearch(wsc.peerID, p.Q, p.Limit, ctx)
 	if err != nil {
 		slog.Error("ws: memory search", "peer", wsc.peerID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "search error: "+err.Error())
 		return
 	}
-	type hit struct {
-		ID      string  `json:"id"`
-		Content string  `json:"content"`
-		Score   float64 `json:"score"`
-	}
-	out := make([]hit, 0, len(results))
-	for _, r := range results {
-		out = append(out, hit{ID: r.ID, Content: r.Content, Score: r.Score})
-	}
-	wsc.reply(req.ID, map[string]any{"results": out})
+	wsc.reply(req.ID, result)
 }
 
 func (h *Handler) rpcMemoryInsert(ctx context.Context, wsc *wsConn, req *rpcRequest) {
@@ -1199,21 +1437,30 @@ func (h *Handler) rpcMemoryInsert(ctx context.Context, wsc *wsConn, req *rpcRequ
 		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
 		return
 	}
-	if strings.TrimSpace(p.Content) == "" {
-		wsc.replyErr(req.ID, errCodeInvalidParams, "content is required")
-		return
-	}
-	const maxContentBytes = 8 * 1024
-	if len(p.Content) > maxContentBytes {
-		wsc.replyErr(req.ID, errCodeInvalidParams, fmt.Sprintf("content exceeds %d byte limit", maxContentBytes))
-		return
-	}
-	if err := h.memStore.Insert(ctx, wsc.peerID, p.Content); err != nil {
+	result, err := h.memoryInsert(wsc.peerID, p.Content, ctx)
+	if err != nil {
 		slog.Error("ws: memory insert", "peer", wsc.peerID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "insert error: "+err.Error())
 		return
 	}
-	wsc.reply(req.ID, map[string]bool{"ok": true})
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryGet(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryGet(wsc.peerID, p.ID, ctx)
+	if err != nil {
+		slog.Error("ws: memory get", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "get error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
 }
 
 func (h *Handler) rpcMemoryList(ctx context.Context, wsc *wsConn, req *rpcRequest) {
@@ -1260,6 +1507,131 @@ func (h *Handler) rpcMemoryDelete(ctx context.Context, wsc *wsConn, req *rpcRequ
 		return
 	}
 	wsc.reply(req.ID, map[string]bool{"ok": true})
+}
+
+// ── workspace ────────────────────────────────────────────────────────────────
+
+func (h *Handler) rpcWorkspaceList(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path      string `json:"path,omitempty"`
+		Recursive bool   `json:"recursive,omitempty"`
+		Limit     int    `json:"limit,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if strings.TrimSpace(p.Path) == "" {
+		p.Path = "."
+	}
+	result, err := h.workspaceList(wsc.peerID, p.Path, p.Recursive, p.Limit)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceRead(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if strings.TrimSpace(p.Path) == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "path is required")
+		return
+	}
+	result, err := h.workspaceRead(wsc.peerID, p.Path)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceWrite(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		Append  bool   `json:"append,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if strings.TrimSpace(p.Path) == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "path is required")
+		return
+	}
+	result, err := h.workspaceWrite(wsc.peerID, p.Path, p.Content, p.Append)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceEdit(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path       string `json:"path"`
+		OldText    string `json:"old_text"`
+		NewText    string `json:"new_text"`
+		ReplaceAll bool   `json:"replace_all,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.workspaceEdit(wsc.peerID, p.Path, p.OldText, p.NewText, p.ReplaceAll)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceMkdir(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if strings.TrimSpace(p.Path) == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "path is required")
+		return
+	}
+	result, err := h.workspaceMkdir(wsc.peerID, p.Path)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceDelete(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path      string `json:"path"`
+		Recursive bool   `json:"recursive,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if strings.TrimSpace(p.Path) == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "path is required")
+		return
+	}
+	result, err := h.workspaceDelete(wsc.peerID, p.Path, p.Recursive)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
 }
 
 // ── cron ──────────────────────────────────────────────────────────────────────

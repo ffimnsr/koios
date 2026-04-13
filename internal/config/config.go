@@ -1,253 +1,699 @@
 package config
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
-// Config holds all runtime configuration loaded from environment variables.
+// SessionDir returns the path where session files are stored, derived from WorkspaceRoot.
+func (c *Config) SessionDir() string { return filepath.Join(c.WorkspaceRoot, "sessions") }
+
+// CronDir returns the path where cron/scheduler data is stored, derived from WorkspaceRoot.
+func (c *Config) CronDir() string { return filepath.Join(c.WorkspaceRoot, "cron") }
+
+// AgentDir returns the path where subagent registry data is stored, derived from WorkspaceRoot.
+func (c *Config) AgentDir() string { return filepath.Join(c.WorkspaceRoot, "agents") }
+
+// MemoryDBPath returns the path for the long-term memory SQLite database, derived from WorkspaceRoot.
+func (c *Config) MemoryDBPath() string { return filepath.Join(c.WorkspaceRoot, "memory.db") }
+
+const (
+	// DefaultConfigFile is the default runtime config path in the repo root.
+	DefaultConfigFile = "koios.config.toml"
+)
+
+// Config holds all runtime configuration loaded from koios.config.toml.
 type Config struct {
-	// ListenAddr is the TCP address the HTTP server binds to (e.g. ":8080").
 	ListenAddr string
-	// Provider selects the LLM backend: "openai", "anthropic", or "openrouter".
-	Provider string
-	// APIKey is the LLM provider API key.
-	APIKey string
-	// Model is the model name passed to the provider.
-	Model string
-	// BaseURL overrides the provider base URL (useful for local proxies / testing).
-	BaseURL string
-	// MaxSessionMessages is the maximum number of messages kept per peer session.
-	// Oldest non-system messages are pruned when the limit is exceeded.
-	MaxSessionMessages int
-	// RequestTimeout is the maximum time allowed for a single LLM round-trip.
-	RequestTimeout time.Duration
+	Provider   string
+	APIKey     string
+	Model      string
+	BaseURL    string
 
-	// ── Phase 1: JSONL session persistence ──────────────────────────────────
-
-	// SessionDir, if non-empty, enables JSONL persistence. Each peer session is
-	// stored as <SessionDir>/<url-escaped-peerID>.jsonl.
-	SessionDir string
-
-	// ── Phase 2: LLM-based context compaction ───────────────────────────────
-
-	// CompactThreshold is the number of stored messages that triggers LLM
-	// summarization. 0 disables compaction (naive pruning is used instead).
-	CompactThreshold int
-	// CompactReserve is the number of most-recent messages kept verbatim after
-	// compaction; the rest are fed to the summarizer.
-	CompactReserve int
-
-	// ── Phase 3: Long-term semantic memory ──────────────────────────────────
-
-	// MemoryDBPath, if non-empty, enables the SQLite long-term memory store at
-	// the given file path.
-	MemoryDBPath string
-	// EmbedModel is the embedding model used for semantic memory search.
-	// Defaults to "text-embedding-3-small". Requires an OpenAI-compatible
-	// /v1/embeddings endpoint; falls back to BM25-only if unavailable.
-	EmbedModel string
-	// MemoryInject, when true, prepends top-K memory hits as a system message
-	// on every chat and agent.run request.
-	MemoryInject bool
-	// MemoryTopK is the maximum number of memory chunks injected per request.
-	MemoryTopK int
-	// SessionPruneKeepToolMessages is the number of recent tool-related messages
-	// kept in the model-visible request context. Older tool chatter stays in the
-	// transcript but is pruned before inference.
+	MaxSessionMessages           int
+	RequestTimeout               time.Duration
+	SessionRetention             time.Duration
+	SessionMaxEntries            int
+	SessionIdleResetAfter        time.Duration
+	SessionDailyResetTime        string
+	CompactThreshold             int
+	CompactReserve               int
+	EmbedModel                   string
+	MemoryInject                 bool
+	MemoryTopK                   int
+	MilvusURL        string
+	MilvusCollection string
+	MilvusEnabled    bool
 	SessionPruneKeepToolMessages int
 
-	// ── Phase 4: Cron scheduler and heartbeat ────────────────────────────────
-
-	// CronDir, if non-empty, enables the cron scheduler. Job definitions are
-	// stored at <CronDir>/jobs.json and run logs at <CronDir>/runs/<jobID>.jsonl.
-	// Heartbeat config per peer lives at <CronDir>/heartbeat/<peerID>.json.
-	// When empty, both the cron scheduler and heartbeats are disabled.
-	CronDir string
-	// CronMaxConcurrentRuns is the maximum number of cron jobs that may execute
-	// simultaneously. Defaults to 1.
 	CronMaxConcurrentRuns int
-	// HeartbeatEvery is the global default interval between heartbeat runs.
-	// Individual peers can override this via PUT /v1/heartbeat. Defaults to 30m.
-	HeartbeatEvery time.Duration
-	// HeartbeatEnabled globally enables or disables heartbeat runs. When false,
-	// no heartbeat goroutines are started regardless of peer activity.
-	HeartbeatEnabled bool
+	HeartbeatEvery        time.Duration
+	HeartbeatEnabled      bool
 
-	// ── Phase 5: Agent runtime and subagent orchestration ─────────────────────
-
-	// AgentDir, when non-empty, persists subagent run records to disk.
-	AgentDir string
-	// AgentMaxChildren limits concurrent child runs spawned from one parent.
-	AgentMaxChildren int
-	// AgentRetryAttempts controls how many provider attempts are made before failing.
-	AgentRetryAttempts int
-	// AgentRetryInitialBackoff is the initial delay between retries.
+	AgentMaxChildren         int
+	AgentRetryAttempts       int
 	AgentRetryInitialBackoff time.Duration
-	// AgentRetryMaxBackoff caps the retry backoff.
-	AgentRetryMaxBackoff time.Duration
+	AgentRetryMaxBackoff     time.Duration
 
-	// ── Security ────────────────────────────────────────────────────────────────
-
-	// AllowedOrigins is a comma-separated list of origins that are permitted to
-	// open a WebSocket connection.  An empty value allows all origins (suitable
-	// for environments behind a trusted reverse proxy).  Each entry is matched
-	// against the request Origin header as an exact, case-insensitive string.
 	AllowedOrigins []string
+
+	ToolProfile        string
+	ToolsAllow         []string
+	ToolsDeny          []string
+	ExecDefaultTimeout  time.Duration
+	ExecMaxTimeout      time.Duration
+	ExecApprovalMode    string
+	ExecApprovalTTL     time.Duration
+	ExecIsolationEnabled bool
+	ExecIsolationPaths  []ExecIsolationPath
+
+	WorkspaceRoot     string
+	WorkspacePerAgent bool
+	WorkspaceMaxBytes int
 }
 
-// Load reads configuration from environment variables and validates it.
-// Before reading env vars it attempts to load a .env file from the current
-// working directory. Variables already present in the environment take
-// precedence over values in the file.
+// ExecIsolationPath is a host→sandbox bind-mount entry for bubblewrap isolation.
+type ExecIsolationPath struct {
+	Source string `toml:"source"`
+	Target string `toml:"target"`
+	Mode   string `toml:"mode"` // "ro" or "rw"
+}
+
+type fileConfig struct {
+	Server struct {
+		ListenAddr     string   `toml:"listen_addr"`
+		RequestTimeout string   `toml:"request_timeout"`
+		AllowedOrigins []string `toml:"allowed_origins"`
+	} `toml:"server"`
+	LLM struct {
+		Provider string `toml:"provider"`
+		APIKey   string `toml:"api_key"`
+		Model    string `toml:"model"`
+		BaseURL  string `toml:"base_url"`
+	} `toml:"llm"`
+	Session struct {
+		MaxMessages           *int   `toml:"max_messages"`
+		Retention             string `toml:"retention"`
+		MaxEntries            *int   `toml:"max_entries"`
+		IdleResetAfter        string `toml:"idle_reset_after"`
+		DailyResetTime        string `toml:"daily_reset_time"`
+		PruneKeepToolMessages *int   `toml:"prune_keep_tool_messages"`
+	} `toml:"session"`
+	Compaction struct {
+		Threshold *int `toml:"threshold"`
+		Reserve   *int `toml:"reserve"`
+	} `toml:"compaction"`
+	Memory struct {
+		EmbedModel string `toml:"embed_model"`
+		Inject     *bool  `toml:"inject"`
+		TopK       *int   `toml:"top_k"`
+		Milvus     struct {
+			Address    string `toml:"address"`
+			Collection string `toml:"collection"`
+			Enabled    *bool  `toml:"enabled"`
+		} `toml:"milvus"`
+	} `toml:"memory"`
+	Cron struct {
+		MaxConcurrent *int `toml:"max_concurrent"`
+	} `toml:"cron"`
+	Heartbeat struct {
+		Enabled *bool  `toml:"enabled"`
+		Every   string `toml:"every"`
+	} `toml:"heartbeat"`
+	Agent struct {
+		MaxChildren         *int   `toml:"max_children"`
+		RetryAttempts       *int   `toml:"retry_attempts"`
+		RetryInitialBackoff string `toml:"retry_initial_backoff"`
+		RetryMaxBackoff     string `toml:"retry_max_backoff"`
+	} `toml:"agent"`
+	Tools struct {
+		Profile string   `toml:"profile"`
+		Allow   []string `toml:"allow"`
+		Deny    []string `toml:"deny"`
+		Exec struct {
+			DefaultTimeout string             `toml:"default_timeout"`
+			MaxTimeout     string             `toml:"max_timeout"`
+			ApprovalMode   string             `toml:"approval_mode"`
+			ApprovalTTL    string             `toml:"approval_ttl"`
+			Isolation      struct {
+				Enabled      bool                 `toml:"enabled"`
+				ExposePaths  []ExecIsolationPath  `toml:"expose_paths"`
+			} `toml:"isolation"`
+		} `toml:"exec"`
+	} `toml:"tools"`
+	Workspace struct {
+		Root     string `toml:"root"`
+		PerAgent *bool  `toml:"per_agent"`
+		MaxBytes *int   `toml:"max_file_bytes"`
+	} `toml:"workspace"`
+}
+
+// Default returns sane defaults for a local-first Koios setup.
+func Default() *Config {
+	return &Config{
+		ListenAddr:                   ":8080",
+		Provider:                     "openai",
+		Model:                        "gpt-4o",
+		MaxSessionMessages:           100,
+		RequestTimeout:               2 * time.Minute,
+		SessionRetention:             0,
+		SessionMaxEntries:            0,
+		SessionIdleResetAfter:        0,
+		SessionDailyResetTime:        "",
+		CompactThreshold:             0,
+		CompactReserve:               20,
+		EmbedModel:                   "text-embedding-3-small",
+		MemoryInject:                 false,
+		MemoryTopK:                   3,
+		MilvusURL:                    "localhost:19530",
+		MilvusCollection:             "koios_memory",
+		MilvusEnabled:                false,
+		SessionPruneKeepToolMessages: 8,
+		CronMaxConcurrentRuns:        1,
+		HeartbeatEvery:               30 * time.Minute,
+		HeartbeatEnabled:             true,
+		AgentMaxChildren:             4,
+		AgentRetryAttempts:           3,
+		AgentRetryInitialBackoff:     500 * time.Millisecond,
+		AgentRetryMaxBackoff:         5 * time.Second,
+		ToolProfile:                  "full",
+		ExecDefaultTimeout:           30 * time.Second,
+		ExecMaxTimeout:               5 * time.Minute,
+		ExecApprovalMode:             "dangerous",
+		ExecApprovalTTL:              15 * time.Minute,
+		WorkspaceRoot:                "./workspace",
+		WorkspacePerAgent:            true,
+		WorkspaceMaxBytes:            1 << 20,
+	}
+}
+
+// Load reads and validates koios.config.toml from the current working directory.
 func Load() (*Config, error) {
-	loadDotEnv(".env")
-	cfg := &Config{
-		ListenAddr:         getEnv("LISTEN_ADDR", ":8080"),
-		Provider:           getEnv("LLM_PROVIDER", "openai"),
-		APIKey:             os.Getenv("LLM_API_KEY"),
-		Model:              os.Getenv("LLM_MODEL"),
-		BaseURL:            os.Getenv("LLM_BASE_URL"),
-		MaxSessionMessages: getEnvInt("SESSION_MAX_MESSAGES", 100),
-		RequestTimeout:     getEnvDuration("REQUEST_TIMEOUT", 2*time.Minute),
-		// Phase 1
-		SessionDir: os.Getenv("SESSION_DIR"),
-		// Phase 2
-		CompactThreshold: getEnvInt("COMPACTION_THRESHOLD", 0),
-		CompactReserve:   getEnvInt("COMPACTION_RESERVE", 20),
-		// Phase 3
-		MemoryDBPath:                 os.Getenv("MEMORY_DB_PATH"),
-		EmbedModel:                   getEnv("EMBED_MODEL", "text-embedding-3-small"),
-		MemoryInject:                 getEnvBool("MEMORY_INJECT", false),
-		MemoryTopK:                   getEnvInt("MEMORY_TOP_K", 3),
-		SessionPruneKeepToolMessages: getEnvInt("SESSION_PRUNE_KEEP_TOOL_MESSAGES", 8),
-		// Phase 4: cron + heartbeat (disabled when CronDir is empty)
-		CronDir:               os.Getenv("CRON_DIR"),
-		CronMaxConcurrentRuns: getEnvInt("CRON_MAX_CONCURRENT", 1),
-		HeartbeatEvery:        getEnvDuration("HEARTBEAT_EVERY", 30*time.Minute),
-		HeartbeatEnabled:      getEnvBool("HEARTBEAT_ENABLED", true),
-		// Phase 5: agent runtime and subagents
-		AgentDir:                 os.Getenv("AGENT_DIR"),
-		AgentMaxChildren:         getEnvInt("AGENT_MAX_CHILDREN", 4),
-		AgentRetryAttempts:       getEnvInt("AGENT_RETRY_ATTEMPTS", 3),
-		AgentRetryInitialBackoff: getEnvDuration("AGENT_RETRY_INITIAL_BACKOFF", 500*time.Millisecond),
-		AgentRetryMaxBackoff:     getEnvDuration("AGENT_RETRY_MAX_BACKOFF", 5*time.Second),
-		// Security
-		AllowedOrigins: parseCSV(os.Getenv("WS_ALLOWED_ORIGINS")),
+	return LoadFromPath(DefaultConfigFile)
+}
+
+// LoadOptionalFromPath parses config when present, returning defaults otherwise.
+func LoadOptionalFromPath(path string) (*Config, bool, error) {
+	cfg := Default()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, false, nil
+		}
+		return nil, false, fmt.Errorf("read config file %s: %w", path, err)
+	}
+	fileCfg := fileConfig{}
+	if err := toml.Unmarshal(data, &fileCfg); err != nil {
+		return nil, true, fmt.Errorf("parse config file %s: %w", path, err)
+	}
+	applyFileConfig(cfg, &fileCfg)
+	resolveRelativePaths(cfg, filepath.Dir(path))
+	return cfg, true, nil
+}
+
+// LoadFromPath parses and validates a TOML config file.
+func LoadFromPath(path string) (*Config, error) {
+	cfg, exists, err := LoadOptionalFromPath(path)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("config file %s not found; run `koios init`", path)
+	}
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// DefaultTOML returns a generated starter config without private credentials.
+func DefaultTOML() string {
+	return `# Koios configuration file.
+# Generated by: koios init
+
+[server]
+listen_addr = ":8080"
+request_timeout = "2m"
+allowed_origins = []
+
+[llm]
+provider = "openai"
+model = "gpt-4o"
+# api_key = ""
+# base_url = ""
+
+[session]
+max_messages = 100
+retention = "0s"
+max_entries = 0
+idle_reset_after = "0s"
+daily_reset_time = ""
+prune_keep_tool_messages = 8
+
+[compaction]
+threshold = 0
+reserve = 20
+
+[memory]
+embed_model = "text-embedding-3-small"
+inject = false
+top_k = 3
+
+[memory.milvus]
+address = "localhost:19530"
+collection = "koios_memory"
+enabled = false
+
+[cron]
+max_concurrent = 1
+
+[heartbeat]
+enabled = true
+every = "30m"
+
+[agent]
+max_children = 4
+retry_attempts = 3
+retry_initial_backoff = "500ms"
+retry_max_backoff = "5s"
+
+[tools]
+profile = "full"
+allow = []
+deny = []
+
+[tools.exec]
+default_timeout = "30s"
+max_timeout = "5m"
+approval_mode = "dangerous"
+approval_ttl = "15m"
+
+[tools.exec.isolation]
+enabled = false
+expose_paths = []
+
+[workspace]
+root = "./workspace"
+per_agent = true
+max_file_bytes = 1048576
+`
+}
+
+// EncodeTOML renders a config in the current canonical schema.
+// When includeAPIKey is false and cfg.APIKey is empty, the key is omitted as a comment.
+func EncodeTOML(cfg *Config, includeAPIKey bool) string {
+	apiKeyLine := "# api_key = \"\""
+	if includeAPIKey || strings.TrimSpace(cfg.APIKey) != "" {
+		apiKeyLine = "api_key = " + strconv.Quote(cfg.APIKey)
+	}
+	baseURLLine := "# base_url = \"\""
+	if strings.TrimSpace(cfg.BaseURL) != "" {
+		baseURLLine = "base_url = " + strconv.Quote(cfg.BaseURL)
+	}
+	allowedOrigins := "[]"
+	if len(cfg.AllowedOrigins) > 0 {
+		quoted := make([]string, 0, len(cfg.AllowedOrigins))
+		for _, origin := range cfg.AllowedOrigins {
+			quoted = append(quoted, strconv.Quote(origin))
+		}
+		allowedOrigins = "[" + strings.Join(quoted, ", ") + "]"
+	}
+	return fmt.Sprintf(`# Koios configuration file.
+# Generated by: koios init
+
+[server]
+listen_addr = %s
+request_timeout = %s
+allowed_origins = %s
+
+[llm]
+provider = %s
+model = %s
+%s
+%s
+
+[session]
+max_messages = %d
+retention = %s
+max_entries = %d
+idle_reset_after = %s
+daily_reset_time = %s
+prune_keep_tool_messages = %d
+
+[compaction]
+threshold = %d
+reserve = %d
+
+[memory]
+embed_model = %s
+inject = %t
+top_k = %d
+
+[memory.milvus]
+address = %s
+collection = %s
+enabled = %t
+
+[cron]
+max_concurrent = %d
+
+[heartbeat]
+enabled = %t
+every = %s
+
+[agent]
+max_children = %d
+retry_attempts = %d
+retry_initial_backoff = %s
+retry_max_backoff = %s
+
+[tools]
+profile = %s
+allow = %s
+deny = %s
+
+[tools.exec]
+default_timeout = %s
+max_timeout = %s
+approval_mode = %s
+approval_ttl = %s
+
+[tools.exec.isolation]
+enabled = %t
+expose_paths = []
+
+[workspace]
+root = %s
+per_agent = %t
+max_file_bytes = %d
+`,
+		strconv.Quote(cfg.ListenAddr),
+		strconv.Quote(cfg.RequestTimeout.String()),
+		allowedOrigins,
+		strconv.Quote(cfg.Provider),
+		strconv.Quote(cfg.Model),
+		apiKeyLine,
+		baseURLLine,
+		cfg.MaxSessionMessages,
+		strconv.Quote(cfg.SessionRetention.String()),
+		cfg.SessionMaxEntries,
+		strconv.Quote(cfg.SessionIdleResetAfter.String()),
+		strconv.Quote(cfg.SessionDailyResetTime),
+		cfg.SessionPruneKeepToolMessages,
+		cfg.CompactThreshold,
+		cfg.CompactReserve,
+		strconv.Quote(cfg.EmbedModel),
+		cfg.MemoryInject,
+		cfg.MemoryTopK,
+		strconv.Quote(cfg.MilvusURL),
+		strconv.Quote(cfg.MilvusCollection),
+		cfg.MilvusEnabled,
+		cfg.CronMaxConcurrentRuns,
+		cfg.HeartbeatEnabled,
+		strconv.Quote(cfg.HeartbeatEvery.String()),
+		cfg.AgentMaxChildren,
+		cfg.AgentRetryAttempts,
+		strconv.Quote(cfg.AgentRetryInitialBackoff.String()),
+		strconv.Quote(cfg.AgentRetryMaxBackoff.String()),
+		strconv.Quote(cfg.ToolProfile),
+		quoteStringSlice(cfg.ToolsAllow),
+		quoteStringSlice(cfg.ToolsDeny),
+		strconv.Quote(cfg.ExecDefaultTimeout.String()),
+		strconv.Quote(cfg.ExecMaxTimeout.String()),
+		strconv.Quote(cfg.ExecApprovalMode),
+		strconv.Quote(cfg.ExecApprovalTTL.String()),
+		cfg.ExecIsolationEnabled,
+		strconv.Quote(cfg.WorkspaceRoot),
+		cfg.WorkspacePerAgent,
+		cfg.WorkspaceMaxBytes,
+	)
+}
+
+func applyFileConfig(dst *Config, src *fileConfig) {
+	if src.Server.ListenAddr != "" {
+		dst.ListenAddr = src.Server.ListenAddr
+	}
+	if src.Server.RequestTimeout != "" {
+		if d, err := time.ParseDuration(src.Server.RequestTimeout); err == nil {
+			dst.RequestTimeout = d
+		}
+	}
+	if src.Server.AllowedOrigins != nil {
+		dst.AllowedOrigins = src.Server.AllowedOrigins
 	}
 
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("LLM_API_KEY is required")
+	if src.LLM.Provider != "" {
+		dst.Provider = src.LLM.Provider
 	}
+	if src.LLM.APIKey != "" {
+		dst.APIKey = src.LLM.APIKey
+	}
+	if src.LLM.Model != "" {
+		dst.Model = src.LLM.Model
+	}
+	if src.LLM.BaseURL != "" {
+		dst.BaseURL = src.LLM.BaseURL
+	}
+
+	if src.Session.MaxMessages != nil && *src.Session.MaxMessages > 0 {
+		dst.MaxSessionMessages = *src.Session.MaxMessages
+	}
+	if src.Session.Retention != "" {
+		if d, err := time.ParseDuration(src.Session.Retention); err == nil {
+			dst.SessionRetention = d
+		}
+	}
+	if src.Session.MaxEntries != nil && *src.Session.MaxEntries >= 0 {
+		dst.SessionMaxEntries = *src.Session.MaxEntries
+	}
+	if src.Session.IdleResetAfter != "" {
+		if d, err := time.ParseDuration(src.Session.IdleResetAfter); err == nil {
+			dst.SessionIdleResetAfter = d
+		}
+	}
+	dst.SessionDailyResetTime = src.Session.DailyResetTime
+	if src.Session.PruneKeepToolMessages != nil && *src.Session.PruneKeepToolMessages >= 0 {
+		dst.SessionPruneKeepToolMessages = *src.Session.PruneKeepToolMessages
+	}
+
+	if src.Compaction.Threshold != nil && *src.Compaction.Threshold >= 0 {
+		dst.CompactThreshold = *src.Compaction.Threshold
+	}
+	if src.Compaction.Reserve != nil && *src.Compaction.Reserve > 0 {
+		dst.CompactReserve = *src.Compaction.Reserve
+	}
+
+	if src.Memory.EmbedModel != "" {
+		dst.EmbedModel = src.Memory.EmbedModel
+	}
+	if src.Memory.Inject != nil {
+		dst.MemoryInject = *src.Memory.Inject
+	}
+	if src.Memory.TopK != nil && *src.Memory.TopK > 0 {
+		dst.MemoryTopK = *src.Memory.TopK
+	}
+	if src.Memory.Milvus.Address != "" {
+		dst.MilvusURL = src.Memory.Milvus.Address
+	}
+	if src.Memory.Milvus.Collection != "" {
+		dst.MilvusCollection = src.Memory.Milvus.Collection
+	}
+	if src.Memory.Milvus.Enabled != nil {
+		dst.MilvusEnabled = *src.Memory.Milvus.Enabled
+	}
+
+	if src.Cron.MaxConcurrent != nil && *src.Cron.MaxConcurrent > 0 {
+		dst.CronMaxConcurrentRuns = *src.Cron.MaxConcurrent
+	}
+
+	if src.Heartbeat.Enabled != nil {
+		dst.HeartbeatEnabled = *src.Heartbeat.Enabled
+	}
+	if src.Heartbeat.Every != "" {
+		if d, err := time.ParseDuration(src.Heartbeat.Every); err == nil {
+			dst.HeartbeatEvery = d
+		}
+	}
+
+	if src.Agent.MaxChildren != nil && *src.Agent.MaxChildren > 0 {
+		dst.AgentMaxChildren = *src.Agent.MaxChildren
+	}
+	if src.Agent.RetryAttempts != nil && *src.Agent.RetryAttempts > 0 {
+		dst.AgentRetryAttempts = *src.Agent.RetryAttempts
+	}
+	if src.Agent.RetryInitialBackoff != "" {
+		if d, err := time.ParseDuration(src.Agent.RetryInitialBackoff); err == nil {
+			dst.AgentRetryInitialBackoff = d
+		}
+	}
+	if src.Agent.RetryMaxBackoff != "" {
+		if d, err := time.ParseDuration(src.Agent.RetryMaxBackoff); err == nil {
+			dst.AgentRetryMaxBackoff = d
+		}
+	}
+	if src.Tools.Profile != "" {
+		dst.ToolProfile = src.Tools.Profile
+	}
+	if src.Tools.Allow != nil {
+		dst.ToolsAllow = src.Tools.Allow
+	}
+	if src.Tools.Deny != nil {
+		dst.ToolsDeny = src.Tools.Deny
+	}
+	if src.Tools.Exec.DefaultTimeout != "" {
+		if d, err := time.ParseDuration(src.Tools.Exec.DefaultTimeout); err == nil {
+			dst.ExecDefaultTimeout = d
+		}
+	}
+	if src.Tools.Exec.MaxTimeout != "" {
+		if d, err := time.ParseDuration(src.Tools.Exec.MaxTimeout); err == nil {
+			dst.ExecMaxTimeout = d
+		}
+	}
+	if src.Tools.Exec.ApprovalMode != "" {
+		dst.ExecApprovalMode = src.Tools.Exec.ApprovalMode
+	}
+	if src.Tools.Exec.ApprovalTTL != "" {
+		if d, err := time.ParseDuration(src.Tools.Exec.ApprovalTTL); err == nil {
+			dst.ExecApprovalTTL = d
+		}
+	}
+	if src.Tools.Exec.Isolation.Enabled {
+		dst.ExecIsolationEnabled = true
+	}
+	if len(src.Tools.Exec.Isolation.ExposePaths) > 0 {
+		dst.ExecIsolationPaths = src.Tools.Exec.Isolation.ExposePaths
+	}
+	if src.Workspace.Root != "" {
+		dst.WorkspaceRoot = src.Workspace.Root
+	}
+	if src.Workspace.PerAgent != nil {
+		dst.WorkspacePerAgent = *src.Workspace.PerAgent
+	}
+	if src.Workspace.MaxBytes != nil && *src.Workspace.MaxBytes > 0 {
+		dst.WorkspaceMaxBytes = *src.Workspace.MaxBytes
+	}
+}
+
+func resolveRelativePaths(cfg *Config, root string) {
+	cfg.WorkspaceRoot = makeAbs(root, cfg.WorkspaceRoot)
+}
+
+func makeAbs(root, path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(root, path)
+}
+
+func quoteStringSlice(values []string) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			quoted = append(quoted, strconv.Quote(trimmed))
+		}
+	}
+	if len(quoted) == 0 {
+		return "[]"
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+func ParseDailyResetMinutes(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return -1, nil
+	}
+	parts := strings.Split(raw, ":")
+	if len(parts) != 2 {
+		return 0, fmt.Errorf("session.daily_reset_time must be in HH:MM format")
+	}
+	hour, err := strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 23 {
+		return 0, fmt.Errorf("session.daily_reset_time hour must be between 00 and 23")
+	}
+	minute, err := strconv.Atoi(parts[1])
+	if err != nil || minute < 0 || minute > 59 {
+		return 0, fmt.Errorf("session.daily_reset_time minute must be between 00 and 59")
+	}
+	return hour*60 + minute, nil
+}
+
+func validate(cfg *Config) error {
 	if cfg.Model == "" {
-		return nil, fmt.Errorf("LLM_MODEL is required")
+		return fmt.Errorf("llm.model is required")
 	}
 	switch cfg.Provider {
 	case "openai", "anthropic", "openrouter", "nvidia":
 	default:
-		return nil, fmt.Errorf("unsupported LLM_PROVIDER %q: must be openai, anthropic, openrouter, or nvidia", cfg.Provider)
+		return fmt.Errorf("unsupported llm.provider %q: must be openai, anthropic, openrouter, or nvidia", cfg.Provider)
 	}
-
-	return cfg, nil
-}
-
-// parseCSV splits a comma-separated string into a trimmed, non-empty slice.
-// Returns nil when the input is blank so callers can distinguish "unset" from
-// "set to empty".
-func parseCSV(s string) []string {
-	if strings.TrimSpace(s) == "" {
-		return nil
+	if cfg.MaxSessionMessages < 1 {
+		return fmt.Errorf("session.max_messages must be >= 1")
 	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
+	if cfg.SessionRetention < 0 {
+		return fmt.Errorf("session.retention must be >= 0")
+	}
+	if cfg.SessionMaxEntries < 0 {
+		return fmt.Errorf("session.max_entries must be >= 0")
+	}
+	if cfg.SessionIdleResetAfter < 0 {
+		return fmt.Errorf("session.idle_reset_after must be >= 0")
+	}
+	if _, err := ParseDailyResetMinutes(cfg.SessionDailyResetTime); err != nil {
+		return err
+	}
+	if cfg.CronMaxConcurrentRuns < 1 {
+		return fmt.Errorf("cron.max_concurrent must be >= 1")
+	}
+	if cfg.AgentMaxChildren < 1 {
+		return fmt.Errorf("agent.max_children must be >= 1")
+	}
+	if cfg.AgentRetryAttempts < 1 {
+		return fmt.Errorf("agent.retry_attempts must be >= 1")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ToolProfile)) {
+	case "", "full", "coding", "messaging", "minimal":
+	default:
+		return fmt.Errorf("tools.profile must be one of full, coding, messaging, or minimal")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ExecApprovalMode)) {
+	case "", "off", "never", "dangerous", "always":
+	default:
+		return fmt.Errorf("tools.exec.approval_mode must be one of off, never, dangerous, or always")
+	}
+	if cfg.ExecDefaultTimeout <= 0 {
+		return fmt.Errorf("tools.exec.default_timeout must be > 0")
+	}
+	if cfg.ExecMaxTimeout < cfg.ExecDefaultTimeout {
+		return fmt.Errorf("tools.exec.max_timeout must be >= tools.exec.default_timeout")
+	}
+	if cfg.ExecApprovalTTL <= 0 {
+		return fmt.Errorf("tools.exec.approval_ttl must be > 0")
+	}
+	if cfg.WorkspaceRoot == "" {
+		return fmt.Errorf("workspace.root must not be empty")
+	}
+	if cfg.WorkspaceMaxBytes < 1 {
+		return fmt.Errorf("workspace.max_file_bytes must be >= 1")
+	}
+	for i, p := range cfg.ExecIsolationPaths {
+		if p.Source == "" {
+			return fmt.Errorf("tools.exec.isolation.expose_paths[%d].source must not be empty", i)
+		}
+		if p.Mode != "ro" && p.Mode != "rw" {
+			return fmt.Errorf("tools.exec.isolation.expose_paths[%d].mode must be ro or rw", i)
 		}
 	}
-	return out
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return fallback
-}
-
-func getEnvDuration(key string, fallback time.Duration) time.Duration {
-	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			return d
-		}
-	}
-	return fallback
-}
-
-func getEnvBool(key string, fallback bool) bool {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		return fallback
-	}
-	return b
-}
-
-// loadDotEnv reads KEY=VALUE pairs from path and sets them via os.Setenv,
-// skipping keys that are already present in the environment.
-// The file is optional — a missing file is silently ignored.
-// Supported syntax:
-//   - blank lines and lines starting with # are ignored
-//   - optional export prefix is stripped (export KEY=VALUE)
-//   - values may be single- or double-quoted; quotes are stripped
-//   - inline comments (#) are not supported inside values
-func loadDotEnv(path string) {
-	f, err := os.Open(path)
-	if err != nil {
-		return // missing file is fine
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Strip optional "export " prefix.
-		line = strings.TrimPrefix(line, "export ")
-		eq := strings.IndexByte(line, '=')
-		if eq < 1 {
-			continue
-		}
-		key := strings.TrimSpace(line[:eq])
-		val := strings.TrimSpace(line[eq+1:])
-		// Strip matching surrounding quotes.
-		if len(val) >= 2 {
-			if (val[0] == '\'' && val[len(val)-1] == '\'') ||
-				(val[0] == '"' && val[len(val)-1] == '"') {
-				val = val[1 : len(val)-1]
-			}
-		}
-		// Real env vars take precedence over the file.
-		if os.Getenv(key) == "" {
-			os.Setenv(key, val)
-		}
-	}
+	return nil
 }

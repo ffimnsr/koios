@@ -49,6 +49,7 @@ func requestBuilder(ctx context.Context, h *Handler, peerID string, messages, hi
 		MemoryTopK:   h.memTopK,
 		MemoryInject: h.memInject,
 		MemoryPeerID: peerID,
+		IdentityDir:  h.identityDir,
 	})
 	if err != nil {
 		return nil, err

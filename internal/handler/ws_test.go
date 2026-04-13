@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/types"
+	"github.com/ffimnsr/koios/internal/workspace"
+	"github.com/gorilla/websocket"
 )
 
 // ── stub provider ─────────────────────────────────────────────────────────────
@@ -259,6 +260,256 @@ func TestWS_ServerCapabilities(t *testing.T) {
 	}
 	if !containsString(result.StreamEvents, "stream.delta") || !containsString(result.StreamEvents, "stream.event") {
 		t.Fatalf("expected stream notifications, got %#v", result.StreamEvents)
+	}
+}
+
+func TestWS_ServerCapabilities_WorkspaceMethods(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "caps-workspace", "server.capabilities", nil)
+	msg := readUntilID(t, conn, "caps-workspace")
+	if msg.Error != nil {
+		t.Fatalf("unexpected error: %v", msg.Error)
+	}
+	var result struct {
+		Capabilities map[string]bool `json:"capabilities"`
+		Methods      []string        `json:"methods"`
+	}
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if !result.Capabilities["workspace"] {
+		t.Fatalf("expected workspace capability, got %#v", result.Capabilities)
+	}
+	if !containsString(result.Methods, "workspace.list") || !containsString(result.Methods, "workspace.write") {
+		t.Fatalf("expected workspace methods in capabilities, got %#v", result.Methods)
+	}
+}
+
+func TestWS_WorkspaceRPC(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+
+	sendRPC(t, conn, "w1", "workspace.mkdir", map[string]any{"path": "project"})
+	msg := readUntilID(t, conn, "w1")
+	if msg.Error != nil {
+		t.Fatalf("workspace.mkdir error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "w2", "workspace.write", map[string]any{"path": "project/readme.txt", "content": "hello"})
+	msg = readUntilID(t, conn, "w2")
+	if msg.Error != nil {
+		t.Fatalf("workspace.write error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "w3", "workspace.read", map[string]any{"path": "project/readme.txt"})
+	msg = readUntilID(t, conn, "w3")
+	if msg.Error != nil {
+		t.Fatalf("workspace.read error: %#v", msg.Error)
+	}
+	var readRes struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(msg.Result, &readRes); err != nil {
+		t.Fatalf("unmarshal workspace.read result: %v", err)
+	}
+	if readRes.Content != "hello" {
+		t.Fatalf("unexpected content: %q", readRes.Content)
+	}
+
+	sendRPC(t, conn, "w4", "workspace.list", map[string]any{"path": "project"})
+	msg = readUntilID(t, conn, "w4")
+	if msg.Error != nil {
+		t.Fatalf("workspace.list error: %#v", msg.Error)
+	}
+	var listRes struct {
+		Count   int `json:"count"`
+		Entries []struct {
+			Path string `json:"path"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(msg.Result, &listRes); err != nil {
+		t.Fatalf("unmarshal workspace.list result: %v", err)
+	}
+	if listRes.Count == 0 {
+		t.Fatalf("expected at least one workspace entry")
+	}
+
+	sendRPC(t, conn, "w5", "workspace.delete", map[string]any{"path": "project/readme.txt"})
+	msg = readUntilID(t, conn, "w5")
+	if msg.Error != nil {
+		t.Fatalf("workspace.delete error: %#v", msg.Error)
+	}
+}
+
+func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:    "test-model",
+		Timeout:  5 * time.Second,
+		MemStore: memStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "m1", "memory.insert", map[string]any{"content": "remember this"})
+	msg := readUntilID(t, conn, "m1")
+	if msg.Error != nil {
+		t.Fatalf("memory.insert error: %#v", msg.Error)
+	}
+	var insertRes struct {
+		Chunk struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(msg.Result, &insertRes); err != nil {
+		t.Fatalf("unmarshal memory.insert result: %v", err)
+	}
+	if insertRes.Chunk.ID == "" {
+		t.Fatal("expected inserted chunk id")
+	}
+
+	sendRPC(t, conn, "m2", "memory.get", map[string]any{"id": insertRes.Chunk.ID})
+	msg = readUntilID(t, conn, "m2")
+	if msg.Error != nil {
+		t.Fatalf("memory.get error: %#v", msg.Error)
+	}
+	var getRes struct {
+		Chunk struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(msg.Result, &getRes); err != nil {
+		t.Fatalf("unmarshal memory.get result: %v", err)
+	}
+	if getRes.Chunk.Content != "remember this" {
+		t.Fatalf("unexpected memory chunk content: %q", getRes.Chunk.Content)
+	}
+}
+
+func TestWS_ExecApprovalFlow(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 2048)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	if _, err := wsStore.Write("alice", "doomed/file.txt", "bye", false); err != nil {
+		t.Fatalf("workspace write setup: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		ExecConfig: handler.ExecConfig{
+			DefaultTimeout: 5 * time.Second,
+			MaxTimeout:     10 * time.Second,
+			ApprovalMode:   "dangerous",
+			ApprovalTTL:    time.Minute,
+		},
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "e1", "exec", map[string]any{"command": "rm -rf doomed"})
+	msg := readUntilID(t, conn, "e1")
+	if msg.Error != nil {
+		t.Fatalf("exec error: %#v", msg.Error)
+	}
+	var execRes struct {
+		Status   string `json:"status"`
+		Approval struct {
+			ID string `json:"id"`
+		} `json:"approval"`
+	}
+	if err := json.Unmarshal(msg.Result, &execRes); err != nil {
+		t.Fatalf("unmarshal exec result: %v", err)
+	}
+	if execRes.Status != "approval_required" || execRes.Approval.ID == "" {
+		t.Fatalf("expected approval_required result, got %#v", execRes)
+	}
+
+	sendRPC(t, conn, "e2", "exec.approve", map[string]any{"id": execRes.Approval.ID})
+	msg = readUntilID(t, conn, "e2")
+	if msg.Error != nil {
+		t.Fatalf("exec.approve error: %#v", msg.Error)
+	}
+	if _, err := wsStore.Read("alice", "doomed/file.txt"); err == nil {
+		t.Fatal("expected approved exec to remove workspace file")
+	}
+}
+
+func TestToolDefinitionsHonorPolicy(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		MemStore:       memStore,
+		ToolPolicy: handler.ToolPolicy{
+			Allow: []string{"read", "memory.get", "time.now"},
+			Deny:  []string{"memory.get"},
+		},
+	})
+	names := []string{}
+	for _, tool := range h.ToolDefinitions("alice") {
+		names = append(names, tool.Function.Name)
+	}
+	if !containsString(names, "read") {
+		t.Fatalf("expected read tool, got %#v", names)
+	}
+	if containsString(names, "memory.get") {
+		t.Fatalf("expected memory.get to be denied, got %#v", names)
+	}
+	if containsString(names, "exec") {
+		t.Fatalf("expected exec to be excluded by allow list, got %#v", names)
 	}
 }
 

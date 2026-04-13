@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ffimnsr/koios/internal/memory"
+	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/requestctx"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
@@ -133,6 +134,11 @@ type Runtime struct {
 	memInject         bool
 	pruneToolMessages int
 	standingManager   *standing.Manager
+	hooks             *ops.Manager
+	identityDir       string
+
+	steeringMu     sync.Mutex
+	steeringQueues map[string][]string // sessionKey → pending user messages
 }
 
 // Model returns the configured model name.
@@ -162,6 +168,52 @@ func (rt *Runtime) SetPruning(keepToolMessages int) {
 
 func (rt *Runtime) SetStandingOrders(manager *standing.Manager) {
 	rt.standingManager = manager
+}
+
+// SetHooks configures lifecycle hooks for runtime events.
+func (rt *Runtime) SetHooks(hooks *ops.Manager) {
+	rt.hooks = hooks
+}
+
+// SetIdentityDir configures the workspace root directory from which identity
+// files (AGENTS.md, SOUL.md, USER.md, IDENTITY.md) are injected into every
+// system prompt.
+func (rt *Runtime) SetIdentityDir(dir string) {
+	rt.identityDir = dir
+}
+
+// Steer enqueues a user message to be injected into the next loop iteration
+// for the given session. A maximum of 10 messages may be queued at once.
+func (rt *Runtime) Steer(sessionKey, message string) error {
+	if sessionKey == "" {
+		return fmt.Errorf("session_key is required")
+	}
+	if message == "" {
+		return fmt.Errorf("message is required")
+	}
+	rt.steeringMu.Lock()
+	defer rt.steeringMu.Unlock()
+	if rt.steeringQueues == nil {
+		rt.steeringQueues = make(map[string][]string)
+	}
+	q := rt.steeringQueues[sessionKey]
+	if len(q) >= 10 {
+		return fmt.Errorf("steering queue full for session %s", sessionKey)
+	}
+	rt.steeringQueues[sessionKey] = append(q, message)
+	return nil
+}
+
+// drainSteering returns and removes any queued steering messages for sessionKey.
+func (rt *Runtime) drainSteering(sessionKey string) []string {
+	rt.steeringMu.Lock()
+	defer rt.steeringMu.Unlock()
+	msgs := rt.steeringQueues[sessionKey]
+	if len(msgs) == 0 {
+		return nil
+	}
+	delete(rt.steeringQueues, sessionKey)
+	return msgs
 }
 
 // NewRuntime creates a runtime.
@@ -240,6 +292,13 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		result.Steps = step
 		rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventStepStart, SessionKey: sessionKey, Step: step})
 
+		// Poll for pending steering messages before building the next request context.
+		if steered := rt.drainSteering(sessionKey); len(steered) > 0 {
+			for _, msg := range steered {
+				workingMessages = append(workingMessages, types.Message{Role: "user", Content: msg})
+			}
+		}
+
 		history := rt.store.Get(sessionKey).History()
 		stepMessages := append([]types.Message(nil), workingMessages...)
 		if reqCopy.ToolExecutor != nil {
@@ -263,6 +322,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			MemoryTopK:        rt.memTopK,
 			MemoryInject:      rt.memInject,
 			MemoryPeerID:      reqCopy.PeerID,
+			IdentityDir:       rt.identityDir,
 		})
 		if err != nil {
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Step: step, Error: err.Error()})
@@ -313,11 +373,42 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			if err == nil {
 				if reqCopy.ToolExecutor != nil && resp != nil {
 					if toolCalls := nativeToolCalls(resp); len(toolCalls) > 0 {
+						toolLoopAborted := false
 						for _, tc := range toolCalls {
 							tc.Name = normalizeToolName(reqCopy.ToolExecutor, reqCopy.PeerID, tc.Name)
+							if err := rt.emitHook(callCtx, ops.Event{
+								Name:       ops.HookBeforeToolCall,
+								PeerID:     reqCopy.PeerID,
+								SessionKey: sessionKey,
+								Data: map[string]any{
+									"tool": tc.Name,
+									"step": step,
+								},
+							}); err != nil {
+								lastErr = err
+								rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: err.Error()})
+								toolLoopAborted = true
+								break
+							}
 							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: tc.Name})
 							toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(attemptCtx, reqCopy.PeerID, tc)
 							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: tc.Name})
+							if hookErr := rt.emitHook(callCtx, ops.Event{
+								Name:       ops.HookAfterToolCall,
+								PeerID:     reqCopy.PeerID,
+								SessionKey: sessionKey,
+								Data: map[string]any{
+									"tool":  tc.Name,
+									"step":  step,
+									"ok":    execErr == nil,
+									"error": errString(execErr),
+								},
+							}); hookErr != nil {
+								lastErr = hookErr
+								rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: hookErr.Error()})
+								toolLoopAborted = true
+								break
+							}
 							workingMessages = append(workingMessages,
 								types.Message{Role: "assistant", Content: assistantText, ToolCalls: []types.ToolCall{{
 									ID:   tc.ID,
@@ -332,6 +423,17 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 							if execErr != nil {
 								lastErr = execErr
 							}
+							// Check for incoming steering messages after each tool;
+							// if present, skip remaining tool calls in this batch.
+							if steered := rt.drainSteering(sessionKey); len(steered) > 0 {
+								for _, msg := range steered {
+									workingMessages = append(workingMessages, types.Message{Role: "user", Content: msg})
+								}
+								break
+							}
+						}
+						if toolLoopAborted {
+							break
 						}
 						advanceStep = true
 						break
@@ -344,9 +446,37 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 					}
 					if ok {
 						call.Name = normalizeToolName(reqCopy.ToolExecutor, reqCopy.PeerID, call.Name)
+						if err := rt.emitHook(callCtx, ops.Event{
+							Name:       ops.HookBeforeToolCall,
+							PeerID:     reqCopy.PeerID,
+							SessionKey: sessionKey,
+							Data: map[string]any{
+								"tool": call.Name,
+								"step": step,
+							},
+						}); err != nil {
+							lastErr = err
+							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: err.Error()})
+							break
+						}
 						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: call.Name})
 						toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(attemptCtx, reqCopy.PeerID, *call)
 						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name})
+						if hookErr := rt.emitHook(callCtx, ops.Event{
+							Name:       ops.HookAfterToolCall,
+							PeerID:     reqCopy.PeerID,
+							SessionKey: sessionKey,
+							Data: map[string]any{
+								"tool":  call.Name,
+								"step":  step,
+								"ok":    execErr == nil,
+								"error": errString(execErr),
+							},
+						}); hookErr != nil {
+							lastErr = hookErr
+							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: hookErr.Error()})
+							break
+						}
 						workingMessages = append(workingMessages,
 							types.Message{Role: "assistant", Content: assistantText},
 							types.Message{Role: "user", Content: formatToolResult(call.Name, toolResult, execErr)},
@@ -403,26 +533,52 @@ func (rt *Runtime) standingSystemMessages(req RunRequest) ([]types.Message, erro
 }
 
 func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bool, sink *captureResponseWriter) (string, *types.ChatResponse, error) {
+	if err := rt.emitHook(ctx, ops.Event{
+		Name: ops.HookBeforeLLM,
+		Data: map[string]any{
+			"model":          req.Model,
+			"messages_count": len(req.Messages),
+			"stream":         stream,
+		},
+	}); err != nil {
+		return "", nil, err
+	}
+	var text string
+	var resp *types.ChatResponse
+	var callErr error
 	if stream {
 		if sink == nil {
 			return "", nil, fmt.Errorf("stream sink is required")
 		}
-		text, err := rt.prov.CompleteStream(ctx, req, sink)
-		if err != nil {
-			return text, nil, err
+		var streamText string
+		streamText, callErr = rt.prov.CompleteStream(ctx, req, sink)
+		if callErr == nil {
+			text = streamText
+			resp = &types.ChatResponse{
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: streamText}}},
+			}
 		}
-		return text, &types.ChatResponse{
-			Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: text}}},
-		}, nil
+	} else {
+		resp, callErr = rt.prov.Complete(ctx, req)
+		if callErr == nil {
+			if len(resp.Choices) == 0 {
+				callErr = fmt.Errorf("empty response from provider")
+			} else {
+				text = resp.Choices[0].Message.Content
+			}
+		}
 	}
-	resp, err := rt.prov.Complete(ctx, req)
-	if err != nil {
-		return "", nil, err
+	if callErr != nil {
+		return text, nil, callErr
 	}
-	if len(resp.Choices) == 0 {
-		return "", nil, fmt.Errorf("empty response from provider")
-	}
-	return resp.Choices[0].Message.Content, resp, nil
+	_ = rt.emitHook(ctx, ops.Event{
+		Name: ops.HookAfterLLM,
+		Data: map[string]any{
+			"model":  req.Model,
+			"stream": stream,
+		},
+	})
+	return text, resp, nil
 }
 
 func (rt *Runtime) persistTurn(sessionKey string, userMsgs []types.Message, assistantText string, resp *types.ChatResponse) {
@@ -561,6 +717,20 @@ func (rt *Runtime) emitEvent(result *Result, sink func(Event), ev Event) {
 	if sink != nil {
 		sink(ev)
 	}
+}
+
+func (rt *Runtime) emitHook(ctx context.Context, ev ops.Event) error {
+	if rt == nil || rt.hooks == nil {
+		return nil
+	}
+	return rt.hooks.Emit(ctx, ev)
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // captureResponseWriter buffers SSE output for retryable streaming calls.

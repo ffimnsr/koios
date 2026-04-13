@@ -201,7 +201,9 @@ func (r *Runtime) Steer(id, note string) (*RunRecord, error) {
 	if rec.Status != StatusRunning && rec.Status != StatusQueued {
 		return nil, fmt.Errorf("run %s is not active (status: %s)", id, rec.Status)
 	}
-	r.store.AppendWithSource(rec.SessionKey, "subagent", types.Message{Role: "system", Content: "[steer] " + note})
+	if err := r.agent.Steer(rec.SessionKey, note); err != nil {
+		return nil, err
+	}
 	updated, _ := r.reg.Update(id, func(record *RunRecord) {
 		record.Steering = append(record.Steering, note)
 		record.Events = append(record.Events, LifecycleEvent{At: time.Now().UTC(), Type: "steer", Message: note})
