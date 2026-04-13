@@ -1,0 +1,6 @@
+tasks:
+  dev:
+    commands:
+      - command: go run .
+        retrigger: true
+    description: Run the application in development mode

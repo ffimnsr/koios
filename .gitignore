@@ -1,0 +1,38 @@
+# Go build outputs
+bin/
+koios
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Coverage and profiling
+coverage.out
+cover.out
+*.prof
+cpu.prof
+mem.prof
+
+# Workspace and dependency caches
+vendor/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+*.md
+!README.md
+
+.env
+.env.*
+!.env.sample
+
+/data/
