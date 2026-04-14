@@ -70,6 +70,38 @@ func TestSetupCreatesEnvFromSample(t *testing.T) {
 	}
 }
 
+func TestScaffoldWorkspaceCreatesBootstrapDocs(t *testing.T) {
+	root := t.TempDir()
+	if err := scaffoldWorkspace(root, false); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, subdir := range []string{"sessions", "cron", "agents", "memory"} {
+		if info, err := os.Stat(filepath.Join(root, subdir)); err != nil || !info.IsDir() {
+			t.Fatalf("expected subdir %q to exist, err=%v", subdir, err)
+		}
+	}
+
+	files := []string{
+		"AGENTS.md",
+		"SOUL.md",
+		"USER.md",
+		"IDENTITY.md",
+		"BOOTSTRAP.md",
+		"TOOLS.md",
+		"HEARTBEAT.md",
+	}
+	for _, name := range files {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if strings.TrimSpace(string(data)) == "" {
+			t.Fatalf("%s should not be empty", name)
+		}
+	}
+}
+
 func TestBackupCreateAndVerify(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(config.DefaultTOML()), 0o600); err != nil {

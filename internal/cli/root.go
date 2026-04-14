@@ -1295,33 +1295,39 @@ func mapPaths(paths []string, prefix string) []string {
 	return out
 }
 
-// scaffoldWorkspace creates workspace subdirectories and identity template files.
-// If force is true, existing identity files are overwritten.
+// scaffoldWorkspace creates workspace subdirectories and starter workspace docs.
+// If force is true, existing files are overwritten.
 func scaffoldWorkspace(root string, force bool) error {
 	if root == "" {
 		return fmt.Errorf("workspace.root is not configured")
 	}
-	subdirs := []string{"sessions", "cron", "agents"}
+	subdirs := []string{"sessions", "cron", "agents", "memory"}
 	for _, sub := range subdirs {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return fmt.Errorf("creating %s/: %w", sub, err)
 		}
 	}
-	templates := map[string]string{
-		"AGENTS.md":   "# Agent Instructions\n\nDescribe how the agent should behave in this workspace.\n",
-		"SOUL.md":     "# Personality\n\nDescribe the agent's personality and communication style.\n",
-		"USER.md":     "# User Context\n\nDescribe who the user is and any preferences the agent should respect.\n",
-		"IDENTITY.md": "# Identity\n\nDescribe the agent's identity and purpose.\n",
+	templates := []struct {
+		name    string
+		content string
+	}{
+		{name: "AGENTS.md", content: scaffoldAgentsTemplate},
+		{name: "SOUL.md", content: scaffoldSoulTemplate},
+		{name: "USER.md", content: scaffoldUserTemplate},
+		{name: "IDENTITY.md", content: scaffoldIdentityTemplate},
+		{name: "BOOTSTRAP.md", content: scaffoldBootstrapTemplate},
+		{name: "TOOLS.md", content: scaffoldToolsTemplate},
+		{name: "HEARTBEAT.md", content: scaffoldHeartbeatTemplate},
 	}
-	for name, content := range templates {
-		path := filepath.Join(root, name)
+	for _, tpl := range templates {
+		path := filepath.Join(root, tpl.name)
 		if !force {
 			if _, err := os.Stat(path); err == nil {
 				continue // already exists, skip
 			}
 		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			return fmt.Errorf("writing %s: %w", name, err)
+		if err := os.WriteFile(path, []byte(tpl.content), 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", tpl.name, err)
 		}
 	}
 	return nil
@@ -1331,7 +1337,7 @@ func newSetupCommand(ctx *commandContext) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Scaffold workspace directories and identity template files",
+		Short: "Scaffold workspace directories and starter workspace docs",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := ctx.state()
 			if err != nil {
@@ -1351,6 +1357,6 @@ func newSetupCommand(ctx *commandContext) *cobra.Command {
 		},
 		Args: cobra.NoArgs,
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing identity files")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing starter workspace files")
 	return cmd
 }

@@ -28,15 +28,14 @@ Thumbs.db
 *.swo
 *~
 
-*.md
+/*.md
 !README.md
 !ISSUES.md
 
 .env
 .env.*
-!.env.sample
 
 /data/
 
 koios.config.toml
-workspace/
+/workspace/

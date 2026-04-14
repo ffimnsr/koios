@@ -447,7 +447,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] `TOOLS.md` injected prompt template
 	- Research notes: IronClaw is the strongest direct reference because `TOOLS.md` is already a known workspace document in its runtime. OpenClaw's skills/prompt injection system is the best secondary reference. PicoClaw did not surface an equivalent first-class file in the current search.
 	- References: OpenClaw `src/agents/skills.ts`, `docs/tools/skills.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/workspace/document.rs`, `CLAUDE.md`.
-- [ ] `BOOTSTRAP.md` template
+- [x] `BOOTSTRAP.md` template
 	- Research notes: IronClaw is again the clearest direct reference because `BOOTSTRAP.md` is already part of its workspace document model. OpenClaw's onboarding and skill-managed prompt injection are useful design references for how bootstrap content reaches the agent. PicoClaw did not surface a first-class equivalent in the current search.
 	- References: OpenClaw `src/commands/onboard-skills.ts`, `docs/tools/skills.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/workspace/document.rs`, `src/setup/README.md`.
 - [ ] `IDENTITY.md` support as a first-class bootstrap file
