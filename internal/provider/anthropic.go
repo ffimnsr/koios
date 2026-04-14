@@ -77,7 +77,7 @@ type anthropicUsage struct {
 
 // anthropicImageBlock is an image content block for Anthropic multimodal requests.
 type anthropicImageBlock struct {
-	Type   string                   `json:"type"` // "image"
+	Type   string                    `json:"type"` // "image"
 	Source anthropicImageBlockSource `json:"source"`
 }
 

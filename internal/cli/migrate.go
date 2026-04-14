@@ -94,11 +94,7 @@ func newMigrateCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate",
 		Short: "Migrate koios.config.toml to the current schema",
-		Long: `Detect and apply schema migrations in koios.config.toml.
-
-The command re-parses the config using the current schema, then rewrites the
-file in canonical form so that any renamed or relocated keys are updated.
-A .bak file is created unless --no-backup is specified.`,
+		Long:  migrateLongHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := ctx.state()
 			if err != nil {

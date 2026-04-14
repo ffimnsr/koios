@@ -127,13 +127,8 @@ func newModelSetCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set <model>",
 		Short: "Set the default model in koios.config.toml",
-		Long: `Set the default LLM model. To use a named profile as the default,
-pass the profile's model ID. To also change the provider or base URL, use --provider and --base-url.
-
-Example:
-  koios model set gpt-4o
-  koios model set claude-3-5-sonnet-20241022 --provider anthropic`,
-		Args: cobra.ExactArgs(1),
+		Long:  modelSetLongHelp,
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := ctx.state()
 			if err != nil {

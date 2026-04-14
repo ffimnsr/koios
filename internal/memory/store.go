@@ -232,11 +232,7 @@ func (s *Store) Recent(ctx context.Context, peerID string, n int) ([]Chunk, erro
 	if n <= 0 {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,'')
-		   FROM chunks WHERE peer_id = ?
-		  ORDER BY created_at DESC LIMIT ?`,
-		peerID, n)
+	rows, err := s.db.QueryContext(ctx, recentChunksQuery, peerID, n)
 	if err != nil {
 		return nil, fmt.Errorf("memory recent: %w", err)
 	}
@@ -417,11 +413,7 @@ func (s *Store) Timeline(ctx context.Context, peerID, anchorID string, depthBefo
 	}
 	var chunks []Chunk
 	// Before (older).
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,'')
-		   FROM chunks WHERE peer_id = ? AND created_at < ?
-		  ORDER BY created_at DESC LIMIT ?`,
-		peerID, anchorTime, depthBefore)
+	rows, err := s.db.QueryContext(ctx, timelineBeforeQuery, peerID, anchorTime, depthBefore)
 	if err != nil {
 		return nil, fmt.Errorf("memory timeline before: %w", err)
 	}
@@ -448,11 +440,7 @@ func (s *Store) Timeline(ctx context.Context, peerID, anchorID string, depthBefo
 		chunks = append(chunks, *anchor)
 	}
 	// After (newer).
-	rows2, err := s.db.QueryContext(ctx,
-		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,'')
-		   FROM chunks WHERE peer_id = ? AND created_at > ?
-		  ORDER BY created_at ASC LIMIT ?`,
-		peerID, anchorTime, depthAfter)
+	rows2, err := s.db.QueryContext(ctx, timelineAfterQuery, peerID, anchorTime, depthAfter)
 	if err != nil {
 		return nil, fmt.Errorf("memory timeline after: %w", err)
 	}
@@ -483,9 +471,7 @@ func (s *Store) BatchGet(ctx context.Context, peerID string, ids []string) ([]Ch
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
-	query := `SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,'')
-	            FROM chunks WHERE peer_id = ? AND id IN (` + strings.Join(placeholders, ",") + `)
-	           ORDER BY created_at DESC`
+	query := fmt.Sprintf(batchGetQueryTemplate, strings.Join(placeholders, ","))
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("memory batch_get: %w", err)
@@ -522,9 +508,7 @@ func (s *Store) Stats(ctx context.Context, peerID string) (*MemoryStats, error) 
 	if err != nil {
 		return nil, fmt.Errorf("memory stats: %w", err)
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT COALESCE(NULLIF(category,''),'uncategorized'), COUNT(*)
-		   FROM chunks WHERE peer_id = ? GROUP BY category`, peerID)
+	rows, err := s.db.QueryContext(ctx, statsByCategoryQuery, peerID)
 	if err != nil {
 		return nil, fmt.Errorf("memory stats categories: %w", err)
 	}
@@ -648,14 +632,7 @@ func mergeResults(bm25, milvusRes []SearchResult, topK int) []SearchResult {
 }
 
 func (s *Store) bm25Search(ctx context.Context, peerID, query string, limit int) ([]SearchResult, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, peer_id, content, rank
-   FROM chunks_fts
-  WHERE chunks_fts MATCH ?
-    AND peer_id = ?
-  ORDER BY rank
-  LIMIT ?`,
-		query, peerID, limit)
+	rows, err := s.db.QueryContext(ctx, bm25SearchQuery, query, peerID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("memory bm25: %w", err)
 	}
@@ -705,26 +682,7 @@ func (s *Store) loadEmbedding(chunkID string) ([]float32, error) {
 // — schema ————————————————————————————————————————————————————————————————————
 
 func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
-CREATE TABLE IF NOT EXISTS chunks (
-id         TEXT PRIMARY KEY,
-peer_id    TEXT NOT NULL,
-content    TEXT NOT NULL,
-created_at INTEGER NOT NULL,
-tags       TEXT NOT NULL DEFAULT '',
-category   TEXT NOT NULL DEFAULT ''
-);
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-id      UNINDEXED,
-peer_id UNINDEXED,
-content,
-tokenize = 'unicode61 remove_diacritics 2'
-);
-CREATE TABLE IF NOT EXISTS chunk_embeddings (
-chunk_id  TEXT PRIMARY KEY,
-embedding BLOB NOT NULL
-);
-`)
+	_, err := db.Exec(schemaSQL)
 	if err != nil {
 		return err
 	}

@@ -169,16 +169,7 @@ func TestHealthStatusAndCronOverTestServer(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	toml := fmt.Sprintf(`[server]
-listen_addr = %q
-
-[llm]
-model = "gpt-4o"
-api_key = "test-key"
-
-[cron]
-dir = "./data/cron"
-`, server.URL)
+	toml := fmt.Sprintf(healthStatusConfigTemplate, server.URL)
 	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -247,13 +238,7 @@ func TestAgentOneShotCommand(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	toml := fmt.Sprintf(`[server]
-listen_addr = %q
-
-[llm]
-model = "gpt-4o"
-api_key = "test-key"
-`, server.URL)
+	toml := fmt.Sprintf(agentOneShotConfigTemplate, server.URL)
 	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}

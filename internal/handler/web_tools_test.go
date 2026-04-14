@@ -10,16 +10,7 @@ import (
 )
 
 func TestParseDuckDuckGoResults(t *testing.T) {
-	html := `
-<div class="result__body">
-  <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fone">Result One</a>
-  <a class="result__snippet">Snippet one</a>
-</div>
-<div class="result__body">
-  <a class="result__a" href="https://example.com/two">Result Two</a>
-  <div class="result__snippet">Snippet two</div>
-</div>`
-	results := parseDuckDuckGoResults(html, 10)
+	results := parseDuckDuckGoResults(duckDuckGoResultsFixture, 10)
 	if len(results) != 2 {
 		t.Fatalf("len(results)=%d", len(results))
 	}

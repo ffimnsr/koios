@@ -4,3 +4,10 @@ tasks:
       - command: go run .
         retrigger: true
     description: Run the application in development mode
+  format:
+    commands:
+      - command: go fmt ./...
+    description: Format the code using go fmt
+  lint:
+    commands:
+      

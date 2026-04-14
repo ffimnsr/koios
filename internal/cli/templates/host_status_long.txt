@@ -1,0 +1,22 @@
+Display host-level metrics from the machine where the Koios gateway is running.
+
+Covers the same surface as prometheus/node_exporter default collectors (Linux):
+  uname        - kernel / hostname
+  os           - OS release info
+  cpu          - logical CPUs, model, per-CPU usage
+  cpufreq      - per-CPU frequency (MHz)
+  loadavg      - 1m / 5m / 15m load averages
+  meminfo      - RAM and swap utilisation
+  filesystem   - per-mount disk space (excludes virtual FSes)
+  diskstats    - per-device I/O counters
+  netdev       - per-interface network byte/packet counters
+  netstat      - TCP/UDP protocol counters
+  sockstat     - socket counts (/proc/net/sockstat)
+  stat         - forks, context switches, procs running/blocked
+  vmstat       - page faults, OOM kills, swap I/O
+  entropy      - available kernel entropy
+  filefd       - allocated/maximum file descriptors
+  pressure     - PSI (Pressure Stall Information) for cpu, memory, io
+  conntrack    - netfilter connection tracking counts
+  thermal_zone - sensor temperatures
+  dmi          - DMI/SMBIOS hardware identity

@@ -30,6 +30,7 @@ Thumbs.db
 
 *.md
 !README.md
+!ISSUES.md
 
 .env
 .env.*
