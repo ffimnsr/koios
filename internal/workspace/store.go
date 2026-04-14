@@ -26,6 +26,15 @@ type EditResult struct {
 	Bytes        int    `json:"bytes"`
 }
 
+// ReadResult describes the content returned from a workspace read.
+type ReadResult struct {
+	Path       string `json:"path"`
+	Content    string `json:"content"`
+	StartLine  int    `json:"start_line"`
+	EndLine    int    `json:"end_line"`
+	TotalLines int    `json:"total_lines"`
+}
+
 // Manager provides safe, peer-scoped filesystem operations.
 type Manager struct {
 	root         string
@@ -75,25 +84,69 @@ func (m *Manager) EnsurePeer(peerID string) (string, error) {
 }
 
 func (m *Manager) Read(peerID, relPath string) (string, error) {
-	target, err := m.resolve(peerID, relPath)
+	result, err := m.ReadRange(peerID, relPath, 0, 0)
 	if err != nil {
 		return "", err
+	}
+	return result.Content, nil
+}
+
+func (m *Manager) ReadRange(peerID, relPath string, startLine, endLine int) (*ReadResult, error) {
+	target, err := m.resolve(peerID, relPath)
+	if err != nil {
+		return nil, err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("path is a directory")
+		return nil, fmt.Errorf("path is a directory")
 	}
 	if info.Size() > int64(m.maxFileBytes) {
-		return "", fmt.Errorf("file exceeds max bytes %d", m.maxFileBytes)
+		return nil, fmt.Errorf("file exceeds max bytes %d", m.maxFileBytes)
 	}
 	b, err := os.ReadFile(target)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return string(b), nil
+	content := string(b)
+	lines := splitLinesKeepNewline(content)
+	totalLines := len(lines)
+	if totalLines == 0 {
+		return &ReadResult{
+			Path:       relPath,
+			Content:    "",
+			StartLine:  0,
+			EndLine:    0,
+			TotalLines: 0,
+		}, nil
+	}
+	if startLine < 0 {
+		return nil, fmt.Errorf("start_line must be >= 1")
+	}
+	if endLine < 0 {
+		return nil, fmt.Errorf("end_line must be >= 1")
+	}
+	if startLine == 0 {
+		startLine = 1
+	}
+	if endLine == 0 || endLine > totalLines {
+		endLine = totalLines
+	}
+	if startLine > totalLines {
+		return nil, fmt.Errorf("start_line %d exceeds total lines %d", startLine, totalLines)
+	}
+	if endLine < startLine {
+		return nil, fmt.Errorf("end_line must be >= start_line")
+	}
+	return &ReadResult{
+		Path:       relPath,
+		Content:    strings.Join(lines[startLine-1:endLine], ""),
+		StartLine:  startLine,
+		EndLine:    endLine,
+		TotalLines: totalLines,
+	}, nil
 }
 
 func (m *Manager) Write(peerID, relPath, content string, appendMode bool) (string, error) {
@@ -296,4 +349,15 @@ func sanitizePeerID(peerID string) string {
 		return "default"
 	}
 	return safe
+}
+
+func splitLinesKeepNewline(content string) []string {
+	if content == "" {
+		return nil
+	}
+	lines := strings.SplitAfter(content, "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }

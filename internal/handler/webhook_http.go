@@ -6,9 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/presence"
+	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/types"
 )
@@ -18,20 +20,29 @@ type WebhookHTTPHandler struct {
 	store    *session.Store
 	hooks    *ops.Manager
 	presence *presence.Manager
+	jobStore *scheduler.JobStore
+	sched    *scheduler.Scheduler
 	token    string
 }
 
-func NewWebhookHTTPHandler(store *session.Store, hooks *ops.Manager, p *presence.Manager, token string) *WebhookHTTPHandler {
-	return &WebhookHTTPHandler{store: store, hooks: hooks, presence: p, token: strings.TrimSpace(token)}
+func NewWebhookHTTPHandler(store *session.Store, hooks *ops.Manager, p *presence.Manager, jobStore *scheduler.JobStore, sched *scheduler.Scheduler, token string) *WebhookHTTPHandler {
+	return &WebhookHTTPHandler{store: store, hooks: hooks, presence: p, jobStore: jobStore, sched: sched, token: strings.TrimSpace(token)}
 }
 
 type webhookEventRequest struct {
-	Type    string         `json:"type"`
-	PeerID  string         `json:"peer_id"`
-	Source  string         `json:"source,omitempty"`
-	Message *types.Message `json:"message,omitempty"`
-	Status  string         `json:"status,omitempty"`
-	Typing  *bool          `json:"typing,omitempty"`
+	Type           string              `json:"type"`
+	PeerID         string              `json:"peer_id"`
+	Source         string              `json:"source,omitempty"`
+	Message        *types.Message      `json:"message,omitempty"`
+	Status         string              `json:"status,omitempty"`
+	Typing         *bool               `json:"typing,omitempty"`
+	JobID          string              `json:"job_id,omitempty"`
+	Name           string              `json:"name,omitempty"`
+	Schedule       *scheduler.Schedule `json:"schedule,omitempty"`
+	Payload        *scheduler.Payload  `json:"payload,omitempty"`
+	Enabled        *bool               `json:"enabled,omitempty"`
+	DeleteAfterRun *bool               `json:"delete_after_run,omitempty"`
+	Description    string              `json:"description,omitempty"`
 }
 
 func (h *WebhookHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -85,10 +96,30 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) error {
 		if strings.TrimSpace(msg.Role) == "" {
 			return errors.New("message.role is required")
 		}
+		if h.hooks != nil {
+			if err := h.hooks.Emit(context.Background(), ops.Event{
+				Name:   ops.HookBeforeMessage,
+				PeerID: req.PeerID,
+				Data: map[string]any{
+					"method": "webhook.message.append",
+					"source": source,
+				},
+			}); err != nil {
+				return err
+			}
+		}
 		h.store.AppendWithSource(req.PeerID, source, msg)
 		if h.hooks != nil {
 			_ = h.hooks.Emit(context.Background(), ops.Event{
 				Name:   ops.HookMessageReceived,
+				PeerID: req.PeerID,
+				Data: map[string]any{
+					"method": "webhook.message.append",
+					"source": source,
+				},
+			})
+			_ = h.hooks.Emit(context.Background(), ops.Event{
+				Name:   ops.HookAfterMessage,
 				PeerID: req.PeerID,
 				Data: map[string]any{
 					"method": "webhook.message.append",
@@ -107,6 +138,43 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) error {
 		}
 		h.presence.Set(req.PeerID, req.Status, typing, source)
 		return nil
+	case "cron.trigger":
+		if h.sched == nil || h.jobStore == nil {
+			return errors.New("cron is not enabled")
+		}
+		if strings.TrimSpace(req.JobID) == "" {
+			return errors.New("job_id is required for cron.trigger")
+		}
+		job := h.jobStore.Get(req.JobID)
+		if job == nil || job.PeerID != req.PeerID {
+			return errors.New("job not found")
+		}
+		_, err := h.sched.TriggerRun(req.JobID)
+		return err
+	case "cron.schedule":
+		if h.sched == nil || h.jobStore == nil {
+			return errors.New("cron is not enabled")
+		}
+		if strings.TrimSpace(req.Name) == "" {
+			req.Name = "webhook-scheduled"
+		}
+		if req.Schedule == nil {
+			now := time.Now().UTC().Format(time.RFC3339)
+			req.Schedule = &scheduler.Schedule{Kind: scheduler.KindAt, At: now}
+		}
+		if req.Payload == nil {
+			return errors.New("payload is required for cron.schedule")
+		}
+		tmp := &Handler{jobStore: h.jobStore, sched: h.sched}
+		_, err := tmp.createCronJob(req.PeerID, cronCreateParams{
+			Name:           req.Name,
+			Description:    req.Description,
+			Schedule:       *req.Schedule,
+			Payload:        *req.Payload,
+			Enabled:        req.Enabled,
+			DeleteAfterRun: req.DeleteAfterRun,
+		})
+		return err
 	default:
 		return errors.New("unsupported webhook type")
 	}

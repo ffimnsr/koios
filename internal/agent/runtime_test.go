@@ -11,6 +11,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/memory"
+	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/types"
 )
@@ -91,6 +92,62 @@ func TestRuntime_RetriesTransientFailures(t *testing.T) {
 	}
 }
 
+func TestRuntime_RetryStatusCodeFilter(t *testing.T) {
+	store := session.New(20)
+	attempts := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("http 418")
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{
+		MaxAttempts:    2,
+		InitialBackoff: time.Millisecond,
+		MaxBackoff:     time.Millisecond,
+		StatusCodes:    []int{429},
+	})
+
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("expected non-retryable 418 error")
+	}
+	if attempts != 1 {
+		t.Fatalf("expected one attempt, got %d", attempts)
+	}
+}
+
+func TestRuntime_ResultIncludesUsage(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}},
+				Usage:   types.Usage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+			}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	res, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Usage.PromptTokens != 11 || res.Usage.CompletionTokens != 7 || res.Usage.TotalTokens != 18 {
+		t.Fatalf("unexpected usage: %#v", res.Usage)
+	}
+}
+
 func TestRuntime_InjectsMemoryIntoAgentRuns(t *testing.T) {
 	store := session.New(20)
 	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
@@ -137,6 +194,45 @@ func TestRuntime_InjectsMemoryIntoAgentRuns(t *testing.T) {
 	}
 	if res.Steps != 1 {
 		t.Fatalf("expected runtime to complete in one step, got %d", res.Steps)
+	}
+}
+
+func TestRuntime_BeforeLLMInterceptorCanRewriteRequest(t *testing.T) {
+	store := session.New(20)
+	var captured *types.ChatRequest
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			captured = req
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}},
+			}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model-a", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	hooks := ops.NewManager(time.Second, true)
+	hooks.RegisterInterceptor(ops.HookBeforeLLM, 100, func(_ context.Context, ev ops.Event) (ops.Event, error) {
+		ev.Data["model"] = "model-b"
+		ev.Data["messages"] = []types.Message{{Role: "user", Content: "rewritten prompt"}}
+		return ev, nil
+	})
+	rt.SetHooks(hooks)
+
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "original prompt"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected provider request capture")
+	}
+	if captured.Model != "model-b" {
+		t.Fatalf("expected interceptor model rewrite, got %q", captured.Model)
+	}
+	if len(captured.Messages) == 0 || captured.Messages[len(captured.Messages)-1].Content != "rewritten prompt" {
+		t.Fatalf("expected interceptor message rewrite, got %#v", captured.Messages)
 	}
 }
 

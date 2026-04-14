@@ -279,6 +279,46 @@ func TestStore_IdleResetOnGet(t *testing.T) {
 	}
 }
 
+func TestStore_IdlePruneOnMaintain(t *testing.T) {
+	dir := t.TempDir()
+	st := session.NewWithOptions(session.Options{
+		MaxMessages:    20,
+		SessionDir:     dir,
+		IdlePruneAfter: time.Minute,
+		IdlePruneKeep:  2,
+	})
+	st.Append("idle-prune-peer",
+		types.Message{Role: "system", Content: "sys"},
+		types.Message{Role: "user", Content: "one"},
+		types.Message{Role: "assistant", Content: "two"},
+		types.Message{Role: "user", Content: "three"},
+		types.Message{Role: "assistant", Content: "four"},
+	)
+	path := filepath.Join(dir, "idle-prune-peer.jsonl")
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	st2 := session.NewWithOptions(session.Options{
+		MaxMessages:    20,
+		SessionDir:     dir,
+		IdlePruneAfter: time.Minute,
+		IdlePruneKeep:  2,
+	})
+	report := st2.Maintain(time.Now())
+	if report.IdlePrunes != 1 {
+		t.Fatalf("expected one idle prune, got %#v", report)
+	}
+	got := st2.Get("idle-prune-peer").History()
+	if len(got) != 3 {
+		t.Fatalf("expected system + 2 recent messages after idle prune, got %#v", got)
+	}
+	if got[0].Role != "system" || got[1].Content != "three" || got[2].Content != "four" {
+		t.Fatalf("unexpected idle-pruned history %#v", got)
+	}
+}
+
 func TestStore_DailyResetOnGet(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
@@ -334,5 +374,17 @@ func TestStore_MaintainDeletesExpiredAndEvictsOldest(t *testing.T) {
 	}
 	if len(entries) > 1 {
 		t.Fatalf("expected at most one session file after maintenance, got %d", len(entries))
+	}
+}
+
+func TestStore_PolicyPersists(t *testing.T) {
+	dir := t.TempDir()
+	st := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: dir})
+	if err := st.SetPolicy("alice::sender::bob", session.SessionPolicy{ReplyBack: true}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	st2 := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: dir})
+	if !st2.Policy("alice::sender::bob").ReplyBack {
+		t.Fatal("expected reply_back policy to persist")
 	}
 }

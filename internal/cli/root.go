@@ -39,6 +39,9 @@ func NewRootCommand(build app.BuildInfo, runDaemon runDaemonFunc) *cobra.Command
 		Short:         "Koios daemon and operator CLI",
 		SilenceErrors: true,
 		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDaemon(build)
+		},
 	}
 	root.SetVersionTemplate("{{printf \"%s\\n\" .Version}}")
 	root.Version = fmt.Sprintf("%s (%s) %s", build.Version, build.GitHash, build.BuildTime)
@@ -65,6 +68,9 @@ func NewRootCommand(build app.BuildInfo, runDaemon runDaemonFunc) *cobra.Command
 	root.AddCommand(newUpdateCommand(ctx))
 	root.AddCommand(newAgentCommand(ctx))
 	root.AddCommand(newCronCommand(ctx))
+	root.AddCommand(newMigrateCommand(ctx))
+	root.AddCommand(newUsageCommand(ctx))
+	root.AddCommand(newMemoryCommand(ctx))
 	return root
 }
 

@@ -51,6 +51,40 @@ type LifecycleEvent struct {
 	Message string    `json:"message,omitempty"`
 }
 
+// SubTurnState describes the high-level orchestration phase of a child turn.
+type SubTurnState string
+
+const (
+	SubTurnQueued    SubTurnState = "queued"
+	SubTurnStarting  SubTurnState = "starting"
+	SubTurnRunning   SubTurnState = "running"
+	SubTurnCompleted SubTurnState = "completed"
+	SubTurnErrored   SubTurnState = "errored"
+	SubTurnKilled    SubTurnState = "killed"
+)
+
+// SubTurn captures structured parent/child coordination metadata for one
+// spawned subagent turn.
+type SubTurn struct {
+	ID               string       `json:"id"`
+	State            SubTurnState `json:"state"`
+	ParentSessionKey string       `json:"parent_session_key,omitempty"`
+	ParentRunID      string       `json:"parent_run_id,omitempty"`
+	SourceSessionKey string       `json:"source_session_key,omitempty"`
+	ChildSessionKey  string       `json:"child_session_key,omitempty"`
+	ReservedSlot     bool         `json:"reserved_slot"`
+	ConcurrencyKey   string       `json:"concurrency_key,omitempty"`
+	ConcurrencyLimit int          `json:"concurrency_limit,omitempty"`
+	ActiveChildren   int          `json:"active_children,omitempty"`
+	Steps            int          `json:"steps,omitempty"`
+	ToolCalls        int          `json:"tool_calls,omitempty"`
+	LastEvent        string       `json:"last_event,omitempty"`
+	LastEventAt      time.Time    `json:"last_event_at,omitempty"`
+	QueuedAt         time.Time    `json:"queued_at,omitempty"`
+	StartedAt        time.Time    `json:"started_at,omitempty"`
+	FinishedAt       time.Time    `json:"finished_at,omitempty"`
+}
+
 // Attachment is carried with a subagent spawn request.
 type Attachment struct {
 	Name     string `json:"name"`
@@ -60,48 +94,58 @@ type Attachment struct {
 
 // SpawnRequest describes a child agent to start.
 type SpawnRequest struct {
-	PeerID      string        `json:"peer_id"`
-	ParentID    string        `json:"parent_id,omitempty"`
-	Task        string        `json:"task"`
-	Model       string        `json:"model,omitempty"`
-	Timeout     time.Duration `json:"timeout,omitempty"`
-	SandboxMode string        `json:"sandbox_mode,omitempty"`
-	Attachments []Attachment  `json:"attachments,omitempty"`
-	Role        Role          `json:"role,omitempty"`
-	Control     ControlScope  `json:"control_scope,omitempty"`
-	MaxChildren int           `json:"max_children,omitempty"`
-	SessionKey  string        `json:"session_key,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
+	PeerID           string        `json:"peer_id"`
+	ParentID         string        `json:"parent_id,omitempty"`
+	ParentRunID      string        `json:"parent_run_id,omitempty"`
+	ParentSessionKey string        `json:"parent_session_key,omitempty"`
+	SourceSessionKey string        `json:"source_session_key,omitempty"`
+	Task             string        `json:"task"`
+	Model            string        `json:"model,omitempty"`
+	Timeout          time.Duration `json:"timeout,omitempty"`
+	SandboxMode      string        `json:"sandbox_mode,omitempty"`
+	Attachments      []Attachment  `json:"attachments,omitempty"`
+	Role             Role          `json:"role,omitempty"`
+	Control          ControlScope  `json:"control_scope,omitempty"`
+	MaxChildren      int           `json:"max_children,omitempty"`
+	SessionKey       string        `json:"session_key,omitempty"`
+	Stream           bool          `json:"stream,omitempty"`
 	// PushToParent, when true, automatically appends the child's final reply
 	// as an assistant message to the parent peer's main session when the run
 	// completes successfully.
 	PushToParent bool `json:"push_to_parent,omitempty"`
+	ReplyBack    bool `json:"reply_back,omitempty"`
+	AnnounceSkip bool `json:"announce_skip,omitempty"`
+	ReplySkip    bool `json:"reply_skip,omitempty"`
 }
 
 // RunRecord is the persisted representation of a spawned subagent.
 type RunRecord struct {
-	ID          string           `json:"id"`
-	PeerID      string           `json:"peer_id"`
-	ParentID    string           `json:"parent_id,omitempty"`
-	SessionKey  string           `json:"session_key"`
-	Task        string           `json:"task"`
-	Model       string           `json:"model"`
-	Timeout     time.Duration    `json:"timeout,omitempty"`
-	SandboxMode string           `json:"sandbox_mode,omitempty"`
-	Attachments []Attachment     `json:"attachments,omitempty"`
-	Role        Role             `json:"role,omitempty"`
-	Control     ControlScope     `json:"control_scope,omitempty"`
-	MaxChildren int              `json:"max_children,omitempty"`
-	Status      Status           `json:"status"`
-	CreatedAt   time.Time        `json:"created_at"`
-	StartedAt   time.Time        `json:"started_at,omitempty"`
-	FinishedAt  time.Time        `json:"finished_at,omitempty"`
-	FinalReply  string           `json:"final_reply,omitempty"`
-	Error       string           `json:"error,omitempty"`
-	Events      []LifecycleEvent `json:"events,omitempty"`
-	Transcript  []types.Message  `json:"transcript,omitempty"`
-	Children    []string         `json:"children,omitempty"`
-	Steering    []string         `json:"steering,omitempty"`
+	ID           string           `json:"id"`
+	PeerID       string           `json:"peer_id"`
+	ParentID     string           `json:"parent_id,omitempty"`
+	SessionKey   string           `json:"session_key"`
+	Task         string           `json:"task"`
+	Model        string           `json:"model"`
+	Timeout      time.Duration    `json:"timeout,omitempty"`
+	SandboxMode  string           `json:"sandbox_mode,omitempty"`
+	Attachments  []Attachment     `json:"attachments,omitempty"`
+	Role         Role             `json:"role,omitempty"`
+	Control      ControlScope     `json:"control_scope,omitempty"`
+	MaxChildren  int              `json:"max_children,omitempty"`
+	Status       Status           `json:"status"`
+	CreatedAt    time.Time        `json:"created_at"`
+	StartedAt    time.Time        `json:"started_at,omitempty"`
+	FinishedAt   time.Time        `json:"finished_at,omitempty"`
+	FinalReply   string           `json:"final_reply,omitempty"`
+	Error        string           `json:"error,omitempty"`
+	Events       []LifecycleEvent `json:"events,omitempty"`
+	Transcript   []types.Message  `json:"transcript,omitempty"`
+	Children     []string         `json:"children,omitempty"`
+	Steering     []string         `json:"steering,omitempty"`
+	ReplyBack    bool             `json:"reply_back,omitempty"`
+	AnnounceSkip bool             `json:"announce_skip,omitempty"`
+	ReplySkip    bool             `json:"reply_skip,omitempty"`
+	SubTurn      SubTurn          `json:"subturn"`
 }
 
 // Registry persists run records to disk and restores them on startup.
@@ -181,20 +225,35 @@ func (r *Registry) Spawn(req SpawnRequest, sessionKey string) *RunRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	rec := &RunRecord{
-		ID:          uuid.NewString(),
-		PeerID:      req.PeerID,
-		ParentID:    req.ParentID,
-		SessionKey:  sessionKey,
-		Task:        req.Task,
-		Model:       req.Model,
-		Timeout:     req.Timeout,
-		SandboxMode: req.SandboxMode,
-		Attachments: append([]Attachment(nil), req.Attachments...),
-		Role:        req.Role,
-		Control:     req.Control,
-		MaxChildren: req.MaxChildren,
-		Status:      StatusQueued,
-		CreatedAt:   time.Now().UTC(),
+		ID:           uuid.NewString(),
+		PeerID:       req.PeerID,
+		ParentID:     req.ParentID,
+		SessionKey:   sessionKey,
+		Task:         req.Task,
+		Model:        req.Model,
+		Timeout:      req.Timeout,
+		SandboxMode:  req.SandboxMode,
+		Attachments:  append([]Attachment(nil), req.Attachments...),
+		Role:         req.Role,
+		Control:      req.Control,
+		MaxChildren:  req.MaxChildren,
+		Status:       StatusQueued,
+		CreatedAt:    time.Now().UTC(),
+		ReplyBack:    req.ReplyBack || req.PushToParent,
+		AnnounceSkip: req.AnnounceSkip,
+		ReplySkip:    req.ReplySkip,
+	}
+	rec.SubTurn = SubTurn{
+		ID:               uuid.NewString(),
+		State:            SubTurnQueued,
+		ParentSessionKey: req.ParentSessionKey,
+		ParentRunID:      req.ParentRunID,
+		SourceSessionKey: req.SourceSessionKey,
+		ChildSessionKey:  sessionKey,
+		QueuedAt:         rec.CreatedAt,
+	}
+	if rec.SubTurn.SourceSessionKey == "" {
+		rec.SubTurn.SourceSessionKey = req.ParentSessionKey
 	}
 	rec.Events = append(rec.Events, LifecycleEvent{At: rec.CreatedAt, Type: "spawn", Message: req.Task})
 	r.records[rec.ID] = rec
@@ -244,10 +303,28 @@ func (r *Registry) List() []*RunRecord {
 // AppendEvent adds a lifecycle event to the run.
 func (r *Registry) AppendEvent(id, typ, message string) (*RunRecord, bool) {
 	return r.Update(id, func(rec *RunRecord) {
-		rec.Events = append(rec.Events, LifecycleEvent{At: time.Now().UTC(), Type: typ, Message: message})
+		now := time.Now().UTC()
+		rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: typ, Message: message})
+		rec.SubTurn.LastEvent = typ
+		rec.SubTurn.LastEventAt = now
 		if len(rec.Events) > r.maxEvents {
 			rec.Events = rec.Events[len(rec.Events)-r.maxEvents:]
 		}
+	})
+}
+
+// LinkChild records a parent/child run relationship when both run ids are known.
+func (r *Registry) LinkChild(parentID, childID string) {
+	if parentID == "" || childID == "" || parentID == childID {
+		return
+	}
+	_, _ = r.Update(parentID, func(rec *RunRecord) {
+		for _, existing := range rec.Children {
+			if existing == childID {
+				return
+			}
+		}
+		rec.Children = append(rec.Children, childID)
 	})
 }
 

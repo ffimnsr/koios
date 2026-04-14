@@ -30,8 +30,13 @@ var toolProfiles = map[string][]string{
 var toolGroups = map[string][]string{
 	"group:sessions": {
 		"time.now",
+		"subagent.status",
 		"session.history",
 		"session.reset",
+		"session.list",
+		"session.spawn",
+		"session.send",
+		"session.patch",
 	},
 	"group:memory": {
 		"memory.search",
@@ -51,6 +56,8 @@ var toolGroups = map[string][]string{
 	},
 	"group:runtime": {
 		"exec",
+		"system.run",
+		"system.notify",
 	},
 	"group:web": {
 		"web_search",

@@ -75,6 +75,19 @@ type anthropicUsage struct {
 
 // — Format conversion —————————————————————————————————————————————————————————
 
+// anthropicImageBlock is an image content block for Anthropic multimodal requests.
+type anthropicImageBlock struct {
+	Type   string                   `json:"type"` // "image"
+	Source anthropicImageBlockSource `json:"source"`
+}
+
+type anthropicImageBlockSource struct {
+	Type      string `json:"type"`                 // "base64" or "url"
+	MediaType string `json:"media_type,omitempty"` // e.g. "image/jpeg"
+	Data      string `json:"data,omitempty"`       // base64 data
+	URL       string `json:"url,omitempty"`        // for url type
+}
+
 // toAnthropicRequest converts an OpenAI-format ChatRequest to an Anthropic
 // messages request. System messages are extracted into the top-level system
 // field; the remaining messages are passed in the messages array.
@@ -107,6 +120,40 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 					Name:  tc.Function.Name,
 					Input: json.RawMessage(tc.Function.Arguments),
 				})
+			}
+			msgs = append(msgs, anthropicMessage{Role: m.Role, Content: blocks})
+		} else if len(m.Parts) > 0 {
+			// Multimodal message: convert OpenAI content parts to Anthropic blocks.
+			blocks := make([]any, 0, len(m.Parts))
+			for _, p := range m.Parts {
+				switch p.Type {
+				case "text":
+					blocks = append(blocks, anthropicContentBlock{Type: "text", Text: p.Text})
+				case "image_url":
+					if p.ImageURL == nil {
+						continue
+					}
+					imgURL := p.ImageURL.URL
+					if isDataURI(imgURL) {
+						mediaType, b64data := parseDataURI(imgURL)
+						blocks = append(blocks, anthropicImageBlock{
+							Type: "image",
+							Source: anthropicImageBlockSource{
+								Type:      "base64",
+								MediaType: mediaType,
+								Data:      b64data,
+							},
+						})
+					} else {
+						blocks = append(blocks, anthropicImageBlock{
+							Type: "image",
+							Source: anthropicImageBlockSource{
+								Type: "url",
+								URL:  imgURL,
+							},
+						})
+					}
+				}
 			}
 			msgs = append(msgs, anthropicMessage{Role: m.Role, Content: blocks})
 		} else {
@@ -322,6 +369,30 @@ func (p *anthropicProvider) setHeaders(r *http.Request) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("x-api-key", p.apiKey)
 	r.Header.Set("anthropic-version", anthropicVersion)
+}
+
+// isDataURI reports whether s is a base64 data URI (data:<mime>;base64,<data>).
+func isDataURI(s string) bool {
+	return strings.HasPrefix(s, "data:")
+}
+
+// parseDataURI extracts the MIME type and base64-encoded data from a data URI.
+// Returns empty strings if the URI is malformed.
+func parseDataURI(s string) (mediaType, data string) {
+	// data:<mediatype>;base64,<data>
+	s = strings.TrimPrefix(s, "data:")
+	semicolon := strings.Index(s, ";")
+	if semicolon < 0 {
+		return "", ""
+	}
+	mediaType = s[:semicolon]
+	rest := s[semicolon+1:]
+	comma := strings.Index(rest, ",")
+	if comma < 0 {
+		return "", ""
+	}
+	data = rest[comma+1:]
+	return mediaType, data
 }
 
 // writeOpenAIChunk serialises a StreamChunk in the OpenAI SSE wire format and

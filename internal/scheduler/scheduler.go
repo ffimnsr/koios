@@ -3,7 +3,10 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +15,8 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/ops"
+	"github.com/ffimnsr/koios/internal/presence"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/types"
@@ -68,6 +73,9 @@ type Scheduler struct {
 
 	agentRuntime *agent.Runtime
 	toolExec     agent.ToolExecutor
+	hooks        *ops.Manager
+	presence     *presence.Manager
+	httpClient   *http.Client
 
 	wakeCh  chan struct{}
 	cancel  context.CancelFunc
@@ -93,6 +101,7 @@ func New(store *JobStore, prov provider, sessionStore *session.Store, standingMg
 		wakeCh:        make(chan struct{}, 1),
 		sem:           make(chan struct{}, maxConcurrent),
 		cronLib:       cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow),
+		httpClient:    &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -103,6 +112,16 @@ func New(store *JobStore, prov provider, sessionStore *session.Store, standingMg
 func (s *Scheduler) SetAgentRuntime(rt *agent.Runtime, exec agent.ToolExecutor) {
 	s.agentRuntime = rt
 	s.toolExec = exec
+}
+
+// SetHooks configures optional lifecycle hooks used by scheduled runs.
+func (s *Scheduler) SetHooks(hooks *ops.Manager) {
+	s.hooks = hooks
+}
+
+// SetPresence configures optional presence-aware scheduling.
+func (s *Scheduler) SetPresence(p *presence.Manager) {
+	s.presence = p
 }
 
 // Start launches the background scheduling loop. It returns immediately; the
@@ -164,6 +183,10 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 		if job.NextRunAt.IsZero() || job.NextRunAt.After(now) {
 			continue
 		}
+		if reason, deferred := s.shouldDefer(job, now); deferred {
+			s.recordSkip(job, reason)
+			continue
+		}
 		// Acquire semaphore without blocking (skip if all slots are busy).
 		select {
 		case s.sem <- struct{}{}:
@@ -191,6 +214,60 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 			defer func() { <-s.sem }()
 			s.executeJob(ctx, &j, rid)
 		}(jobCopy, runID)
+	}
+}
+
+func (s *Scheduler) shouldDefer(job *Job, now time.Time) (string, bool) {
+	if job.Dispatch.RequireApproval && s.hooks != nil {
+		if err := s.hooks.Emit(context.Background(), ops.Event{
+			Name:   ops.HookCronApproval,
+			PeerID: job.PeerID,
+			Data: map[string]any{
+				"job_id":      job.JobID,
+				"name":        job.Name,
+				"description": job.Description,
+				"payload":     job.Payload,
+				"schedule":    job.Schedule,
+			},
+		}); err != nil {
+			jobCopy := *job
+			jobCopy.NextRunAt = now.Add(tickInterval)
+			if updateErr := s.store.Update(&jobCopy); updateErr != nil {
+				slog.Warn("cron: failed to defer unapproved job", "job", job.JobID, "error", updateErr)
+			}
+			return "approval required", true
+		}
+	}
+	if !job.Dispatch.DeferIfActive || s.presence == nil {
+		return "", false
+	}
+	state, ok := s.presence.Get(job.PeerID)
+	if !ok {
+		return "", false
+	}
+	if state.Status != "online" && !state.Typing {
+		return "", false
+	}
+	jobCopy := *job
+	jobCopy.NextRunAt = now.Add(tickInterval)
+	if updateErr := s.store.Update(&jobCopy); updateErr != nil {
+		slog.Warn("cron: failed to defer active-peer job", "job", job.JobID, "error", updateErr)
+	}
+	return "peer is active", true
+}
+
+func (s *Scheduler) recordSkip(job *Job, reason string) {
+	now := time.Now().UTC()
+	rec := RunRecord{
+		RunID:     uuid.New().String(),
+		JobID:     job.JobID,
+		StartedAt: now,
+		EndedAt:   now,
+		Status:    RunSkip,
+		Error:     reason,
+	}
+	if err := s.store.AppendRunRecord(rec); err != nil {
+		slog.Warn("cron: failed to write skipped run record", "job", job.JobID, "error", err)
 	}
 }
 
@@ -310,6 +387,11 @@ func (s *Scheduler) runAgentTurn(ctx context.Context, job *Job) (string, error) 
 			}
 		}
 	}
+	preloaded, err := s.lazyLoadContent(ctx, job.Payload.PreloadURLs)
+	if err != nil {
+		return "", err
+	}
+	messages = append(messages, preloaded...)
 	messages = append(messages, types.Message{Role: "user", Content: prompt})
 
 	if s.agentRuntime != nil {
@@ -349,6 +431,54 @@ func (s *Scheduler) runAgentTurn(ctx context.Context, job *Job) (string, error) 
 	assistantText := resp.Choices[0].Message.Content
 	s.sessionStore.AppendWithSource(job.PeerID, "cron", types.Message{Role: "assistant", Content: assistantText})
 	return assistantText, nil
+}
+
+func (s *Scheduler) lazyLoadContent(ctx context.Context, rawURLs []string) ([]types.Message, error) {
+	if len(rawURLs) == 0 {
+		return nil, nil
+	}
+	out := make([]types.Message, 0, len(rawURLs))
+	for _, raw := range rawURLs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid preload url %q: %w", raw, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return nil, fmt.Errorf("preload url %q must use http or https", raw)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+		if err != nil {
+			return nil, fmt.Errorf("preload %q: %w", raw, err)
+		}
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("preload %q: %w", raw, err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("preload %q: %w", raw, readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("preload %q: %w", raw, closeErr)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("preload %q returned status %d", raw, resp.StatusCode)
+		}
+		content := strings.TrimSpace(string(body))
+		if content == "" {
+			continue
+		}
+		out = append(out, types.Message{
+			Role:    "system",
+			Content: fmt.Sprintf("[preloaded:%s]\n%s", raw, content),
+		})
+	}
+	return out, nil
 }
 
 // calcNextRun computes the next fire time for a job starting from from.

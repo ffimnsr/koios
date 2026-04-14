@@ -42,12 +42,16 @@ type Config struct {
 	SessionRetention             time.Duration
 	SessionMaxEntries            int
 	SessionIdleResetAfter        time.Duration
+	SessionIdlePruneAfter        time.Duration
+	SessionIdlePruneKeep         int
 	SessionDailyResetTime        string
 	CompactThreshold             int
 	CompactReserve               int
 	EmbedModel                   string
 	MemoryInject                 bool
 	MemoryTopK                   int
+	MemoryLCMWindow              int      // LCM: inject N most-recent chunks unconditionally
+	MemoryNamespaces             []string // additional peer IDs to also inject from
 	MilvusURL                    string
 	MilvusCollection             string
 	MilvusEnabled                bool
@@ -61,6 +65,7 @@ type Config struct {
 	AgentRetryAttempts       int
 	AgentRetryInitialBackoff time.Duration
 	AgentRetryMaxBackoff     time.Duration
+	AgentRetryStatusCodes    []int
 
 	AllowedOrigins []string
 
@@ -81,6 +86,38 @@ type Config struct {
 	WorkspaceRoot     string
 	WorkspacePerAgent bool
 	WorkspaceMaxBytes int
+
+	// LogLevel controls the minimum slog level at startup and after hot-reload.
+	// Valid values: debug, info, warn, error. Defaults to info.
+	LogLevel string
+	// LogFile, when non-empty, writes logs to this path (rotated via lumberjack).
+	LogFile       string
+	LogMaxSizeMB  int  // max log file size in MB before rotation (default 20)
+	LogMaxBackups int  // max rotated log files to keep (default 5)
+	LogMaxAgeDays int  // max age in days for rotated files (default 14)
+	LogCompress   bool // compress rotated log files (default true)
+
+	// HookTimeout is the per-hook HTTP call deadline (default 2s).
+	HookTimeout time.Duration
+	// HookFailClosed causes a hook error to abort the triggering operation.
+	HookFailClosed bool
+	// HookWebhookURL, when set, registers an HTTP webhook on all event hooks.
+	HookWebhookURL string
+	// HookWebhookSecret is the HMAC secret used to sign webhook payloads.
+	HookWebhookSecret string
+	// HookInterceptorURL, when set, registers an HTTP interceptor on before-hooks.
+	HookInterceptorURL string
+	// WebhookToken is the bearer token required on POST /v1/webhooks/events.
+	WebhookToken string
+
+	// PresenceTypingTTL controls how long a "typing" indicator is held (default 8s).
+	PresenceTypingTTL time.Duration
+
+	// MonitorStaleThreshold is the maximum time of daemon inactivity before the
+	// health monitor logs a warning. 0 disables stale detection.
+	MonitorStaleThreshold time.Duration
+	// MonitorMaxRestarts caps automatic subsystem restarts; 0 = unlimited.
+	MonitorMaxRestarts int
 }
 
 // ExecIsolationPath is a host→sandbox bind-mount entry for bubblewrap isolation.
@@ -107,6 +144,8 @@ type fileConfig struct {
 		Retention             string `toml:"retention"`
 		MaxEntries            *int   `toml:"max_entries"`
 		IdleResetAfter        string `toml:"idle_reset_after"`
+		IdlePruneAfter        string `toml:"idle_prune_after"`
+		IdlePruneKeep         *int   `toml:"idle_prune_keep"`
 		DailyResetTime        string `toml:"daily_reset_time"`
 		PruneKeepToolMessages *int   `toml:"prune_keep_tool_messages"`
 	} `toml:"session"`
@@ -115,9 +154,11 @@ type fileConfig struct {
 		Reserve   *int `toml:"reserve"`
 	} `toml:"compaction"`
 	Memory struct {
-		EmbedModel string `toml:"embed_model"`
-		Inject     *bool  `toml:"inject"`
-		TopK       *int   `toml:"top_k"`
+		EmbedModel string   `toml:"embed_model"`
+		Inject     *bool    `toml:"inject"`
+		TopK       *int     `toml:"top_k"`
+		LCMWindow  *int     `toml:"lcm_window"`
+		Namespaces []string `toml:"namespaces"`
 		Milvus     struct {
 			Address    string `toml:"address"`
 			Collection string `toml:"collection"`
@@ -136,6 +177,7 @@ type fileConfig struct {
 		RetryAttempts       *int   `toml:"retry_attempts"`
 		RetryInitialBackoff string `toml:"retry_initial_backoff"`
 		RetryMaxBackoff     string `toml:"retry_max_backoff"`
+		RetryStatusCodes    []int  `toml:"retry_status_codes"`
 	} `toml:"agent"`
 	Tools struct {
 		Profile string   `toml:"profile"`
@@ -161,6 +203,29 @@ type fileConfig struct {
 		PerAgent *bool  `toml:"per_agent"`
 		MaxBytes *int   `toml:"max_file_bytes"`
 	} `toml:"workspace"`
+	Log struct {
+		Level     string `toml:"level"`
+		File      string `toml:"file"`
+		MaxSizeMB *int   `toml:"max_size_mb"`
+		MaxBackups *int  `toml:"max_backups"`
+		MaxAgeDays *int  `toml:"max_age_days"`
+		Compress  *bool  `toml:"compress"`
+	} `toml:"log"`
+	Monitor struct {
+		StaleThreshold string `toml:"stale_threshold"`
+		MaxRestarts    *int   `toml:"max_restarts"`
+	} `toml:"monitor"`
+	Hooks struct {
+		WebhookURL     string `toml:"webhook_url"`
+		WebhookSecret  string `toml:"webhook_secret"`
+		InterceptorURL string `toml:"interceptor_url"`
+		WebhookToken   string `toml:"webhook_token"`
+		Timeout        string `toml:"timeout"`
+		FailClosed     *bool  `toml:"fail_closed"`
+	} `toml:"hooks"`
+	Presence struct {
+		TypingTTL string `toml:"typing_ttl"`
+	} `toml:"presence"`
 }
 
 // Default returns sane defaults for a local-first Koios setup.
@@ -174,12 +239,15 @@ func Default() *Config {
 		SessionRetention:             0,
 		SessionMaxEntries:            0,
 		SessionIdleResetAfter:        0,
+		SessionIdlePruneAfter:        0,
+		SessionIdlePruneKeep:         0,
 		SessionDailyResetTime:        "",
 		CompactThreshold:             0,
 		CompactReserve:               20,
 		EmbedModel:                   "text-embedding-3-small",
 		MemoryInject:                 false,
 		MemoryTopK:                   3,
+		MemoryLCMWindow:              0,
 		MilvusURL:                    "localhost:19530",
 		MilvusCollection:             "koios_memory",
 		MilvusEnabled:                false,
@@ -191,6 +259,7 @@ func Default() *Config {
 		AgentRetryAttempts:           3,
 		AgentRetryInitialBackoff:     500 * time.Millisecond,
 		AgentRetryMaxBackoff:         5 * time.Second,
+		AgentRetryStatusCodes:        []int{429, 500, 502, 503, 504},
 		ToolProfile:                  "full",
 		ExecEnabled:                  true,
 		ExecEnableDenyPatterns:       true,
@@ -201,6 +270,16 @@ func Default() *Config {
 		WorkspaceRoot:                "./workspace",
 		WorkspacePerAgent:            true,
 		WorkspaceMaxBytes:            1 << 20,
+		LogLevel:                     "info",
+		LogMaxSizeMB:                 20,
+		LogMaxBackups:                5,
+		LogMaxAgeDays:                14,
+		LogCompress:                  true,
+		HookTimeout:                  2 * time.Second,
+		HookFailClosed:               false,
+		PresenceTypingTTL:            8 * time.Second,
+		MonitorStaleThreshold:        0,
+		MonitorMaxRestarts:           5,
 	}
 }
 
@@ -264,6 +343,8 @@ max_messages = 100
 retention = "0s"
 max_entries = 0
 idle_reset_after = "0s"
+idle_prune_after = "0s"
+idle_prune_keep = 0
 daily_reset_time = ""
 prune_keep_tool_messages = 8
 
@@ -293,6 +374,7 @@ max_children = 4
 retry_attempts = 3
 retry_initial_backoff = "500ms"
 retry_max_backoff = "5s"
+retry_status_codes = [429, 500, 502, 503, 504]
 
 [tools]
 profile = "full"
@@ -317,6 +399,13 @@ expose_paths = []
 root = "./workspace"
 per_agent = true
 max_file_bytes = 1048576
+
+[log]
+level = "info"
+
+[monitor]
+stale_threshold = "0s"
+max_restarts = 5
 `
 }
 
@@ -358,6 +447,8 @@ max_messages = %d
 retention = %s
 max_entries = %d
 idle_reset_after = %s
+idle_prune_after = %s
+idle_prune_keep = %d
 daily_reset_time = %s
 prune_keep_tool_messages = %d
 
@@ -387,6 +478,7 @@ max_children = %d
 retry_attempts = %d
 retry_initial_backoff = %s
 retry_max_backoff = %s
+retry_status_codes = %s
 
 [tools]
 profile = %s
@@ -407,6 +499,13 @@ expose_paths = []
 root = %s
 per_agent = %t
 max_file_bytes = %d
+
+[log]
+level = %s
+
+[monitor]
+stale_threshold = %s
+max_restarts = %d
 `,
 		strconv.Quote(cfg.ListenAddr),
 		strconv.Quote(cfg.RequestTimeout.String()),
@@ -419,6 +518,8 @@ max_file_bytes = %d
 		strconv.Quote(cfg.SessionRetention.String()),
 		cfg.SessionMaxEntries,
 		strconv.Quote(cfg.SessionIdleResetAfter.String()),
+		strconv.Quote(cfg.SessionIdlePruneAfter.String()),
+		cfg.SessionIdlePruneKeep,
 		strconv.Quote(cfg.SessionDailyResetTime),
 		cfg.SessionPruneKeepToolMessages,
 		cfg.CompactThreshold,
@@ -436,6 +537,7 @@ max_file_bytes = %d
 		cfg.AgentRetryAttempts,
 		strconv.Quote(cfg.AgentRetryInitialBackoff.String()),
 		strconv.Quote(cfg.AgentRetryMaxBackoff.String()),
+		quoteIntSlice(cfg.AgentRetryStatusCodes),
 		strconv.Quote(cfg.ToolProfile),
 		quoteStringSlice(cfg.ToolsAllow),
 		quoteStringSlice(cfg.ToolsDeny),
@@ -447,6 +549,14 @@ max_file_bytes = %d
 		strconv.Quote(cfg.WorkspaceRoot),
 		cfg.WorkspacePerAgent,
 		cfg.WorkspaceMaxBytes,
+		strconv.Quote(cfg.LogLevel),
+		func() string {
+			if cfg.MonitorStaleThreshold <= 0 {
+				return strconv.Quote("0s")
+			}
+			return strconv.Quote(cfg.MonitorStaleThreshold.String())
+		}(),
+		cfg.MonitorMaxRestarts,
 	)
 }
 
@@ -492,6 +602,14 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 			dst.SessionIdleResetAfter = d
 		}
 	}
+	if src.Session.IdlePruneAfter != "" {
+		if d, err := time.ParseDuration(src.Session.IdlePruneAfter); err == nil {
+			dst.SessionIdlePruneAfter = d
+		}
+	}
+	if src.Session.IdlePruneKeep != nil && *src.Session.IdlePruneKeep >= 0 {
+		dst.SessionIdlePruneKeep = *src.Session.IdlePruneKeep
+	}
 	dst.SessionDailyResetTime = src.Session.DailyResetTime
 	if src.Session.PruneKeepToolMessages != nil && *src.Session.PruneKeepToolMessages >= 0 {
 		dst.SessionPruneKeepToolMessages = *src.Session.PruneKeepToolMessages
@@ -512,6 +630,12 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.Memory.TopK != nil && *src.Memory.TopK > 0 {
 		dst.MemoryTopK = *src.Memory.TopK
+	}
+	if src.Memory.LCMWindow != nil && *src.Memory.LCMWindow >= 0 {
+		dst.MemoryLCMWindow = *src.Memory.LCMWindow
+	}
+	if src.Memory.Namespaces != nil {
+		dst.MemoryNamespaces = src.Memory.Namespaces
 	}
 	if src.Memory.Milvus.Address != "" {
 		dst.MilvusURL = src.Memory.Milvus.Address
@@ -551,6 +675,9 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 		if d, err := time.ParseDuration(src.Agent.RetryMaxBackoff); err == nil {
 			dst.AgentRetryMaxBackoff = d
 		}
+	}
+	if src.Agent.RetryStatusCodes != nil {
+		dst.AgentRetryStatusCodes = append([]int(nil), src.Agent.RetryStatusCodes...)
 	}
 	if src.Tools.Profile != "" {
 		dst.ToolProfile = src.Tools.Profile
@@ -606,6 +733,57 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	if src.Workspace.MaxBytes != nil && *src.Workspace.MaxBytes > 0 {
 		dst.WorkspaceMaxBytes = *src.Workspace.MaxBytes
 	}
+	if src.Log.Level != "" {
+		dst.LogLevel = src.Log.Level
+	}
+	if src.Log.File != "" {
+		dst.LogFile = src.Log.File
+	}
+	if src.Log.MaxSizeMB != nil && *src.Log.MaxSizeMB > 0 {
+		dst.LogMaxSizeMB = *src.Log.MaxSizeMB
+	}
+	if src.Log.MaxBackups != nil && *src.Log.MaxBackups >= 0 {
+		dst.LogMaxBackups = *src.Log.MaxBackups
+	}
+	if src.Log.MaxAgeDays != nil && *src.Log.MaxAgeDays >= 0 {
+		dst.LogMaxAgeDays = *src.Log.MaxAgeDays
+	}
+	if src.Log.Compress != nil {
+		dst.LogCompress = *src.Log.Compress
+	}
+	if src.Monitor.StaleThreshold != "" {
+		if d, err := time.ParseDuration(src.Monitor.StaleThreshold); err == nil {
+			dst.MonitorStaleThreshold = d
+		}
+	}
+	if src.Monitor.MaxRestarts != nil && *src.Monitor.MaxRestarts >= 0 {
+		dst.MonitorMaxRestarts = *src.Monitor.MaxRestarts
+	}
+	if src.Hooks.WebhookURL != "" {
+		dst.HookWebhookURL = src.Hooks.WebhookURL
+	}
+	if src.Hooks.WebhookSecret != "" {
+		dst.HookWebhookSecret = src.Hooks.WebhookSecret
+	}
+	if src.Hooks.InterceptorURL != "" {
+		dst.HookInterceptorURL = src.Hooks.InterceptorURL
+	}
+	if src.Hooks.WebhookToken != "" {
+		dst.WebhookToken = src.Hooks.WebhookToken
+	}
+	if src.Hooks.Timeout != "" {
+		if d, err := time.ParseDuration(src.Hooks.Timeout); err == nil && d > 0 {
+			dst.HookTimeout = d
+		}
+	}
+	if src.Hooks.FailClosed != nil {
+		dst.HookFailClosed = *src.Hooks.FailClosed
+	}
+	if src.Presence.TypingTTL != "" {
+		if d, err := time.ParseDuration(src.Presence.TypingTTL); err == nil && d > 0 {
+			dst.PresenceTypingTTL = d
+		}
+	}
 }
 
 func resolveRelativePaths(cfg *Config, root string) {
@@ -633,6 +811,17 @@ func quoteStringSlice(values []string) string {
 		return "[]"
 	}
 	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+func quoteIntSlice(values []int) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.Itoa(value))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
 }
 
 func ParseDailyResetMinutes(raw string) (int, error) {
@@ -676,6 +865,12 @@ func validate(cfg *Config) error {
 	if cfg.SessionIdleResetAfter < 0 {
 		return fmt.Errorf("session.idle_reset_after must be >= 0")
 	}
+	if cfg.SessionIdlePruneAfter < 0 {
+		return fmt.Errorf("session.idle_prune_after must be >= 0")
+	}
+	if cfg.SessionIdlePruneKeep < 0 {
+		return fmt.Errorf("session.idle_prune_keep must be >= 0")
+	}
 	if _, err := ParseDailyResetMinutes(cfg.SessionDailyResetTime); err != nil {
 		return err
 	}
@@ -687,6 +882,11 @@ func validate(cfg *Config) error {
 	}
 	if cfg.AgentRetryAttempts < 1 {
 		return fmt.Errorf("agent.retry_attempts must be >= 1")
+	}
+	for _, code := range cfg.AgentRetryStatusCodes {
+		if code < 100 || code > 599 {
+			return fmt.Errorf("agent.retry_status_codes entries must be between 100 and 599")
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.ToolProfile)) {
 	case "", "full", "coding", "messaging", "minimal":

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,7 @@ type RetryPolicy struct {
 	MaxAttempts    int
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
+	StatusCodes    []int
 }
 
 // RunRequest describes one agent turn.
@@ -98,6 +100,7 @@ type Result struct {
 	Attempts      int                 `json:"attempts"`
 	AssistantText string              `json:"assistant_text,omitempty"`
 	Response      *types.ChatResponse `json:"response,omitempty"`
+	Usage         types.Usage         `json:"usage,omitempty"`
 	Steps         int                 `json:"steps"`
 	Events        []Event             `json:"events,omitempty"`
 }
@@ -133,6 +136,8 @@ type Runtime struct {
 	memStore          *memory.Store
 	memTopK           int
 	memInject         bool
+	memLCMWindow      int
+	memNamespaces     []string
 	pruneToolMessages int
 	standingManager   *standing.Manager
 	hooks             *ops.Manager
@@ -140,6 +145,17 @@ type Runtime struct {
 
 	steeringMu     sync.Mutex
 	steeringQueues map[string][]string // sessionKey → pending user messages
+}
+
+type contextSessionKey struct{}
+
+// CurrentSessionKey returns the runtime session key associated with ctx.
+func CurrentSessionKey(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	sessionKey, _ := ctx.Value(contextSessionKey{}).(string)
+	return sessionKey
 }
 
 // Model returns the configured model name.
@@ -155,6 +171,13 @@ func (rt *Runtime) EnableMemory(store *memory.Store, inject bool, topK int) {
 	if rt.memTopK <= 0 {
 		rt.memTopK = 3
 	}
+}
+
+// SetMemoryLCM configures the Latent Context Memory sliding-window window size
+// and optional additional namespaces (peer IDs) to inject from.
+func (rt *Runtime) SetMemoryLCM(window int, namespaces []string) {
+	rt.memLCMWindow = window
+	rt.memNamespaces = namespaces
 }
 
 // SetPruning configures how many recent tool-related messages remain visible
@@ -227,6 +250,9 @@ func NewRuntime(store *session.Store, prov Provider, model string, timeout time.
 	}
 	if retry.MaxBackoff <= 0 {
 		retry.MaxBackoff = 5 * time.Second
+	}
+	if len(retry.StatusCodes) == 0 {
+		retry.StatusCodes = []int{429, 500, 502, 503, 504}
 	}
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
@@ -323,6 +349,8 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			MemoryTopK:        rt.memTopK,
 			MemoryInject:      rt.memInject,
 			MemoryPeerID:      reqCopy.PeerID,
+			MemoryLCMWindow:   rt.memLCMWindow,
+			MemoryNamespaces:  rt.memNamespaces,
 			IdentityDir:       rt.identityDir,
 		})
 		if err != nil {
@@ -369,6 +397,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			if sink != nil {
 				sink.reset()
 			}
+			attemptCtx = context.WithValue(attemptCtx, contextSessionKey{}, sessionKey)
 			assistantText, resp, err := rt.invoke(attemptCtx, built.Request, built.Request.Stream, sink)
 			attemptCancel()
 			if err == nil {
@@ -491,6 +520,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				}
 				result.AssistantText = assistantText
 				result.Response = resp
+				if resp != nil {
+					result.Usage = resp.Usage
+				}
 				if reqCopy.Stream && sink != nil {
 					rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunBlock, SessionKey: sessionKey, Step: step, Message: assistantText})
 				}
@@ -500,7 +532,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			}
 			lastErr = err
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: err.Error()})
-			if attempt < rt.retry.MaxAttempts && shouldRetry(err) {
+			if attempt < rt.retry.MaxAttempts && rt.shouldRetry(err) {
 				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRetry, SessionKey: sessionKey, Attempt: attempt + 1, Step: step})
 				select {
 				case <-ctx.Done():
@@ -534,6 +566,24 @@ func (rt *Runtime) standingSystemMessages(req RunRequest) ([]types.Message, erro
 }
 
 func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bool, sink *captureResponseWriter) (string, *types.ChatResponse, error) {
+	if rt.hooks != nil {
+		ev, err := rt.hooks.Intercept(ctx, ops.Event{
+			Name: ops.HookBeforeLLM,
+			Data: map[string]any{
+				"model":          req.Model,
+				"messages":       req.Messages,
+				"messages_count": len(req.Messages),
+				"stream":         stream,
+			},
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		req.Model = eventString(ev.Data, "model", req.Model)
+		if msgs, ok := eventMessages(ev.Data, "messages"); ok {
+			req.Messages = msgs
+		}
+	}
 	if err := rt.emitHook(ctx, ops.Event{
 		Name: ops.HookBeforeLLM,
 		Data: map[string]any{
@@ -580,6 +630,40 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 		},
 	})
 	return text, resp, nil
+}
+
+func eventString(data map[string]any, key, fallback string) string {
+	if data == nil {
+		return fallback
+	}
+	value, ok := data[key]
+	if !ok {
+		return fallback
+	}
+	s, ok := value.(string)
+	if !ok || strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+func eventMessages(data map[string]any, key string) ([]types.Message, bool) {
+	if data == nil {
+		return nil, false
+	}
+	value, ok := data[key]
+	if !ok || value == nil {
+		return nil, false
+	}
+	buf, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var msgs []types.Message
+	if err := json.Unmarshal(buf, &msgs); err != nil {
+		return nil, false
+	}
+	return msgs, true
 }
 
 func (rt *Runtime) persistTurn(peerID, sessionKey string, userMsgs, workingMessages []types.Message, assistantText string, resp *types.ChatResponse) {
@@ -681,14 +765,32 @@ func (rt *Runtime) backoff(attempt int) time.Duration {
 	return d
 }
 
-func shouldRetry(err error) bool {
+func (rt *Runtime) shouldRetry(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	retryable := []string{"429", "too many requests", "rate limit", "timeout", "network", "connection", "503", "502", "500", "overloaded", "temporary"}
+	for _, code := range rt.retry.StatusCodes {
+		if containsHTTPStatusCode(msg, code) {
+			return true
+		}
+	}
+	retryable := []string{"too many requests", "rate limit", "timeout", "network", "connection", "overloaded", "temporary"}
 	for _, part := range retryable {
 		if strings.Contains(msg, part) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsHTTPStatusCode(msg string, code int) bool {
+	target := strconv.Itoa(code)
+	fields := strings.FieldsFunc(msg, func(r rune) bool {
+		return r < '0' || r > '9'
+	})
+	for _, field := range fields {
+		if field == target {
 			return true
 		}
 	}

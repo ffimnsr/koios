@@ -267,8 +267,8 @@ Example response:
       "exec": true,
       "web": true
     },
-    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake"],
-    "chat_tools": ["time.now", "session.history", "memory.search", "memory.insert", "memory.get", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "write", "edit", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
+    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
+    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "write", "edit", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
     "stream_notifications": ["stream.delta", "stream.event", "session.message"]
   }
 }
@@ -349,6 +349,46 @@ Clear the conversation history for this peer.
 {"id": "4", "result": {"ok": true}}
 ```
 
+### Agent Session Tools
+
+These are server-side chat tools exposed to the model rather than JSON-RPC
+methods:
+
+- `session.list`: enumerate known sessions for this peer, including persisted
+  `reply_back` policy and spawned sub-sessions.
+- `session.spawn`: create a sub-session and optionally wait for completion.
+  Supports `announce_skip` and `reply_skip`, and also understands
+  `ANNOUNCE_SKIP` / `REPLY_SKIP` tokens embedded in the task text.
+- `subagent.status`: poll a spawned subagent run by id.
+- `session.send`: send a message into another same-peer session by
+  `session_key` or `run_id`; active sub-sessions are steered in place, while
+  other sessions execute a turn and can mirror replies back to the source
+  session.
+- `session.patch`: update persisted session policy. Today this supports
+  `reply_back`.
+
+Example tool arguments:
+
+```json
+{"name":"session.list","arguments":{}}
+```
+
+```json
+{"name":"session.spawn","arguments":{"task":"Review the failures","wait":true,"reply_back":true,"announce_skip":false,"reply_skip":false}}
+```
+
+```json
+{"name":"subagent.status","arguments":{"id":"<run-id>"}}
+```
+
+```json
+{"name":"session.send","arguments":{"session_key":"alice::sender::bob","message":"Summarize the thread","reply_back":true,"wait_timeout_seconds":30}}
+```
+
+```json
+{"name":"session.patch","arguments":{"session_key":"alice::sender::bob","reply_back":false}}
+```
+
 ---
 
 ### `agent.run`
@@ -414,7 +454,9 @@ Wait for a queued agent run to finish and return the final run record.
 
 ### `subagent.spawn`
 
-Spawn an asynchronous child agent run. Returns immediately with the run record; poll `subagent.get` for status.
+Spawn an asynchronous child agent run. Returns immediately with the run record; poll `subagent.status` for status. `subagent.get` remains available as a compatibility alias.
+Per-parent-session concurrency is enforced with a semaphore, so excess child
+runs stay queued until a slot is available rather than failing immediately.
 
 **Params:**
 
@@ -428,10 +470,14 @@ Spawn an asynchronous child agent run. Returns immediately with the run record; 
 | `role` | `string` | `main`, `orchestrator`, or `leaf` |
 | `max_children` | `int` | Override max children for this run |
 | `stream` | `bool` | Stream child output |
+| `announce_skip` | `bool` | Suppress the initial queued announcement to the source session |
+| `reply_skip` | `bool` | Suppress the final mirrored child reply even when `reply_back` is enabled |
 
 ```json
 {"id": "6", "method": "subagent.spawn", "params": {
-  "task": "Research and summarise topic X"
+  "task": "Research and summarise topic X",
+  "announce_skip": false,
+  "reply_skip": false
 }}
 ```
 
@@ -453,6 +499,19 @@ Get the current state of a run.
 
 ```json
 {"id": "8", "method": "subagent.get", "params": {"id": "<run-id>"}}
+```
+
+---
+
+### `subagent.status`
+
+Poll the current state of a run by id. This is equivalent to `subagent.get`.
+The returned run record now includes a structured `subturn` object with
+parent/child coordination metadata, concurrency reservation details, step
+counts, tool call counts, and the latest lifecycle event observed for the run.
+
+```json
+{"id": "8b", "method": "subagent.status", "params": {"id": "<run-id>"}}
 ```
 
 ---
@@ -517,11 +576,18 @@ Manage scheduled jobs. Requires `cron.dir` to be set.
 
 **Payload kinds:** `systemEvent` (injects a system message into the session), `agentTurn` (executes an isolated LLM call and appends the result).
 
+`agentTurn` payloads may include `preload_urls` to lazily fetch fresh external text before the scheduled turn. Jobs may also declare `dispatch.defer_if_active=true` to defer while the peer is active and `dispatch.require_approval=true` to gate scheduled runs through the cron approval hook.
+
 ```json
 {"id": "13", "method": "cron.create", "params": {
   "name": "daily-briefing",
   "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "America/New_York"},
-  "payload": {"kind": "agentTurn", "message": "What is on my agenda today?"},
+  "payload": {
+    "kind": "agentTurn",
+    "message": "What is on my agenda today?",
+    "preload_urls": ["https://example.com/agenda.txt"]
+  },
+  "dispatch": {"defer_if_active": true, "require_approval": false},
   "enabled": true
 }}
 ```
@@ -545,6 +611,32 @@ Read the run history for a job.
 ```json
 {"id": "15", "method": "cron.runs", "params": {"id": "<job-id>", "limit": 50}}
 ```
+
+---
+
+### Webhook Events
+
+`POST /v1/webhooks/events` accepts authenticated external events when `KOIOS_WEBHOOK_TOKEN` is configured.
+
+Supported webhook `type` values:
+- `message.append`
+- `presence.set`
+- `cron.trigger`
+- `cron.schedule`
+
+Example one-shot webhook scheduling:
+
+```json
+{
+  "type": "cron.schedule",
+  "peer_id": "alice",
+  "name": "one-shot-reminder",
+  "schedule": {"kind": "at", "at": "2026-04-14T09:30:00Z"},
+  "payload": {"kind": "systemEvent", "text": "Reminder from webhook"}
+}
+```
+
+Hook support includes `before_message`, `after_message`, `message_received`, `before_llm`, `after_llm`, `before_tool_call`, `after_tool_call`, compaction hooks, and `cron_approval`. If `KOIOS_HOOK_INTERCEPTOR_URL` is set, `before_message` and `before_llm` may rewrite in-flight requests by returning a modified event body.
 
 ---
 
@@ -658,6 +750,10 @@ Search the public web or fetch page content.
 ### Workspace Tools (Agent)
 
 When workspace is enabled, the agent can call:
+- `session.list`
+- `session.spawn`
+- `session.send`
+- `session.patch`
 - `workspace.list`
 - `workspace.read`
 - `workspace.write`

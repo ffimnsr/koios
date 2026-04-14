@@ -42,7 +42,7 @@
 //	session.reset
 //	standing.get / .set / .clear
 //	agent.run / .start / .get / .wait / .cancel
-//	subagent.list / .spawn / .get / .kill / .steer / .transcript
+//	subagent.list / .spawn / .get / .status / .kill / .steer / .transcript
 //	memory.search / .insert / .list / .delete
 //	cron.list / .create / .get / .update / .delete / .trigger / .runs
 //	heartbeat.get / .set / .wake
@@ -60,8 +60,10 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/heartbeat"
 	"github.com/ffimnsr/koios/internal/memory"
+	"github.com/ffimnsr/koios/internal/monitor"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/presence"
 	"github.com/ffimnsr/koios/internal/scheduler"
@@ -69,6 +71,7 @@ import (
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
+	"github.com/ffimnsr/koios/internal/usage"
 	"github.com/ffimnsr/koios/internal/workspace"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -215,6 +218,10 @@ type Handler struct {
 	allowedOrigins  []string // empty = allow all
 	hooks           *ops.Manager
 	presence        *presence.Manager
+	messageBus      *eventbus.Bus
+	usageStore      *usage.Store
+	monitor         *monitor.Monitor
+	logLevel        *slog.LevelVar
 
 	// dispatchWG tracks in-flight dispatch goroutines for graceful shutdown.
 	dispatchWG sync.WaitGroup
@@ -250,6 +257,7 @@ type HandlerOptions struct {
 	ExecConfig      ExecConfig
 	Hooks           *ops.Manager
 	Presence        *presence.Manager
+	MessageBus      *eventbus.Bus
 	// AllowedOrigins, when non-empty, restricts WebSocket upgrades to requests
 	// whose Origin header exactly matches one of the listed values
 	// (case-insensitive).  An empty slice permits all origins.
@@ -258,6 +266,14 @@ type HandlerOptions struct {
 	// SOUL.md, USER.md, IDENTITY.md) are read and injected into every system
 	// prompt.
 	WorkspaceRoot string
+	// UsageStore, when non-nil, accumulates per-peer token usage across turns.
+	UsageStore *usage.Store
+	// Monitor, when non-nil, is notified of inbound requests so it can track
+	// idle / stale state.
+	Monitor *monitor.Monitor
+	// LogLevel, when non-nil, is updated by the server.set_log_level RPC and
+	// by hot-reload events.
+	LogLevel *slog.LevelVar
 }
 
 // NewHandler creates the WebSocket control-plane handler.
@@ -295,6 +311,10 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		allowedOrigins:  opts.AllowedOrigins,
 		hooks:           opts.Hooks,
 		presence:        opts.Presence,
+		messageBus:      opts.MessageBus,
+		usageStore:      opts.UsageStore,
+		monitor:         opts.Monitor,
+		logLevel:        opts.LogLevel,
 		syncRuns:        make(map[string]context.CancelFunc),
 		clients:         make(map[*wsConn]struct{}),
 		execApprovals:   newExecApprovalStore(execCfg.ApprovalTTL),
@@ -305,6 +325,24 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		})
 	}
 	return h
+}
+
+func (h *Handler) publishSessionMessage(sessionKey, source string, msg types.Message, data map[string]any) {
+	if sessionKey == "" {
+		return
+	}
+	if h.messageBus != nil {
+		h.messageBus.Publish(eventbus.Event{
+			Kind:       "session.message",
+			SessionKey: sessionKey,
+			PeerID:     sessionKey,
+			Source:     source,
+			Message:    &msg,
+			Data:       data,
+		})
+		return
+	}
+	h.store.AppendWithSource(sessionKey, source, msg)
 }
 
 // ServeHTTP upgrades the connection to WebSocket and drives the per-peer
@@ -348,6 +386,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+
+	if h.monitor != nil {
+		h.monitor.TouchActivity()
+	}
 
 	// Lazily start the peer's heartbeat goroutine on first connection.
 	if h.hbRunner != nil {
@@ -437,6 +479,25 @@ func (h *Handler) readLoop(ctx context.Context, wsc *wsConn) {
 			continue
 		}
 		if h.hooks != nil {
+			ev, err := h.hooks.Intercept(ctx, ops.Event{
+				Name:   ops.HookBeforeMessage,
+				PeerID: wsc.peerID,
+				Data: map[string]any{
+					"method": req.Method,
+					"params": json.RawMessage(req.Params),
+					"has_id": len(req.ID) > 0,
+				},
+			})
+			if err != nil {
+				wsc.replyErr(req.ID, errCodeServer, "hook rejected request: "+err.Error())
+				continue
+			}
+			req.Method = eventString(ev.Data, "method", req.Method)
+			if params, ok := eventRawMessage(ev.Data, "params"); ok {
+				req.Params = params
+			}
+		}
+		if h.hooks != nil {
 			if err := h.hooks.Emit(ctx, ops.Event{
 				Name:   ops.HookMessageReceived,
 				PeerID: wsc.peerID,
@@ -468,6 +529,29 @@ func (h *Handler) Drain() {
 
 // dispatch routes a parsed RPC request to its handler method.
 func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	if h.hooks != nil {
+		if err := h.hooks.Emit(ctx, ops.Event{
+			Name:   ops.HookBeforeMessage,
+			PeerID: wsc.peerID,
+			Data: map[string]any{
+				"method": req.Method,
+				"has_id": len(req.ID) > 0,
+			},
+		}); err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "hook rejected request: "+err.Error())
+			return
+		}
+		defer func() {
+			_ = h.hooks.Emit(ctx, ops.Event{
+				Name:   ops.HookAfterMessage,
+				PeerID: wsc.peerID,
+				Data: map[string]any{
+					"method": req.Method,
+					"has_id": len(req.ID) > 0,
+				},
+			})
+		}()
+	}
 	switch req.Method {
 	case "ping":
 		wsc.reply(req.ID, map[string]bool{"pong": true})
@@ -532,6 +616,10 @@ func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	case "subagent.spawn":
 		h.rpcSubagentSpawn(ctx, wsc, req)
 	case "subagent.get":
+		h.rpcSubagentGet(ctx, wsc, req)
+	case "subagent.status":
+		h.rpcSubagentGet(ctx, wsc, req)
+	case "spawn.status":
 		h.rpcSubagentGet(ctx, wsc, req)
 	case "subagent.kill":
 		h.rpcSubagentKill(ctx, wsc, req)
@@ -690,8 +778,59 @@ func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 		}
 		h.rpcHeartbeatWake(ctx, wsc, req)
 
+	// ── Usage ─────────────────────────────────────────────────────────────
+	case "usage.get":
+		h.rpcUsageGet(wsc, req)
+	case "usage.list":
+		h.rpcUsageList(wsc, req)
+	case "usage.totals":
+		h.rpcUsageTotals(wsc, req)
+
+	// ── Admin / hot-reload ────────────────────────────────────────────────
+	case "server.set_log_level":
+		h.rpcSetLogLevel(wsc, req)
+
 	default:
 		wsc.replyErr(req.ID, errCodeMethodNotFound, "unknown method: "+req.Method)
+	}
+}
+
+func eventString(data map[string]any, key, fallback string) string {
+	if data == nil {
+		return fallback
+	}
+	value, ok := data[key]
+	if !ok {
+		return fallback
+	}
+	s, ok := value.(string)
+	if !ok || strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
+}
+
+func eventRawMessage(data map[string]any, key string) (json.RawMessage, bool) {
+	if data == nil {
+		return nil, false
+	}
+	value, ok := data[key]
+	if !ok || value == nil {
+		return nil, false
+	}
+	switch v := value.(type) {
+	case json.RawMessage:
+		return v, true
+	case []byte:
+		return json.RawMessage(v), true
+	case string:
+		return json.RawMessage(v), true
+	default:
+		buf, err := json.Marshal(v)
+		if err != nil {
+			return nil, false
+		}
+		return json.RawMessage(buf), true
 	}
 }
 
@@ -737,6 +876,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 			"subagent.list",
 			"subagent.spawn",
 			"subagent.get",
+			"subagent.status",
 			"subagent.kill",
 			"subagent.steer",
 			"subagent.transcript",
@@ -768,6 +908,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 	if caps["heartbeat"] {
 		methods = append(methods, "heartbeat.get", "heartbeat.set", "heartbeat.wake")
 	}
+	methods = append(methods, "usage.get", "usage.list", "usage.totals", "server.set_log_level")
 
 	tools := make([]string, 0, len(h.ToolDefinitions(peerID)))
 	for _, tool := range h.ToolDefinitions(peerID) {
@@ -836,12 +977,22 @@ func (h *Handler) rpcPresenceSet(wsc *wsConn, req *rpcRequest) {
 
 // ── chat ──────────────────────────────────────────────────────────────────────
 
+// FileAttachment is an image or file sent inline with a chat message.
+// Data must be a base64-encoded payload; MimeType must be a valid MIME type.
+type FileAttachment struct {
+	Data     string `json:"data"`               // base64-encoded content
+	MimeType string `json:"mime_type"`          // e.g. "image/jpeg"
+	Name     string `json:"name,omitempty"`     // optional filename hint
+	Detail   string `json:"detail,omitempty"`   // OpenAI detail level: auto/low/high
+}
+
 type chatParams struct {
-	Messages    []types.Message `json:"messages"`
-	Stream      bool            `json:"stream,omitempty"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
+	Messages    []types.Message  `json:"messages"`
+	Files       []FileAttachment `json:"files,omitempty"` // vision: attach images to the last user message
+	Stream      bool             `json:"stream,omitempty"`
+	MaxTokens   int              `json:"max_tokens,omitempty"`
+	Temperature *float64         `json:"temperature,omitempty"`
+	TopP        *float64         `json:"top_p,omitempty"`
 }
 
 func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
@@ -853,6 +1004,10 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	if len(p.Messages) == 0 {
 		wsc.replyErr(req.ID, errCodeInvalidParams, "messages must not be empty")
 		return
+	}
+	// Vision pipeline: attach files to the last user message as multipart content.
+	if len(p.Files) > 0 {
+		p.Messages = attachFilesToLastUserMessage(p.Messages, p.Files)
 	}
 	if h.agentRuntime == nil || h.agentCoord == nil {
 		wsc.replyErr(req.ID, errCodeServer, "agent runtime is not enabled")
@@ -905,7 +1060,10 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 			})
 		}
 		h.indexMemory(ctx, wsc.peerID, append(turnMessages, types.Message{Role: "assistant", Content: result.AssistantText}))
-		wsc.reply(req.ID, map[string]any{"assistant_text": result.AssistantText, "done": true})
+		if h.usageStore != nil {
+			h.usageStore.Add(wsc.peerID, result.Usage)
+		}
+		wsc.reply(req.ID, map[string]any{"assistant_text": result.AssistantText, "usage": result.Usage, "done": true})
 		return
 	}
 
@@ -916,6 +1074,11 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 		return
 	}
 	h.indexMemory(ctx, wsc.peerID, append(turnMessages, types.Message{Role: "assistant", Content: result.AssistantText}))
+	if h.usageStore != nil {
+		if result.Response != nil {
+			h.usageStore.Add(wsc.peerID, result.Response.Usage)
+		}
+	}
 	wsc.reply(req.ID, result.Response)
 }
 
@@ -933,6 +1096,54 @@ func (h *Handler) indexMemory(ctx context.Context, peerID string, msgs []types.M
 			slog.Warn("ws: memory index", "peer", peerID, "err", err)
 		}
 	}
+}
+
+// attachFilesToLastUserMessage builds multipart content for the last user
+// message in msgs by appending image_url parts for each FileAttachment. A copy
+// of the slice is returned; the original is not mutated.
+func attachFilesToLastUserMessage(msgs []types.Message, files []FileAttachment) []types.Message {
+	if len(files) == 0 {
+		return msgs
+	}
+	// Find the last user message.
+	lastIdx := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			lastIdx = i
+			break
+		}
+	}
+	if lastIdx < 0 {
+		return msgs
+	}
+	// Build content parts: text first, then images.
+	out := make([]types.Message, len(msgs))
+	copy(out, msgs)
+	m := out[lastIdx]
+	parts := make([]types.ContentPart, 0, 1+len(files))
+	if m.Content != "" {
+		parts = append(parts, types.ContentPart{Type: "text", Text: m.Content})
+	}
+	for _, f := range files {
+		if f.Data == "" || f.MimeType == "" {
+			continue
+		}
+		dataURI := "data:" + f.MimeType + ";base64," + f.Data
+		detail := f.Detail
+		if detail == "" {
+			detail = "auto"
+		}
+		parts = append(parts, types.ContentPart{
+			Type: "image_url",
+			ImageURL: &types.ImageURLPart{
+				URL:    dataURI,
+				Detail: detail,
+			},
+		})
+	}
+	m.Parts = parts
+	out[lastIdx] = m
+	return out
 }
 
 func (h *Handler) rpcSessionReset(_ context.Context, wsc *wsConn, req *rpcRequest) {
@@ -1084,6 +1295,9 @@ func (h *Handler) rpcAgentRun(ctx context.Context, wsc *wsConn, req *rpcRequest)
 				"content": result.AssistantText,
 			})
 		}
+		if h.usageStore != nil {
+			h.usageStore.Add(wsc.peerID, result.Usage)
+		}
 		wsc.reply(req.ID, result)
 		return
 	}
@@ -1093,6 +1307,9 @@ func (h *Handler) rpcAgentRun(ctx context.Context, wsc *wsConn, req *rpcRequest)
 		slog.Error("ws: agent run", "peer", wsc.peerID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "agent run failed: "+err.Error())
 		return
+	}
+	if h.usageStore != nil {
+		h.usageStore.Add(wsc.peerID, result.Usage)
 	}
 	// Include run_id so the caller can correlate with agent.cancel if needed.
 	wsc.reply(req.ID, map[string]any{
@@ -1317,6 +1534,12 @@ func (h *Handler) rpcSubagentSpawn(ctx context.Context, wsc *wsConn, req *rpcReq
 		return
 	}
 	spawnReq.PeerID = wsc.peerID
+	if spawnReq.ParentSessionKey == "" {
+		spawnReq.ParentSessionKey = wsc.peerID
+	}
+	if spawnReq.SourceSessionKey == "" {
+		spawnReq.SourceSessionKey = spawnReq.ParentSessionKey
+	}
 	rec, err := h.subRuntime.Spawn(ctx, spawnReq)
 	if err != nil {
 		slog.Error("ws: subagent spawn", "peer", wsc.peerID, "error", err)
@@ -1534,7 +1757,9 @@ func (h *Handler) rpcWorkspaceList(_ context.Context, wsc *wsConn, req *rpcReque
 
 func (h *Handler) rpcWorkspaceRead(_ context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
-		Path string `json:"path"`
+		Path      string `json:"path"`
+		StartLine int    `json:"start_line,omitempty"`
+		EndLine   int    `json:"end_line,omitempty"`
 	}
 	if err := decodeParams(req.Params, &p); err != nil {
 		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
@@ -1544,7 +1769,7 @@ func (h *Handler) rpcWorkspaceRead(_ context.Context, wsc *wsConn, req *rpcReque
 		wsc.replyErr(req.ID, errCodeInvalidParams, "path is required")
 		return
 	}
-	result, err := h.workspaceRead(wsc.peerID, p.Path)
+	result, err := h.workspaceRead(wsc.peerID, p.Path, p.StartLine, p.EndLine)
 	if err != nil {
 		wsc.replyErr(req.ID, errCodeServer, err.Error())
 		return
@@ -1645,12 +1870,13 @@ func (h *Handler) rpcCronList(_ context.Context, wsc *wsConn, req *rpcRequest) {
 }
 
 type cronCreateParams struct {
-	Name           string             `json:"name"`
-	Description    string             `json:"description,omitempty"`
-	Schedule       scheduler.Schedule `json:"schedule"`
-	Payload        scheduler.Payload  `json:"payload"`
-	Enabled        *bool              `json:"enabled,omitempty"`
-	DeleteAfterRun *bool              `json:"delete_after_run,omitempty"`
+	Name           string                   `json:"name"`
+	Description    string                   `json:"description,omitempty"`
+	Schedule       scheduler.Schedule       `json:"schedule"`
+	Payload        scheduler.Payload        `json:"payload"`
+	Dispatch       scheduler.DispatchPolicy `json:"dispatch,omitempty"`
+	Enabled        *bool                    `json:"enabled,omitempty"`
+	DeleteAfterRun *bool                    `json:"delete_after_run,omitempty"`
 }
 
 func (h *Handler) rpcCronCreate(_ context.Context, wsc *wsConn, req *rpcRequest) {
@@ -1687,6 +1913,7 @@ func (h *Handler) rpcCronCreate(_ context.Context, wsc *wsConn, req *rpcRequest)
 		Description:    p.Description,
 		Schedule:       p.Schedule,
 		Payload:        p.Payload,
+		Dispatch:       p.Dispatch,
 		Enabled:        enabled,
 		DeleteAfterRun: deleteAfterRun,
 	}
@@ -1721,13 +1948,14 @@ func (h *Handler) rpcCronGet(_ context.Context, wsc *wsConn, req *rpcRequest) {
 }
 
 type cronUpdateParams struct {
-	ID             string              `json:"id"`
-	Name           *string             `json:"name,omitempty"`
-	Description    *string             `json:"description,omitempty"`
-	Enabled        *bool               `json:"enabled,omitempty"`
-	Schedule       *scheduler.Schedule `json:"schedule,omitempty"`
-	Payload        *scheduler.Payload  `json:"payload,omitempty"`
-	DeleteAfterRun *bool               `json:"delete_after_run,omitempty"`
+	ID             string                    `json:"id"`
+	Name           *string                   `json:"name,omitempty"`
+	Description    *string                   `json:"description,omitempty"`
+	Enabled        *bool                     `json:"enabled,omitempty"`
+	Schedule       *scheduler.Schedule       `json:"schedule,omitempty"`
+	Payload        *scheduler.Payload        `json:"payload,omitempty"`
+	Dispatch       *scheduler.DispatchPolicy `json:"dispatch,omitempty"`
+	DeleteAfterRun *bool                     `json:"delete_after_run,omitempty"`
 }
 
 func (h *Handler) rpcCronUpdate(_ context.Context, wsc *wsConn, req *rpcRequest) {
@@ -1776,6 +2004,9 @@ func (h *Handler) rpcCronUpdate(_ context.Context, wsc *wsConn, req *rpcRequest)
 			return
 		}
 		job.Payload = *p.Payload
+	}
+	if p.Dispatch != nil {
+		job.Dispatch = *p.Dispatch
 	}
 	if err := h.jobStore.Update(job); err != nil {
 		slog.Error("ws: cron update", "job", p.ID, "error", err)
@@ -2091,4 +2322,81 @@ func decodeParams(params json.RawMessage, dst any) error {
 		return fmt.Errorf("invalid params: %w", err)
 	}
 	return nil
+}
+
+// ── usage RPCs ────────────────────────────────────────────────────────────────
+
+func (h *Handler) rpcUsageGet(wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		PeerID string `json:"peer_id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	peerID := strings.TrimSpace(p.PeerID)
+	if peerID == "" {
+		peerID = wsc.peerID
+	}
+	if h.usageStore == nil {
+		wsc.reply(req.ID, map[string]any{"peer_id": peerID, "found": false})
+		return
+	}
+	u, ok := h.usageStore.Get(peerID)
+	wsc.reply(req.ID, map[string]any{"peer_id": peerID, "found": ok, "usage": u})
+}
+
+func (h *Handler) rpcUsageList(wsc *wsConn, req *rpcRequest) {
+	if h.usageStore == nil {
+		wsc.reply(req.ID, map[string]any{"sessions": []any{}, "count": 0})
+		return
+	}
+	all := h.usageStore.All()
+	wsc.reply(req.ID, map[string]any{"sessions": all, "count": len(all)})
+}
+
+func (h *Handler) rpcUsageTotals(wsc *wsConn, req *rpcRequest) {
+	if h.usageStore == nil {
+		wsc.reply(req.ID, map[string]any{"totals": nil})
+		return
+	}
+	wsc.reply(req.ID, map[string]any{"totals": h.usageStore.Totals()})
+}
+
+// ── admin ─────────────────────────────────────────────────────────────────────
+
+// rpcSetLogLevel changes the daemon log level at runtime.
+func (h *Handler) rpcSetLogLevel(wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Level string `json:"level"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if strings.TrimSpace(p.Level) == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "level is required")
+		return
+	}
+	if h.logLevel == nil {
+		wsc.replyErr(req.ID, errCodeServer, "log level control is not enabled on this daemon")
+		return
+	}
+	var level slog.Level
+	switch strings.ToLower(strings.TrimSpace(p.Level)) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		wsc.replyErr(req.ID, errCodeInvalidParams, "invalid level: must be debug, info, warn, or error")
+		return
+	}
+	h.logLevel.Set(level)
+	slog.Info("log level changed", "level", level.String(), "peer", wsc.peerID)
+	wsc.reply(req.ID, map[string]any{"ok": true, "level": level.String()})
 }

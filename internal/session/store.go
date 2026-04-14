@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,11 @@ type journalEntry struct {
 	Type    string         `json:"type"`
 	Message *types.Message `json:"message,omitempty"`
 	Summary string         `json:"summary,omitempty"`
+}
+
+// SessionPolicy captures persisted per-session behavior toggles.
+type SessionPolicy struct {
+	ReplyBack bool `json:"reply_back,omitempty"`
 }
 
 // Session holds the conversation history for a single peer.
@@ -312,6 +318,12 @@ type Options struct {
 	SessionMaxEntries int
 	// IdleResetAfter, when > 0, resets a session after this much inactivity.
 	IdleResetAfter time.Duration
+	// IdlePruneAfter, when > 0, rewrites idle sessions down to IdlePruneKeep
+	// messages instead of resetting them entirely.
+	IdlePruneAfter time.Duration
+	// IdlePruneKeep controls how many most-recent messages remain after an
+	// idle-prune cycle. Values <= 0 disable idle pruning.
+	IdlePruneKeep int
 	// DailyResetMinutes, when >= 0, resets sessions whose latest activity falls
 	// before today's local reset cutover and the current time is after it.
 	DailyResetMinutes int
@@ -331,7 +343,11 @@ type Store struct {
 	retention        time.Duration
 	maxEntries       int
 	idleResetAfter   time.Duration
+	idlePruneAfter   time.Duration
+	idlePruneKeep    int
 	dailyResetMins   int
+	policies         map[string]SessionPolicy
+	policyPath       string
 	subscribers      map[string]map[uint64]func(AppendEvent)
 	nextSubID        uint64
 }
@@ -347,6 +363,7 @@ type MaintenanceReport struct {
 	DeletedExpired int `json:"deleted_expired"`
 	DeletedEvicted int `json:"deleted_evicted"`
 	IdleResets     int `json:"idle_resets"`
+	IdlePrunes     int `json:"idle_prunes"`
 	DailyResets    int `json:"daily_resets"`
 }
 
@@ -373,24 +390,34 @@ func NewWithOptions(opts Options) *Store {
 		retention:        opts.SessionRetention,
 		maxEntries:       opts.SessionMaxEntries,
 		idleResetAfter:   opts.IdleResetAfter,
+		idlePruneAfter:   opts.IdlePruneAfter,
+		idlePruneKeep:    opts.IdlePruneKeep,
 		dailyResetMins:   opts.DailyResetMinutes,
+		policies:         make(map[string]SessionPolicy),
 		subscribers:      make(map[string]map[uint64]func(AppendEvent)),
 	}
 	if opts.SessionDir != "" {
 		if err := os.MkdirAll(opts.SessionDir, 0o700); err != nil {
 			slog.Warn("session store: cannot create session dir", "dir", opts.SessionDir, "err", err)
 		}
+		st.policyPath = filepath.Join(opts.SessionDir, "_policies.json")
+		st.loadPolicies()
 	}
 	return st
 }
 
 // Get returns the session for peerID, creating and loading it on first access.
 func (st *Store) Get(peerID string) *Session {
+	sess := st.getOrLoad(peerID)
+	st.applyLifecycle(peerID, sess, time.Now())
+	return sess
+}
+
+func (st *Store) getOrLoad(peerID string) *Session {
 	st.mu.RLock()
 	sess, ok := st.peers[peerID]
 	st.mu.RUnlock()
 	if ok {
-		st.applyLifecycle(peerID, sess, time.Now())
 		return sess
 	}
 
@@ -406,7 +433,6 @@ func (st *Store) Get(peerID string) *Session {
 		sess.loadFromFile()
 	}
 	st.peers[peerID] = sess
-	st.applyLifecycle(peerID, sess, time.Now())
 	return sess
 }
 
@@ -516,10 +542,21 @@ func (st *Store) Maintain(now time.Time) MaintenanceReport {
 	}
 	st.mu.RUnlock()
 
+	if st.idleResetAfter > 0 || (st.idlePruneAfter > 0 && st.idlePruneKeep > 0) || st.dailyResetMins >= 0 {
+		for _, rec := range st.sessionRecords(now) {
+			if _, ok := loaded[rec.peerID]; ok {
+				continue
+			}
+			loaded[rec.peerID] = st.getOrLoad(rec.peerID)
+		}
+	}
+
 	for peerID, sess := range loaded {
 		switch st.applyLifecycle(peerID, sess, now) {
 		case "idle":
 			report.IdleResets++
+		case "idle-prune":
+			report.IdlePrunes++
 		case "daily":
 			report.DailyResets++
 		}
@@ -553,7 +590,7 @@ func (st *Store) Maintain(now time.Time) MaintenanceReport {
 }
 
 func (st *Store) MaintenanceEnabled() bool {
-	return st.retention > 0 || st.maxEntries > 0 || st.idleResetAfter > 0 || st.dailyResetMins >= 0
+	return st.retention > 0 || st.maxEntries > 0 || st.idleResetAfter > 0 || (st.idlePruneAfter > 0 && st.idlePruneKeep > 0) || st.dailyResetMins >= 0
 }
 
 type sessionRecord struct {
@@ -622,6 +659,12 @@ func (st *Store) applyLifecycle(peerID string, sess *Session, now time.Time) str
 		sess.truncateFile()
 		return "idle"
 	}
+	if st.idlePruneAfter > 0 && st.idlePruneKeep > 0 && !sess.lastActivity.IsZero() && now.Sub(sess.lastActivity) >= st.idlePruneAfter {
+		if pruneSessionMessages(sess, st.idlePruneKeep) {
+			sess.rewriteFile()
+			return "idle-prune"
+		}
+	}
 	if st.dailyResetMins >= 0 && !sess.lastActivity.IsZero() {
 		if shouldDailyReset(now, sess.lastActivity, st.dailyResetMins) {
 			sess.Messages = nil
@@ -631,6 +674,93 @@ func (st *Store) applyLifecycle(peerID string, sess *Session, now time.Time) str
 		}
 	}
 	return ""
+}
+
+func pruneSessionMessages(sess *Session, keep int) bool {
+	if keep <= 0 || len(sess.Messages) <= keep {
+		return false
+	}
+	sysEnd := 0
+	for sysEnd < len(sess.Messages) && sess.Messages[sysEnd].Role == "system" {
+		sysEnd++
+	}
+	if sysEnd >= len(sess.Messages) {
+		return false
+	}
+	nonSystem := len(sess.Messages) - sysEnd
+	if nonSystem <= keep {
+		return false
+	}
+	start := len(sess.Messages) - keep
+	if start < sysEnd {
+		start = sysEnd
+	}
+	sess.Messages = append(append([]types.Message(nil), sess.Messages[:sysEnd]...), sess.Messages[start:]...)
+	return true
+}
+
+func (st *Store) SetPolicy(sessionKey string, policy SessionPolicy) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !policy.ReplyBack {
+		delete(st.policies, sessionKey)
+	} else {
+		st.policies[sessionKey] = policy
+	}
+	return st.savePoliciesLocked()
+}
+
+func (st *Store) Policy(sessionKey string) SessionPolicy {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
+	return st.policies[sessionKey]
+}
+
+func (st *Store) SessionKeys(peerID string) []string {
+	records := st.sessionRecords(time.Now())
+	keys := make([]string, 0, len(records))
+	for _, rec := range records {
+		if rec.peerID == peerID || strings.HasPrefix(rec.peerID, peerID+"::") {
+			keys = append(keys, rec.peerID)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (st *Store) loadPolicies() {
+	if st.policyPath == "" {
+		return
+	}
+	data, err := os.ReadFile(st.policyPath)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		slog.Warn("session policy load", "path", st.policyPath, "err", err)
+		return
+	}
+	var policies map[string]SessionPolicy
+	if err := json.Unmarshal(data, &policies); err != nil {
+		slog.Warn("session policy parse", "path", st.policyPath, "err", err)
+		return
+	}
+	st.policies = policies
+}
+
+func (st *Store) savePoliciesLocked() error {
+	if st.policyPath == "" {
+		return nil
+	}
+	data, err := json.MarshalIndent(st.policies, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := st.policyPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, st.policyPath)
 }
 
 func shouldDailyReset(now, lastActivity time.Time, resetMinutes int) bool {

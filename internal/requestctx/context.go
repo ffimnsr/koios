@@ -51,6 +51,12 @@ type BuildOptions struct {
 	MemoryTopK        int
 	MemoryInject      bool
 	MemoryPeerID      string
+	// MemoryLCMWindow, when > 0, injects the N most-recent memory chunks for
+	// the peer unconditionally (sliding window), in addition to semantic search.
+	MemoryLCMWindow int
+	// MemoryNamespaces lists additional peer IDs whose memory is merged into
+	// the injection context (shared / global namespace support).
+	MemoryNamespaces []string
 	// IdentityDir is the workspace root directory. When non-empty, AGENTS.md,
 	// SOUL.md, USER.md, and IDENTITY.md are read from this directory and
 	// prepended to the system prompt on every turn.
@@ -112,12 +118,55 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	if len(prunedHistory) > 0 {
 		sysMessages = append([]types.Message{{Role: "system", Content: continuityInstruction}}, sysMessages...)
 	}
-	if opts.MemoryStore != nil && opts.MemoryInject && len(turnMessages) > 0 {
-		query := turnMessages[len(turnMessages)-1].Content
-		injected, hits, err := injectMemory(ctx, opts.MemoryStore, opts.MemoryPeerID, query, opts.MemoryTopK)
-		if err != nil {
-			return nil, err
+	if opts.MemoryStore != nil && len(turnMessages) > 0 {
+		var injected string
+		var hits int
+
+		// Semantic injection (BM25 / vector search).
+		if opts.MemoryInject {
+			query := turnMessages[len(turnMessages)-1].Content
+			var err error
+			injected, hits, err = injectMemory(ctx, opts.MemoryStore, opts.MemoryPeerID, query, opts.MemoryTopK)
+			if err != nil {
+				return nil, err
+			}
 		}
+
+		// LCM: inject most-recent N chunks regardless of query relevance.
+		if opts.MemoryLCMWindow > 0 {
+			lcmText, lcmHits, err := injectRecentMemory(ctx, opts.MemoryStore, opts.MemoryPeerID, opts.MemoryLCMWindow)
+			if err != nil {
+				return nil, err
+			}
+			if lcmText != "" {
+				if injected != "" {
+					injected += "\n\n" + lcmText
+				} else {
+					injected = lcmText
+				}
+				hits += lcmHits
+			}
+		}
+
+		// Namespace injection: merge results from additional peer namespaces.
+		for _, ns := range opts.MemoryNamespaces {
+			if ns == "" || ns == opts.MemoryPeerID {
+				continue
+			}
+			extra, extraHits, err := injectMemory(ctx, opts.MemoryStore, ns, turnMessages[len(turnMessages)-1].Content, opts.MemoryTopK)
+			if err != nil {
+				continue // namespace misses are non-fatal
+			}
+			if extra != "" {
+				if injected != "" {
+					injected += "\n\n" + extra
+				} else {
+					injected = extra
+				}
+				hits += extraHits
+			}
+		}
+
 		if injected != "" {
 			sysMessages = append(sysMessages, types.Message{Role: "system", Content: injected})
 			result.MemoryHits = hits
@@ -147,6 +196,20 @@ func injectMemory(ctx context.Context, store *memory.Store, peerID, query string
 		sb.WriteString("\n\n---\n\n")
 	}
 	return sb.String(), len(hits), nil
+}
+
+func injectRecentMemory(ctx context.Context, store *memory.Store, peerID string, n int) (string, int, error) {
+	chunks, err := store.Recent(ctx, peerID, n)
+	if err != nil || len(chunks) == 0 {
+		return "", 0, err
+	}
+	var sb strings.Builder
+	sb.WriteString("Recent memory context (sliding window):\n\n")
+	for _, c := range chunks {
+		sb.WriteString(c.Content)
+		sb.WriteString("\n\n---\n\n")
+	}
+	return sb.String(), len(chunks), nil
 }
 
 // buildContext assembles the full message slice that will be sent to the LLM:

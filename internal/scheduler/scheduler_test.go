@@ -1,14 +1,30 @@
 package scheduler
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/robfig/cron/v3"
+
+	"github.com/ffimnsr/koios/internal/presence"
+	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/types"
 )
 
 var testParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+type stubProvider struct {
+	complete func(context.Context, *types.ChatRequest) (*types.ChatResponse, error)
+}
+
+func (s *stubProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+	return s.complete(ctx, req)
+}
 
 // ── calcNextRun ──────────────────────────────────────────────────────────────
 
@@ -271,6 +287,105 @@ func TestJobStore_RunRecordRoundTrip(t *testing.T) {
 	}
 	if len(records) != 1 || records[0].RunID != "run-1" {
 		t.Fatalf("unexpected records: %v", records)
+	}
+}
+
+func TestSchedulerDispatch_DefersActivePeerJobs(t *testing.T) {
+	jobStore, err := NewJobStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJobStore: %v", err)
+	}
+	store := session.New(20)
+	presenceMgr := presence.NewManager(time.Minute)
+	presenceMgr.Set("peer-1", "online", false, "test")
+
+	job := &Job{
+		PeerID:    "peer-1",
+		Name:      "active-aware",
+		Enabled:   true,
+		Schedule:  Schedule{Kind: KindEvery, EveryMs: 60_000},
+		Payload:   Payload{Kind: PayloadSystemEvent, Text: "ping"},
+		Dispatch:  DispatchPolicy{DeferIfActive: true},
+		NextRunAt: time.Now().UTC().Add(-time.Second),
+	}
+	if err := jobStore.Add(job); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	sched := New(jobStore, &stubProvider{
+		complete: func(_ context.Context, _ *types.ChatRequest) (*types.ChatResponse, error) {
+			t.Fatal("provider should not be called when job is deferred")
+			return nil, nil
+		},
+	}, store, nil, "model", 1)
+	sched.SetPresence(presenceMgr)
+
+	before := time.Now().UTC()
+	sched.dispatch(context.Background())
+
+	got := jobStore.Get(job.JobID)
+	if got == nil {
+		t.Fatal("expected job to remain present")
+	}
+	if !got.NextRunAt.After(before) {
+		t.Fatalf("expected deferred next_run_at after %v, got %v", before, got.NextRunAt)
+	}
+	records, err := jobStore.ReadRunRecords(job.JobID, 10)
+	if err != nil {
+		t.Fatalf("ReadRunRecords: %v", err)
+	}
+	if len(records) != 1 || records[0].Status != RunSkip || !strings.Contains(records[0].Error, "active") {
+		t.Fatalf("unexpected run records: %#v", records)
+	}
+}
+
+func TestSchedulerRunAgentTurn_PreloadsExternalContent(t *testing.T) {
+	var captured *types.ChatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("latest external context"))
+	}))
+	defer server.Close()
+
+	jobStore, err := NewJobStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJobStore: %v", err)
+	}
+	store := session.New(20)
+	sched := New(jobStore, &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			captured = req
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}},
+			}, nil
+		},
+	}, store, nil, "model", 1)
+
+	job := &Job{
+		JobID:   "job-1",
+		PeerID:  "peer-1",
+		Name:    "preload",
+		Payload: Payload{Kind: PayloadAgentTurn, Message: "summarize it", PreloadURLs: []string{server.URL}},
+	}
+	out, err := sched.runAgentTurn(context.Background(), job)
+	if err != nil {
+		t.Fatalf("runAgentTurn: %v", err)
+	}
+	if out != "done" {
+		t.Fatalf("unexpected output %q", out)
+	}
+	if captured == nil {
+		t.Fatal("expected provider request to be captured")
+	}
+	found := false
+	for _, msg := range captured.Messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "latest external context") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected preloaded content in messages, got %#v", captured.Messages)
 	}
 }
 

@@ -66,22 +66,36 @@ type Payload struct {
 	// to the agentTurn request so the LLM has conversational context.
 	// When false (the default) the turn is sent with a fresh context.
 	IncludeHistory bool `json:"include_history,omitempty"`
+	// PreloadURLs are fetched just before an agentTurn executes and injected as
+	// extra context blocks. This is a best-effort lazy-load step so scheduled
+	// turns can work against fresh external content.
+	PreloadURLs []string `json:"preload_urls,omitempty"`
+}
+
+// DispatchPolicy controls how scheduled runs behave when the user is active or
+// when an external approval hook should gate execution.
+type DispatchPolicy struct {
+	// When true, scheduled runs are deferred while the peer is active.
+	DeferIfActive bool `json:"defer_if_active,omitempty"`
+	// When true, a cron approval hook must allow the run before execution.
+	RequireApproval bool `json:"require_approval,omitempty"`
 }
 
 // Job is a single persisted cron job entry.
 type Job struct {
-	JobID          string    `json:"job_id"`
-	PeerID         string    `json:"peer_id"`
-	Name           string    `json:"name"`
-	Description    string    `json:"description,omitempty"`
-	Schedule       Schedule  `json:"schedule"`
-	Payload        Payload   `json:"payload"`
-	Enabled        bool      `json:"enabled"`
-	DeleteAfterRun bool      `json:"delete_after_run"`
-	NextRunAt      time.Time `json:"next_run_at"`
-	LastRunAt      time.Time `json:"last_run_at,omitempty"`
-	ConsecErrors   int       `json:"consec_errors,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	JobID          string         `json:"job_id"`
+	PeerID         string         `json:"peer_id"`
+	Name           string         `json:"name"`
+	Description    string         `json:"description,omitempty"`
+	Schedule       Schedule       `json:"schedule"`
+	Payload        Payload        `json:"payload"`
+	Dispatch       DispatchPolicy `json:"dispatch,omitempty"`
+	Enabled        bool           `json:"enabled"`
+	DeleteAfterRun bool           `json:"delete_after_run"`
+	NextRunAt      time.Time      `json:"next_run_at"`
+	LastRunAt      time.Time      `json:"last_run_at,omitempty"`
+	ConsecErrors   int            `json:"consec_errors,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
 }
 
 // RunStatus represents the outcome of a single job execution.

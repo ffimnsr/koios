@@ -153,18 +153,24 @@ func (h *Handler) workspaceList(peerID, path string, recursive bool, limit int) 
 	return map[string]any{"path": path, "entries": entries, "count": len(entries)}, nil
 }
 
-func (h *Handler) workspaceRead(peerID, path string) (map[string]any, error) {
+func (h *Handler) workspaceRead(peerID, path string, startLine, endLine int) (map[string]any, error) {
 	if h.workspaceStore == nil {
 		return nil, fmt.Errorf("workspace is not enabled")
 	}
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("path is required")
 	}
-	content, err := h.workspaceStore.Read(peerID, path)
+	result, err := h.workspaceStore.ReadRange(peerID, path, startLine, endLine)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"path": path, "content": content}, nil
+	return map[string]any{
+		"path":        path,
+		"content":     result.Content,
+		"start_line":  result.StartLine,
+		"end_line":    result.EndLine,
+		"total_lines": result.TotalLines,
+	}, nil
 }
 
 func (h *Handler) workspaceWrite(peerID, path, content string, appendMode bool) (map[string]any, error) {

@@ -96,6 +96,9 @@ func normalizeExecConfig(cfg ExecConfig) ExecConfig {
 		cfg.ApprovalTTL = 15 * time.Minute
 	}
 	// Default to enabled and deny patterns active when not explicitly configured.
+	if !cfg.EnableDenyPatterns {
+		cfg.EnableDenyPatterns = true
+	}
 	if !cfg.Enabled {
 		// zero value: treat as enabled for backward compatibility unless caller
 		// has explicitly set it via Config — app.go always sets this field so
@@ -229,6 +232,62 @@ func (h *Handler) runExecTool(ctx context.Context, peerID string, p execParams) 
 		}, nil
 	}
 	return h.executeCommand(ctx, command, absWorkdir, timeout)
+}
+
+func (h *Handler) runSystemNotifyTool(ctx context.Context, title, message string) (map[string]any, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil, fmt.Errorf("message is required")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Koios"
+	}
+	name, args, err := systemNotifyCommand(title, message)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return nil, fmt.Errorf("system.notify failed: %s", errMsg)
+	}
+	return map[string]any{
+		"ok":      true,
+		"title":   title,
+		"message": message,
+		"command": append([]string{name}, args...),
+	}, nil
+}
+
+func systemNotifyCommand(title, message string) (string, []string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		if _, err := exec.LookPath("osascript"); err != nil {
+			return "", nil, fmt.Errorf("system notifications are unavailable: osascript not found")
+		}
+		script := fmt.Sprintf(`display notification %q with title %q`, message, title)
+		return "osascript", []string{"-e", script}, nil
+	case "windows":
+		if _, err := exec.LookPath("powershell"); err != nil {
+			if _, err := exec.LookPath("pwsh"); err != nil {
+				return "", nil, fmt.Errorf("system notifications are unavailable: PowerShell not found")
+			}
+			return "pwsh", []string{"-NoProfile", "-Command", fmt.Sprintf(`[console]::beep(800,200); Write-Output %q`, title+": "+message)}, nil
+		}
+		return "powershell", []string{"-NoProfile", "-Command", fmt.Sprintf(`[console]::beep(800,200); Write-Output %q`, title+": "+message)}, nil
+	default:
+		if _, err := exec.LookPath("notify-send"); err != nil {
+			return "", nil, fmt.Errorf("system notifications are unavailable: notify-send not found")
+		}
+		return "notify-send", []string{title, message}, nil
+	}
 }
 
 func (h *Handler) execNeedsApproval(command string) (string, bool) {

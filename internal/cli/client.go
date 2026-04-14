@@ -52,6 +52,7 @@ type agentRunResult struct {
 	SessionKey    string           `json:"session_key"`
 	Attempts      int              `json:"attempts"`
 	AssistantText string           `json:"assistant_text"`
+	Usage         map[string]any   `json:"usage,omitempty"`
 	Steps         int              `json:"steps"`
 	Events        []map[string]any `json:"events,omitempty"`
 }

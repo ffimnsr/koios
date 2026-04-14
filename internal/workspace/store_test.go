@@ -72,3 +72,24 @@ func TestManagerEdit(t *testing.T) {
 		t.Fatalf("content=%q", content)
 	}
 }
+
+func TestManagerReadRange(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, true, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Write("alice", "notes/todo.md", "one\ntwo\nthree\nfour\n", false); err != nil {
+		t.Fatal(err)
+	}
+	result, err := m.ReadRange("alice", "notes/todo.md", 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "two\nthree\n" {
+		t.Fatalf("content=%q", result.Content)
+	}
+	if result.StartLine != 2 || result.EndLine != 3 || result.TotalLines != 4 {
+		t.Fatalf("unexpected range metadata: %+v", result)
+	}
+}

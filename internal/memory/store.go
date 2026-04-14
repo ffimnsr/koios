@@ -224,6 +224,43 @@ func (s *Store) List(ctx context.Context, peerID string, limit int) ([]Chunk, er
 	return chunks, rows.Err()
 }
 
+// Recent returns the N most-recently created chunks for a peer in
+// chronological order (oldest first). Used by the LCM sliding-window injector.
+func (s *Store) Recent(ctx context.Context, peerID string, n int) ([]Chunk, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,'')
+		   FROM chunks WHERE peer_id = ?
+		  ORDER BY created_at DESC LIMIT ?`,
+		peerID, n)
+	if err != nil {
+		return nil, fmt.Errorf("memory recent: %w", err)
+	}
+	defer rows.Close()
+	var chunks []Chunk
+	for rows.Next() {
+		var c Chunk
+		var tagStr string
+		if err := rows.Scan(&c.ID, &c.PeerID, &c.Content, &c.CreatedAt, &tagStr, &c.Category); err != nil {
+			continue
+		}
+		if tagStr != "" {
+			c.Tags = strings.Split(tagStr, ",")
+		}
+		chunks = append(chunks, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Reverse to chronological order (oldest first) for cleaner context injection.
+	for i, j := 0, len(chunks)-1; i < j; i, j = i+1, j-1 {
+		chunks[i], chunks[j] = chunks[j], chunks[i]
+	}
+	return chunks, nil
+}
+
 // GetChunk returns one memory chunk by ID, enforcing peer ownership.
 func (s *Store) GetChunk(ctx context.Context, peerID, chunkID string) (*Chunk, error) {
 	var c Chunk

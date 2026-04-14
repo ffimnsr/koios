@@ -4,12 +4,101 @@ package types
 
 import "encoding/json"
 
+// ContentPart is a single element in a multipart message used for multimodal
+// inputs (text and images).
+type ContentPart struct {
+	Type     string        `json:"type"`                // "text" or "image_url"
+	Text     string        `json:"text,omitempty"`      // for type="text"
+	ImageURL *ImageURLPart `json:"image_url,omitempty"` // for type="image_url"
+}
+
+// ImageURLPart carries an image as a URL or base64 data URI.
+type ImageURLPart struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"` // "auto", "low", "high"
+}
+
 // Message is a single turn in a conversation.
+// When Parts is non-empty the message carries multimodal content and Parts
+// takes precedence over Content during JSON marshaling.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role       string        `json:"role"`
+	Content    string        `json:"content"`
+	Parts      []ContentPart `json:"-"` // multimodal content; overrides Content when non-empty
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+}
+
+// MarshalJSON serialises a Message. When Parts is non-empty the content field
+// is emitted as a JSON array of content parts (multimodal format); otherwise
+// it is emitted as a plain string (standard format).
+func (m Message) MarshalJSON() ([]byte, error) {
+	if len(m.Parts) > 0 {
+		type multipart struct {
+			Role       string        `json:"role"`
+			Content    []ContentPart `json:"content"`
+			ToolCallID string        `json:"tool_call_id,omitempty"`
+			ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+		}
+		return json.Marshal(multipart{
+			Role:       m.Role,
+			Content:    m.Parts,
+			ToolCallID: m.ToolCallID,
+			ToolCalls:  m.ToolCalls,
+		})
+	}
+	type plain struct {
+		Role       string     `json:"role"`
+		Content    string     `json:"content"`
+		ToolCallID string     `json:"tool_call_id,omitempty"`
+		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	}
+	return json.Marshal(plain{
+		Role:       m.Role,
+		Content:    m.Content,
+		ToolCallID: m.ToolCallID,
+		ToolCalls:  m.ToolCalls,
+	})
+}
+
+// UnmarshalJSON deserialises a Message, handling both string and array content.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	// Use a raw struct to capture the content field as a raw JSON value.
+	var raw struct {
+		Role       string          `json:"role"`
+		Content    json.RawMessage `json:"content"`
+		ToolCallID string          `json:"tool_call_id,omitempty"`
+		ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Role = raw.Role
+	m.ToolCallID = raw.ToolCallID
+	m.ToolCalls = raw.ToolCalls
+	if len(raw.Content) == 0 || string(raw.Content) == "null" {
+		return nil
+	}
+	// Try string first.
+	var s string
+	if err := json.Unmarshal(raw.Content, &s); err == nil {
+		m.Content = s
+		return nil
+	}
+	// Fall back to array of content parts.
+	var parts []ContentPart
+	if err := json.Unmarshal(raw.Content, &parts); err != nil {
+		return err
+	}
+	m.Parts = parts
+	// Populate Content with concatenated text parts for backward-compat code
+	// that still reads m.Content.
+	for _, p := range parts {
+		if p.Type == "text" {
+			m.Content += p.Text
+		}
+	}
+	return nil
 }
 
 // ChatRequest is the OpenAI-compatible /v1/chat/completions request body.

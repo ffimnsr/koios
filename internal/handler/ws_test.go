@@ -15,6 +15,7 @@ import (
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/workspace"
 	"github.com/gorilla/websocket"
@@ -75,6 +76,15 @@ func dialWS(t *testing.T, srv *httptest.Server, peerID string) *websocket.Conn {
 	}
 	t.Cleanup(func() { conn.Close() })
 	return conn
+}
+
+func mustSubagentRegistry(t *testing.T) *subagent.Registry {
+	t.Helper()
+	reg, err := subagent.NewRegistry("")
+	if err != nil {
+		t.Fatalf("subagent.NewRegistry: %v", err)
+	}
+	return reg
 }
 
 type rpcMsg struct {
@@ -344,6 +354,33 @@ func TestWS_WorkspaceRPC(t *testing.T) {
 		t.Fatalf("unexpected content: %q", readRes.Content)
 	}
 
+	sendRPC(t, conn, "w3b", "workspace.write", map[string]any{"path": "project/range.txt", "content": "one\ntwo\nthree\nfour\n"})
+	msg = readUntilID(t, conn, "w3b")
+	if msg.Error != nil {
+		t.Fatalf("workspace.write range file error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "w3c", "workspace.read", map[string]any{"path": "project/range.txt", "start_line": 2, "end_line": 3})
+	msg = readUntilID(t, conn, "w3c")
+	if msg.Error != nil {
+		t.Fatalf("workspace.read range error: %#v", msg.Error)
+	}
+	var rangeRes struct {
+		Content    string `json:"content"`
+		StartLine  int    `json:"start_line"`
+		EndLine    int    `json:"end_line"`
+		TotalLines int    `json:"total_lines"`
+	}
+	if err := json.Unmarshal(msg.Result, &rangeRes); err != nil {
+		t.Fatalf("unmarshal workspace.read range result: %v", err)
+	}
+	if rangeRes.Content != "two\nthree\n" {
+		t.Fatalf("unexpected range content: %q", rangeRes.Content)
+	}
+	if rangeRes.StartLine != 2 || rangeRes.EndLine != 3 || rangeRes.TotalLines != 4 {
+		t.Fatalf("unexpected range metadata: %#v", rangeRes)
+	}
+
 	sendRPC(t, conn, "w4", "workspace.list", map[string]any{"path": "project"})
 	msg = readUntilID(t, conn, "w4")
 	if msg.Error != nil {
@@ -510,6 +547,392 @@ func TestToolDefinitionsHonorPolicy(t *testing.T) {
 	}
 	if containsString(names, "exec") {
 		t.Fatalf("expected exec to be excluded by allow list, got %#v", names)
+	}
+}
+
+func TestExecuteTool_SystemRunUsesApprovalPolicy(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		ExecConfig: handler.ExecConfig{
+			Enabled:            true,
+			EnableDenyPatterns: true,
+			ApprovalMode:       "always",
+		},
+	})
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "system.run",
+		Arguments: json.RawMessage(`{"command":"echo hi"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(system.run): %v", err)
+	}
+	var got struct {
+		Status string `json:"status"`
+	}
+	raw, _ := json.Marshal(result)
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal system.run result: %v", err)
+	}
+	if got.Status != "approval_required" {
+		t.Fatalf("expected approval_required, got %#v", result)
+	}
+}
+
+func TestExecuteTool_SessionsTools(t *testing.T) {
+	store := session.New(20)
+	gate := make(chan struct{})
+	prov := &stubProvider{
+		complete: func(ctx context.Context, _ *types.ChatRequest) (*types.ChatResponse, error) {
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{
+					Message: types.Message{Role: "assistant", Content: "child finished"},
+				}},
+			}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	reg, err := subagent.NewRegistry("")
+	if err != nil {
+		t.Fatalf("subagent.NewRegistry: %v", err)
+	}
+	subrt := subagent.NewRuntime(rt, store, reg, nil, 4)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		SubRuntime:   subrt,
+	})
+
+	spawnedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.spawn",
+		Arguments: json.RawMessage(`{"task":"review parser errors","reply_back":true}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.spawn): %v", err)
+	}
+	rec, ok := spawnedAny.(*subagent.RunRecord)
+	if !ok {
+		t.Fatalf("expected *subagent.RunRecord, got %T", spawnedAny)
+	}
+	if !rec.ReplyBack {
+		t.Fatalf("expected reply_back to be persisted on run record: %#v", rec)
+	}
+	if rec.SubTurn.ParentSessionKey != "alice" || rec.SubTurn.SourceSessionKey != "alice" {
+		t.Fatalf("expected session.spawn to seed SubTurn parent/source session keys, got %#v", rec.SubTurn)
+	}
+
+	sentAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.send",
+		Arguments: json.RawMessage(`{"run_id":"` + rec.ID + `","message":"focus on the lexer first","reply_back":false}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.send): %v", err)
+	}
+	updated, ok := sentAny.(*subagent.RunRecord)
+	if !ok {
+		t.Fatalf("expected *subagent.RunRecord from session.send, got %T", sentAny)
+	}
+	if len(updated.Steering) != 1 || updated.Steering[0] != "focus on the lexer first" {
+		t.Fatalf("unexpected steering messages: %#v", updated.Steering)
+	}
+	if updated.ReplyBack {
+		t.Fatalf("expected reply_back to be updated to false: %#v", updated)
+	}
+
+	statusAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "subagent.status",
+		Arguments: json.RawMessage(`{"id":"` + rec.ID + `"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(subagent.status): %v", err)
+	}
+	statusRec, ok := statusAny.(*subagent.RunRecord)
+	if !ok {
+		t.Fatalf("expected *subagent.RunRecord from subagent.status, got %T", statusAny)
+	}
+	if statusRec.ID != rec.ID {
+		t.Fatalf("expected subagent.status to return run %q, got %#v", rec.ID, statusRec)
+	}
+
+	listAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.list): %v", err)
+	}
+	var listRes struct {
+		Count    int `json:"count"`
+		Sessions []struct {
+			Kind      string `json:"kind"`
+			RunID     string `json:"run_id"`
+			ReplyBack bool   `json:"reply_back"`
+		} `json:"sessions"`
+	}
+	raw, _ := json.Marshal(listAny)
+	if err := json.Unmarshal(raw, &listRes); err != nil {
+		t.Fatalf("unmarshal session.list result: %v", err)
+	}
+	if listRes.Count < 2 {
+		t.Fatalf("expected at least main + sub-session, got %#v", listRes)
+	}
+	foundSub := false
+	for _, sess := range listRes.Sessions {
+		if sess.RunID == rec.ID {
+			foundSub = true
+			if sess.ReplyBack {
+				t.Fatalf("expected session.list to show updated reply_back=false: %#v", sess)
+			}
+		}
+	}
+	if !foundSub {
+		t.Fatalf("expected spawned sub-session in list: %#v", listRes)
+	}
+
+	close(gate)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		current, ok := subrt.Get(rec.ID)
+		if ok && current.Status == subagent.StatusCompleted {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	historyAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.history",
+		Arguments: json.RawMessage(`{"run_id":"` + rec.ID + `"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.history): %v", err)
+	}
+	var historyRes struct {
+		RunID    string          `json:"run_id"`
+		Count    int             `json:"count"`
+		Messages []types.Message `json:"messages"`
+	}
+	raw, _ = json.Marshal(historyAny)
+	if err := json.Unmarshal(raw, &historyRes); err != nil {
+		t.Fatalf("unmarshal session.history result: %v", err)
+	}
+	if historyRes.RunID != rec.ID || historyRes.Count == 0 {
+		t.Fatalf("unexpected session.history result: %#v", historyRes)
+	}
+}
+
+func TestExecuteTool_SessionSendCrossSessionReplyBack(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			last := req.Messages[len(req.Messages)-1].Content
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{
+					Message: types.Message{Role: "assistant", Content: "reply to: " + last},
+				}},
+				Usage: types.Usage{PromptTokens: 4, CompletionTokens: 5, TotalTokens: 9},
+			}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+	})
+
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.send",
+		Arguments: json.RawMessage(`{"session_key":"alice::sender::bob","message":"hello from main","reply_back":true}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.send): %v", err)
+	}
+	var sendRes struct {
+		SessionKey string `json:"session_key"`
+		ReplyBack  bool   `json:"reply_back"`
+		Result     struct {
+			AssistantText string      `json:"assistant_text"`
+			Usage         types.Usage `json:"usage"`
+		} `json:"result"`
+	}
+	raw, _ := json.Marshal(result)
+	if err := json.Unmarshal(raw, &sendRes); err != nil {
+		t.Fatalf("unmarshal session.send result: %v", err)
+	}
+	if sendRes.SessionKey != "alice::sender::bob" || !sendRes.ReplyBack {
+		t.Fatalf("unexpected session.send result: %#v", sendRes)
+	}
+	if sendRes.Result.AssistantText != "reply to: hello from main" || sendRes.Result.Usage.TotalTokens != 9 {
+		t.Fatalf("unexpected nested result: %#v", sendRes.Result)
+	}
+	targetHistory := store.Get("alice::sender::bob").History()
+	if len(targetHistory) != 2 {
+		t.Fatalf("expected sent session history to contain user+assistant, got %#v", targetHistory)
+	}
+	sourceHistory := store.Get("alice").History()
+	if len(sourceHistory) != 1 || !strings.Contains(sourceHistory[0].Content, "[reply:alice::sender::bob]") {
+		t.Fatalf("expected mirrored reply in source history, got %#v", sourceHistory)
+	}
+	if !store.Policy("alice::sender::bob").ReplyBack {
+		t.Fatal("expected reply_back policy to persist on target session")
+	}
+}
+
+func TestExecuteTool_SessionPatchUpdatesPolicy(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	reg, err := subagent.NewRegistry("")
+	if err != nil {
+		t.Fatalf("subagent.NewRegistry: %v", err)
+	}
+	subrt := subagent.NewRuntime(rt, store, reg, nil, 4)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   agent.NewCoordinator(rt),
+		SubRuntime:   subrt,
+	})
+
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.patch",
+		Arguments: json.RawMessage(`{"session_key":"alice::sender::bob","reply_back":true}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.patch session_key): %v", err)
+	}
+	var patchRes struct {
+		OK         bool   `json:"ok"`
+		SessionKey string `json:"session_key"`
+		ReplyBack  bool   `json:"reply_back"`
+	}
+	raw, _ := json.Marshal(result)
+	if err := json.Unmarshal(raw, &patchRes); err != nil {
+		t.Fatalf("unmarshal session.patch result: %v", err)
+	}
+	if !patchRes.OK || patchRes.SessionKey != "alice::sender::bob" || !patchRes.ReplyBack {
+		t.Fatalf("unexpected session.patch result: %#v", patchRes)
+	}
+	if !store.Policy("alice::sender::bob").ReplyBack {
+		t.Fatal("expected patched reply_back policy on target session")
+	}
+}
+
+func TestWS_SubagentStatusAlias(t *testing.T) {
+	store := session.New(20)
+	gate := make(chan struct{})
+	prov := &stubProvider{
+		complete: func(ctx context.Context, _ *types.ChatRequest) (*types.ChatResponse, error) {
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{
+					Message: types.Message{Role: "assistant", Content: "child finished"},
+				}},
+			}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	subrt := subagent.NewRuntime(rt, store, mustSubagentRegistry(t), nil, 4)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		SubRuntime:   subrt,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "sub-caps", "server.capabilities", nil)
+	capsMsg := readUntilID(t, conn, "sub-caps")
+	if capsMsg.Error != nil {
+		t.Fatalf("unexpected capabilities error: %v", capsMsg.Error)
+	}
+	var caps struct {
+		Methods   []string `json:"methods"`
+		ChatTools []string `json:"chat_tools"`
+	}
+	if err := json.Unmarshal(capsMsg.Result, &caps); err != nil {
+		t.Fatalf("unmarshal server.capabilities result: %v", err)
+	}
+	if !containsString(caps.Methods, "subagent.status") {
+		t.Fatalf("expected methods to include subagent.status, got %#v", caps.Methods)
+	}
+	if !containsString(caps.ChatTools, "subagent.status") {
+		t.Fatalf("expected chat tools to include subagent.status, got %#v", caps.ChatTools)
+	}
+
+	sendRPC(t, conn, "sub-spawn", "subagent.spawn", map[string]any{"task": "review parser errors"})
+	spawnMsg := readUntilID(t, conn, "sub-spawn")
+	if spawnMsg.Error != nil {
+		t.Fatalf("unexpected spawn error: %v", spawnMsg.Error)
+	}
+	var rec subagent.RunRecord
+	if err := json.Unmarshal(spawnMsg.Result, &rec); err != nil {
+		t.Fatalf("unmarshal subagent.spawn result: %v", err)
+	}
+
+	sendRPC(t, conn, "sub-status", "subagent.status", map[string]any{"id": rec.ID})
+	statusMsg := readUntilID(t, conn, "sub-status")
+	if statusMsg.Error != nil {
+		t.Fatalf("unexpected subagent.status error: %v", statusMsg.Error)
+	}
+	var statusRec subagent.RunRecord
+	if err := json.Unmarshal(statusMsg.Result, &statusRec); err != nil {
+		t.Fatalf("unmarshal subagent.status result: %v", err)
+	}
+	if statusRec.ID != rec.ID {
+		t.Fatalf("expected subagent.status to return run %q, got %#v", rec.ID, statusRec)
+	}
+
+	sendRPC(t, conn, "spawn-status", "spawn.status", map[string]any{"id": rec.ID})
+	aliasMsg := readUntilID(t, conn, "spawn-status")
+	if aliasMsg.Error != nil {
+		t.Fatalf("unexpected spawn.status error: %v", aliasMsg.Error)
+	}
+	var aliasRec subagent.RunRecord
+	if err := json.Unmarshal(aliasMsg.Result, &aliasRec); err != nil {
+		t.Fatalf("unmarshal spawn.status result: %v", err)
+	}
+	if aliasRec.ID != rec.ID {
+		t.Fatalf("expected spawn.status alias to return run %q, got %#v", rec.ID, aliasRec)
+	}
+
+	close(gate)
+}
+
+func TestExecuteTool_SystemNotifyErrorsWhenNotifierUnavailable(t *testing.T) {
+	t.Setenv("PATH", "")
+	h := handler.NewHandler(session.New(10), &stubProvider{response: &types.ChatResponse{}}, handler.HandlerOptions{
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+	_, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "system.notify",
+		Arguments: json.RawMessage(`{"message":"hi"}`),
+	})
+	if err == nil {
+		t.Fatal("expected system.notify to fail without a notifier command")
 	}
 }
 
@@ -1085,6 +1508,7 @@ func TestWS_AgentStartAndWait(t *testing.T) {
 	prov := &stubProvider{
 		response: &types.ChatResponse{
 			Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}},
+			Usage:   types.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7},
 		},
 	}
 	srv, _ := newTestServer(t, prov)
@@ -1118,7 +1542,8 @@ func TestWS_AgentStartAndWait(t *testing.T) {
 	var waitResult struct {
 		Status string `json:"status"`
 		Result struct {
-			AssistantText string `json:"assistant_text"`
+			AssistantText string      `json:"assistant_text"`
+			Usage         types.Usage `json:"usage"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(waitMsg.Result, &waitResult); err != nil {
@@ -1129,6 +1554,9 @@ func TestWS_AgentStartAndWait(t *testing.T) {
 	}
 	if waitResult.Result.AssistantText != "done" {
 		t.Fatalf("unexpected assistant text %q", waitResult.Result.AssistantText)
+	}
+	if waitResult.Result.Usage.TotalTokens != 7 {
+		t.Fatalf("unexpected usage %#v", waitResult.Result.Usage)
 	}
 }
 
