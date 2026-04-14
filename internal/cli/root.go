@@ -24,23 +24,23 @@ import (
 	"github.com/ffimnsr/koios/internal/scheduler"
 )
 
-type runDaemonFunc func(app.BuildInfo) error
+type runGatewayFunc func(app.BuildInfo) error
 
 type commandContext struct {
-	build     app.BuildInfo
-	runDaemon runDaemonFunc
-	cwd       string
+	build      app.BuildInfo
+	runGateway runGatewayFunc
+	cwd        string
 }
 
-func NewRootCommand(build app.BuildInfo, runDaemon runDaemonFunc) *cobra.Command {
-	ctx := &commandContext{build: build, runDaemon: runDaemon}
+func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Command {
+	ctx := &commandContext{build: build, runGateway: runGateway}
 	root := &cobra.Command{
 		Use:           "koios",
-		Short:         "Koios daemon and operator CLI",
+		Short:         "Koios gateway and operator CLI",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDaemon(build)
+			return cmd.Help()
 		},
 	}
 	root.SetVersionTemplate("{{printf \"%s\\n\" .Version}}")
@@ -71,6 +71,8 @@ func NewRootCommand(build app.BuildInfo, runDaemon runDaemonFunc) *cobra.Command
 	root.AddCommand(newMigrateCommand(ctx))
 	root.AddCommand(newUsageCommand(ctx))
 	root.AddCommand(newMemoryCommand(ctx))
+	root.AddCommand(newModelCommand(ctx))
+	root.AddCommand(newHostCommand(ctx))
 	return root
 }
 
@@ -81,10 +83,10 @@ func (flagOnlyVersionError) Error() string { return "" }
 func newServeCommand(ctx *commandContext) *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",
-		Short: "Start the Koios daemon",
-		Long:  "Load koios.config.toml and start the WebSocket control-plane daemon.",
+		Short: "Start the Koios gateway",
+		Long:  "Load koios.config.toml and start the WebSocket control-plane gateway.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return ctx.runDaemon(ctx.build)
+			return ctx.runGateway(ctx.build)
 		},
 	}
 }
@@ -106,13 +108,13 @@ func newHealthCommand(ctx *commandContext) *cobra.Command {
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "health",
-		Short: "Probe the running daemon health endpoint",
+		Short: "Probe the running gateway health endpoint",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := ctx.state()
 			if err != nil {
 				return err
 			}
-			client := newDaemonClient(state, timeout)
+			client := newGatewayClient(state, timeout)
 			reqCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
 			health, status, err := client.health(reqCtx)
@@ -147,7 +149,7 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 	var peer string
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show local configuration and daemon status",
+		Short: "Show local configuration and gateway status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			state, err := ctx.state()
 			if err != nil {
@@ -170,17 +172,17 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 					"workspace":           state.WorkspaceRoot != "",
 				},
 			}
-			client := newDaemonClient(state, 3*time.Second)
+			client := newGatewayClient(state, 3*time.Second)
 			reqCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
 			defer cancel()
 			if health, status, err := client.health(reqCtx); err == nil {
-				payload["daemon"] = map[string]any{
+				payload["gateway"] = map[string]any{
 					"reachable":   true,
 					"http_status": status,
 					"health":      health,
 				}
 				if version, _, err := client.version(reqCtx); err == nil {
-					payload["daemon_version"] = version
+					payload["gateway_version"] = version
 				}
 				if peer != "" {
 					var caps map[string]any
@@ -189,7 +191,7 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 					}
 				}
 			} else {
-				payload["daemon"] = map[string]any{
+				payload["gateway"] = map[string]any{
 					"reachable": false,
 					"error":     err.Error(),
 				}
@@ -251,7 +253,7 @@ func newInitCommand(ctx *commandContext) *cobra.Command {
 				"next_steps": []string{
 					"edit koios.config.toml with your provider credentials",
 					"run koios doctor to validate the setup",
-					"run koios to start the daemon",
+					"run koios serve to start the gateway",
 				},
 			}
 			if wizard && nonInteractive {
@@ -293,13 +295,13 @@ func newDoctorCommand(ctx *commandContext) *cobra.Command {
 				repairs = append(repairs, mapPaths(state.createStateDirs(), "created directory: ")...)
 			}
 			if deep {
-				client := newDaemonClient(state, 3*time.Second)
+				client := newGatewayClient(state, 3*time.Second)
 				reqCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
 				defer cancel()
 				if health, _, err := client.health(reqCtx); err == nil {
-					findings = append(findings, doctorFinding{Level: "info", Message: fmt.Sprintf("daemon reachable: %v", health["status"])})
+					findings = append(findings, doctorFinding{Level: "info", Message: fmt.Sprintf("gateway reachable: %v", health["status"])})
 				} else {
-					findings = append(findings, doctorFinding{Level: "warn", Message: "daemon probe failed: " + err.Error()})
+					findings = append(findings, doctorFinding{Level: "warn", Message: "gateway probe failed: " + err.Error()})
 				}
 			}
 			if nonInteractive {
@@ -319,7 +321,7 @@ func newDoctorCommand(ctx *commandContext) *cobra.Command {
 	cmd.Flags().BoolVar(&repair, "fix", false, "perform safe repairs")
 	cmd.Flags().BoolVar(&force, "force", false, "allow overwriting generated local artifacts")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "disable prompts")
-	cmd.Flags().BoolVar(&deep, "deep", false, "include daemon checks")
+	cmd.Flags().BoolVar(&deep, "deep", false, "include gateway checks")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
 	return cmd
 }
@@ -397,7 +399,7 @@ func newSessionsResetCommand(ctx *commandContext) *cobra.Command {
 				emit(cmd, jsonOut, map[string]any{"removed": removed, "count": len(removed)})
 				return nil
 			}
-			client := newDaemonClient(state, 5*time.Second)
+			client := newGatewayClient(state, 5*time.Second)
 			reqCtx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
 			defer cancel()
 			var out map[string]any
@@ -408,7 +410,7 @@ func newSessionsResetCommand(ctx *commandContext) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&peer, "peer", "", "peer/session key to reset through the daemon")
+	cmd.Flags().StringVar(&peer, "peer", "", "peer/session key to reset through the gateway")
 	cmd.Flags().BoolVar(&all, "all", false, "delete all persisted sessions from session.dir")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm destructive action when using --all")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
@@ -601,7 +603,7 @@ func newCronStatusCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 				"locally_enabled": state.WorkspaceRoot != "",
 			}
 			if peer != "" {
-				client := newDaemonClient(state, 5*time.Second)
+				client := newGatewayClient(state, 5*time.Second)
 				reqCtx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
 				defer cancel()
 				var caps map[string]any
@@ -961,7 +963,7 @@ func (ctx *commandContext) cronRPC(cmd *cobra.Command, peer, method string, para
 	if err != nil {
 		return err
 	}
-	client := newDaemonClient(state, 10*time.Second)
+	client := newGatewayClient(state, 10*time.Second)
 	reqCtx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
 	defer cancel()
 	return client.rpc(reqCtx, peer, method, params, out)

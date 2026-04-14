@@ -3,7 +3,7 @@
 // (Phase 2).
 //
 // Each peer is identified by an opaque string ID. Sessions are created lazily
-// on first access.  When a SessionDir is configured, history survives daemon
+// on first access.  When a SessionDir is configured, history survives gateway
 // restarts via a per-session JSONL append-log.  When a Compactor is configured,
 // sessions are summarised by the LLM instead of naively pruned once they reach
 // CompactThreshold messages — mirroring how OpenClaw manages per-agent context.
@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/ops"
+	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -37,6 +38,10 @@ type journalEntry struct {
 // SessionPolicy captures persisted per-session behavior toggles.
 type SessionPolicy struct {
 	ReplyBack bool `json:"reply_back,omitempty"`
+	// ModelOverride, when non-empty, pins this session to a specific model
+	// (profile name or raw model ID). The agent runtime applies it before
+	// each turn.
+	ModelOverride string `json:"model_override,omitempty"`
 }
 
 // Session holds the conversation history for a single peer.
@@ -460,6 +465,7 @@ func (st *Store) AppendCtxWithSource(ctx context.Context, peerID, source string,
 	if len(msgs) == 0 {
 		return
 	}
+	msgs = redact.Messages(msgs)
 	sess := st.Get(peerID)
 	sess.mu.Lock()
 	sess.appendMsgs(ctx, peerID, st.maxMsgs, st.compactThreshold, st.compactReserve, st.compactor, st.memoryFlusher, st.hooks, msgs)

@@ -21,7 +21,9 @@ type openAIProvider struct {
 }
 
 func (p *openAIProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
-	req.Model = p.model
+	if req.Model == "" {
+		req.Model = p.model
+	}
 	req.Stream = false
 
 	body, err := json.Marshal(req)
@@ -56,7 +58,9 @@ func (p *openAIProvider) Complete(ctx context.Context, req *types.ChatRequest) (
 }
 
 func (p *openAIProvider) CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
-	req.Model = p.model
+	if req.Model == "" {
+		req.Model = p.model
+	}
 	req.Stream = true
 
 	body, err := json.Marshal(req)

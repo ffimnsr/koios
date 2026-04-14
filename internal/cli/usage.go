@@ -11,7 +11,7 @@ func newUsageCommand(ctx *commandContext) *cobra.Command {
 	var jsonOut bool
 	root := &cobra.Command{
 		Use:   "usage",
-		Short: "Query per-session token usage from the running daemon",
+		Short: "Query per-session token usage from the running gateway",
 	}
 	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "emit JSON")
 
@@ -35,7 +35,7 @@ func newUsageListCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			if connPeer == "" {
 				connPeer = "operator"
 			}
-			client := newDaemonClient(state, 5*time.Second)
+			client := newGatewayClient(state, 5*time.Second)
 			reqCtx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
 			defer cancel()
 			var out map[string]any
@@ -64,7 +64,7 @@ func newUsageTotalsCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			if connPeer == "" {
 				connPeer = "operator"
 			}
-			client := newDaemonClient(state, 5*time.Second)
+			client := newGatewayClient(state, 5*time.Second)
 			reqCtx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
 			defer cancel()
 			var out map[string]any
@@ -94,7 +94,7 @@ func newUsageGetCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			if connPeer == "" {
 				connPeer = "operator"
 			}
-			client := newDaemonClient(state, 5*time.Second)
+			client := newGatewayClient(state, 5*time.Second)
 			reqCtx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
 			defer cancel()
 			params := map[string]any{}

@@ -30,8 +30,14 @@ func TestBuild_PrunesOldToolMessagesFromContext(t *testing.T) {
 		t.Fatalf("expected 0 pruned messages when keeping both tool blocks, got %d", built.PrunedMessages)
 	}
 	got := built.Request.Messages
-	if len(got) == 0 || got[0].Role != "system" || got[0].Content != continuityInstruction {
-		t.Fatalf("expected continuity instruction to be injected when history exists, got %#v", got)
+	if len(got) < 2 {
+		t.Fatalf("expected trust-boundary and continuity system messages, got %#v", got)
+	}
+	if got[0].Role != "system" || got[0].Content != trustBoundaryInstruction {
+		t.Fatalf("expected trust-boundary instruction first, got %#v", got[0])
+	}
+	if got[1].Role != "system" || got[1].Content != continuityInstruction {
+		t.Fatalf("expected continuity instruction second when history exists, got %#v", got)
 	}
 	foundRecentTool := false
 	foundOlderTool := false
@@ -78,8 +84,27 @@ func TestBuild_PrependsExtraSystemMessages(t *testing.T) {
 	if len(built.Request.Messages) < 2 {
 		t.Fatalf("expected extra system message and user turn, got %#v", built.Request.Messages)
 	}
-	if built.Request.Messages[0].Role != "system" || built.Request.Messages[0].Content != "Standing orders go here." {
+	if built.Request.Messages[0].Role != "system" || built.Request.Messages[0].Content != trustBoundaryInstruction {
 		t.Fatalf("unexpected first message: %#v", built.Request.Messages[0])
+	}
+	if built.Request.Messages[1].Role != "system" || built.Request.Messages[1].Content != "Standing orders go here." {
+		t.Fatalf("unexpected second message: %#v", built.Request.Messages[1])
+	}
+}
+
+func TestBuild_AlwaysPrependsTrustBoundaryInstruction(t *testing.T) {
+	built, err := Build(context.Background(), BuildOptions{
+		Model:    "m",
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(built.Request.Messages) == 0 {
+		t.Fatal("expected built messages")
+	}
+	if built.Request.Messages[0].Role != "system" || built.Request.Messages[0].Content != trustBoundaryInstruction {
+		t.Fatalf("expected trust-boundary instruction first, got %#v", built.Request.Messages[0])
 	}
 }
 

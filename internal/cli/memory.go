@@ -36,7 +36,7 @@ func newMemoryStatsCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client := newDaemonClient(state, timeout)
+			client := newGatewayClient(state, timeout)
 			var result map[string]any
 			if err := client.rpc(cmd.Context(), peer, "memory.stats", map[string]any{}, &result); err != nil {
 				return err
@@ -67,7 +67,7 @@ func newMemoryListCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client := newDaemonClient(state, timeout)
+			client := newGatewayClient(state, timeout)
 			var result map[string]any
 			params := map[string]any{"limit": limit}
 			if err := client.rpc(cmd.Context(), peer, "memory.list", params, &result); err != nil {
@@ -104,7 +104,7 @@ func newMemorySearchCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client := newDaemonClient(state, timeout)
+			client := newGatewayClient(state, timeout)
 			var result map[string]any
 			params := map[string]any{"q": query, "limit": limit}
 			if err := client.rpc(cmd.Context(), peer, "memory.search", params, &result); err != nil {

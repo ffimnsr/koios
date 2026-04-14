@@ -29,6 +29,40 @@ const (
 	DefaultConfigFile = "koios.config.toml"
 )
 
+// ModelProfile describes a named LLM model endpoint that can be referenced
+// as a per-session override or a fallback chain entry.
+type ModelProfile struct {
+	// Name is the short identifier used in fallback_models and session overrides.
+	Name     string `toml:"name"`
+	Provider string `toml:"provider"`
+	APIKey   string `toml:"api_key"`
+	BaseURL  string `toml:"base_url"`
+	Model    string `toml:"model"`
+}
+
+// MCPServerConfig describes a single MCP (Model Context Protocol) server
+// that Koios should connect to at startup to discover and expose external tools.
+type MCPServerConfig struct {
+	// Name is a short identifier used to prefix tool names: mcp__{name}__{tool}.
+	Name string `toml:"name"`
+	// Transport is one of "stdio", "http", or "sse".
+	Transport string `toml:"transport"`
+	// Command is the executable to spawn for stdio transport.
+	Command string `toml:"command"`
+	// Args are the arguments passed to the Command for stdio transport.
+	Args []string `toml:"args"`
+	// Env holds extra environment variables for the subprocess (stdio only).
+	Env map[string]string `toml:"env"`
+	// URL is the endpoint for http and sse transports.
+	URL string `toml:"url"`
+	// Headers are HTTP headers added to every request for http/sse transports.
+	Headers map[string]string `toml:"headers"`
+	// Timeout is the per-request deadline, e.g. "30s". Defaults to "30s".
+	Timeout string `toml:"timeout"`
+	// Enabled, when false, skips this server on startup.
+	Enabled bool `toml:"enabled"`
+}
+
 // Config holds all runtime configuration loaded from koios.config.toml.
 type Config struct {
 	ListenAddr string
@@ -36,6 +70,21 @@ type Config struct {
 	APIKey     string
 	Model      string
 	BaseURL    string
+
+	// DefaultProfile, when set, names the ModelProfile to use as the primary
+	// LLM. Its Provider/APIKey/Model/BaseURL override the flat [llm] fields.
+	DefaultProfile string
+	// LightweightModel, when set, is used for simple/short queries instead of
+	// the primary Model. It uses the same Provider, APIKey, and BaseURL.
+	LightweightModel string
+	// FallbackModels is an ordered list of model names (or ModelProfile names)
+	// to try when the primary model request fails.
+	FallbackModels []string
+	// ModelProfiles holds named model endpoints that can differ in provider,
+	// API key, and base URL from the primary [llm] block.
+	ModelProfiles []ModelProfile
+	// MCPServers holds the list of MCP servers to connect to at startup.
+	MCPServers []MCPServerConfig
 
 	MaxSessionMessages           int
 	RequestTimeout               time.Duration
@@ -113,7 +162,7 @@ type Config struct {
 	// PresenceTypingTTL controls how long a "typing" indicator is held (default 8s).
 	PresenceTypingTTL time.Duration
 
-	// MonitorStaleThreshold is the maximum time of daemon inactivity before the
+	// MonitorStaleThreshold is the maximum time of gateway inactivity before the
 	// health monitor logs a warning. 0 disables stale detection.
 	MonitorStaleThreshold time.Duration
 	// MonitorMaxRestarts caps automatic subsystem restarts; 0 = unlimited.
@@ -134,11 +183,20 @@ type fileConfig struct {
 		AllowedOrigins []string `toml:"allowed_origins"`
 	} `toml:"server"`
 	LLM struct {
-		Provider string `toml:"provider"`
-		APIKey   string `toml:"api_key"`
-		Model    string `toml:"model"`
-		BaseURL  string `toml:"base_url"`
+		// DefaultProfile selects a named profile as the primary LLM.
+		DefaultProfile string `toml:"default_profile"`
+		// Legacy flat fields — kept for backward compatibility.
+		Provider         string         `toml:"provider"`
+		APIKey           string         `toml:"api_key"`
+		Model            string         `toml:"model"`
+		BaseURL          string         `toml:"base_url"`
+		LightweightModel string         `toml:"lightweight_model"`
+		FallbackModels   []string       `toml:"fallback_models"`
+		Profiles         []ModelProfile `toml:"profiles"`
 	} `toml:"llm"`
+	MCP struct {
+		Servers []MCPServerConfig `toml:"servers"`
+	} `toml:"mcp"`
 	Session struct {
 		MaxMessages           *int   `toml:"max_messages"`
 		Retention             string `toml:"retention"`
@@ -204,12 +262,12 @@ type fileConfig struct {
 		MaxBytes *int   `toml:"max_file_bytes"`
 	} `toml:"workspace"`
 	Log struct {
-		Level     string `toml:"level"`
-		File      string `toml:"file"`
-		MaxSizeMB *int   `toml:"max_size_mb"`
-		MaxBackups *int  `toml:"max_backups"`
-		MaxAgeDays *int  `toml:"max_age_days"`
-		Compress  *bool  `toml:"compress"`
+		Level      string `toml:"level"`
+		File       string `toml:"file"`
+		MaxSizeMB  *int   `toml:"max_size_mb"`
+		MaxBackups *int   `toml:"max_backups"`
+		MaxAgeDays *int   `toml:"max_age_days"`
+		Compress   *bool  `toml:"compress"`
 	} `toml:"log"`
 	Monitor struct {
 		StaleThreshold string `toml:"stale_threshold"`
@@ -333,10 +391,40 @@ request_timeout = "2m"
 allowed_origins = []
 
 [llm]
+# default_profile selects a named [[llm.profiles]] entry as the primary LLM.
+# When set, the profile's provider/api_key/model/base_url are used.
+default_profile = "default"
+# lightweight_model is used for simple/short queries (≤15 words).
+# lightweight_model = ""
+# fallback_models = []
+
+[[llm.profiles]]
+name = "default"
 provider = "openai"
 model = "gpt-4o"
 # api_key = ""
 # base_url = ""
+
+# Add more profiles for multi-model routing:
+# [[llm.profiles]]
+# name = "fast"
+# provider = "openai"
+# model = "gpt-4o-mini"
+# api_key = ""
+
+# [mcp]
+# [[mcp.servers]]
+# name = "filesystem"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+# enabled = true
+
+# [[mcp.servers]]
+# name = "myserver"
+# transport = "http"
+# url = "http://localhost:3000/mcp"
+# enabled = true
 
 [session]
 max_messages = 100
@@ -411,15 +499,9 @@ max_restarts = 5
 
 // EncodeTOML renders a config in the current canonical schema.
 // When includeAPIKey is false and cfg.APIKey is empty, the key is omitted as a comment.
+// When ModelProfiles are set, emits the profiles-based [llm] format; otherwise
+// falls back to the legacy flat provider/model fields for backward compatibility.
 func EncodeTOML(cfg *Config, includeAPIKey bool) string {
-	apiKeyLine := "# api_key = \"\""
-	if includeAPIKey || strings.TrimSpace(cfg.APIKey) != "" {
-		apiKeyLine = "api_key = " + strconv.Quote(cfg.APIKey)
-	}
-	baseURLLine := "# base_url = \"\""
-	if strings.TrimSpace(cfg.BaseURL) != "" {
-		baseURLLine = "base_url = " + strconv.Quote(cfg.BaseURL)
-	}
 	allowedOrigins := "[]"
 	if len(cfg.AllowedOrigins) > 0 {
 		quoted := make([]string, 0, len(cfg.AllowedOrigins))
@@ -428,6 +510,14 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		}
 		allowedOrigins = "[" + strings.Join(quoted, ", ") + "]"
 	}
+
+	// Build the [llm] section. Prefer profiles-based format when profiles exist
+	// or a default_profile is set; fall back to legacy flat fields otherwise.
+	llmSection := encodeLLMSection(cfg, includeAPIKey)
+
+	// Build [[mcp.servers]] sections if any are configured.
+	mcpSection := encodeMCPSection(cfg)
+
 	return fmt.Sprintf(`# Koios configuration file.
 # Generated by: koios init
 
@@ -436,11 +526,7 @@ listen_addr = %s
 request_timeout = %s
 allowed_origins = %s
 
-[llm]
-provider = %s
-model = %s
-%s
-%s
+%s%s
 
 [session]
 max_messages = %d
@@ -510,10 +596,8 @@ max_restarts = %d
 		strconv.Quote(cfg.ListenAddr),
 		strconv.Quote(cfg.RequestTimeout.String()),
 		allowedOrigins,
-		strconv.Quote(cfg.Provider),
-		strconv.Quote(cfg.Model),
-		apiKeyLine,
-		baseURLLine,
+		llmSection,
+		mcpSection,
 		cfg.MaxSessionMessages,
 		strconv.Quote(cfg.SessionRetention.String()),
 		cfg.SessionMaxEntries,
@@ -560,6 +644,85 @@ max_restarts = %d
 	)
 }
 
+// encodeLLMSection builds the [llm] (and [[llm.profiles]]) portion of the
+// config. Profiles-based format is used when profiles exist or DefaultProfile
+// is set; legacy flat format is used otherwise for backward compatibility.
+func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
+	var b strings.Builder
+	if len(cfg.ModelProfiles) > 0 || cfg.DefaultProfile != "" {
+		b.WriteString("[llm]\n")
+		if cfg.DefaultProfile != "" {
+			b.WriteString("default_profile = " + strconv.Quote(cfg.DefaultProfile) + "\n")
+		}
+		if cfg.LightweightModel != "" {
+			b.WriteString("lightweight_model = " + strconv.Quote(cfg.LightweightModel) + "\n")
+		}
+		if len(cfg.FallbackModels) > 0 {
+			b.WriteString("fallback_models = " + quoteStringSlice(cfg.FallbackModels) + "\n")
+		}
+		b.WriteString("\n")
+		for _, p := range cfg.ModelProfiles {
+			b.WriteString("[[llm.profiles]]\n")
+			b.WriteString("name = " + strconv.Quote(p.Name) + "\n")
+			b.WriteString("provider = " + strconv.Quote(p.Provider) + "\n")
+			b.WriteString("model = " + strconv.Quote(p.Model) + "\n")
+			if p.APIKey != "" || includeAPIKey {
+				b.WriteString("api_key = " + strconv.Quote(p.APIKey) + "\n")
+			}
+			if p.BaseURL != "" {
+				b.WriteString("base_url = " + strconv.Quote(p.BaseURL) + "\n")
+			}
+			b.WriteString("\n")
+		}
+	} else {
+		// Legacy flat format for backward compatibility.
+		apiKeyLine := "# api_key = \"\""
+		if includeAPIKey || strings.TrimSpace(cfg.APIKey) != "" {
+			apiKeyLine = "api_key = " + strconv.Quote(cfg.APIKey)
+		}
+		baseURLLine := "# base_url = \"\""
+		if strings.TrimSpace(cfg.BaseURL) != "" {
+			baseURLLine = "base_url = " + strconv.Quote(cfg.BaseURL)
+		}
+		b.WriteString(fmt.Sprintf("[llm]\nprovider = %s\nmodel = %s\n%s\n%s\n\n",
+			strconv.Quote(cfg.Provider),
+			strconv.Quote(cfg.Model),
+			apiKeyLine,
+			baseURLLine,
+		))
+	}
+	return b.String()
+}
+
+// encodeMCPSection builds the [[mcp.servers]] portion of the config.
+// Returns an empty string when no MCP servers are configured.
+func encodeMCPSection(cfg *Config) string {
+	if len(cfg.MCPServers) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, s := range cfg.MCPServers {
+		b.WriteString("[[mcp.servers]]\n")
+		b.WriteString("name = " + strconv.Quote(s.Name) + "\n")
+		b.WriteString("transport = " + strconv.Quote(s.Transport) + "\n")
+		if s.Command != "" {
+			b.WriteString("command = " + strconv.Quote(s.Command) + "\n")
+		}
+		if len(s.Args) > 0 {
+			b.WriteString("args = " + quoteStringSlice(s.Args) + "\n")
+		}
+		if s.URL != "" {
+			b.WriteString("url = " + strconv.Quote(s.URL) + "\n")
+		}
+		if s.Timeout != "" {
+			b.WriteString("timeout = " + strconv.Quote(s.Timeout) + "\n")
+		}
+		b.WriteString(fmt.Sprintf("enabled = %t\n", s.Enabled))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func applyFileConfig(dst *Config, src *fileConfig) {
 	if src.Server.ListenAddr != "" {
 		dst.ListenAddr = src.Server.ListenAddr
@@ -573,6 +736,7 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 		dst.AllowedOrigins = src.Server.AllowedOrigins
 	}
 
+	// Apply legacy flat LLM fields first; default_profile overrides them below.
 	if src.LLM.Provider != "" {
 		dst.Provider = src.LLM.Provider
 	}
@@ -584,6 +748,40 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.LLM.BaseURL != "" {
 		dst.BaseURL = src.LLM.BaseURL
+	}
+	if src.LLM.LightweightModel != "" {
+		dst.LightweightModel = src.LLM.LightweightModel
+	}
+	if src.LLM.FallbackModels != nil {
+		dst.FallbackModels = append([]string(nil), src.LLM.FallbackModels...)
+	}
+	if src.LLM.Profiles != nil {
+		dst.ModelProfiles = append([]ModelProfile(nil), src.LLM.Profiles...)
+	}
+	// default_profile, when set, resolves the named profile and overrides the
+	// primary provider/model fields, taking precedence over legacy flat fields.
+	if src.LLM.DefaultProfile != "" {
+		dst.DefaultProfile = src.LLM.DefaultProfile
+		for _, p := range src.LLM.Profiles {
+			if p.Name == src.LLM.DefaultProfile {
+				if p.Provider != "" {
+					dst.Provider = p.Provider
+				}
+				if p.APIKey != "" {
+					dst.APIKey = p.APIKey
+				}
+				if p.Model != "" {
+					dst.Model = p.Model
+				}
+				if p.BaseURL != "" {
+					dst.BaseURL = p.BaseURL
+				}
+				break
+			}
+		}
+	}
+	if src.MCP.Servers != nil {
+		dst.MCPServers = append([]MCPServerConfig(nil), src.MCP.Servers...)
 	}
 
 	if src.Session.MaxMessages != nil && *src.Session.MaxMessages > 0 {

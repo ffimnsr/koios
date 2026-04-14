@@ -1,4 +1,4 @@
-// Package monitor provides the daemon health monitor, which periodically
+// Package monitor provides the gateway health monitor, which periodically
 // checks for stale activity and tracks subsystem restart counts. It also
 // exposes helpers for the /healthz extended payload.
 package monitor
@@ -32,7 +32,7 @@ type entry struct {
 	lastRestart time.Time
 }
 
-// Monitor watches the daemon for stale activity and manages restarts.
+// Monitor watches the gateway for stale activity and manages restarts.
 type Monitor struct {
 	staleThreshold time.Duration
 	maxRestarts    int
@@ -58,7 +58,7 @@ func New(staleThreshold time.Duration, maxRestarts int) *Monitor {
 	return m
 }
 
-// TouchActivity records that the daemon received external activity right now.
+// TouchActivity records that the gateway received external activity right now.
 // Call this from HTTP middleware or the WebSocket connection handler.
 func (m *Monitor) TouchActivity() {
 	m.lastRequestTime.Store(time.Now())
@@ -135,7 +135,7 @@ func (m *Monitor) Status() map[string]any {
 }
 
 // Run starts the monitor loop and blocks until ctx is cancelled.
-// It logs stale-activity warnings when the daemon has been idle longer
+// It logs stale-activity warnings when the gateway has been idle longer
 // than the configured threshold.
 func (m *Monitor) Run(ctx context.Context) {
 	if m.staleThreshold <= 0 {
@@ -156,7 +156,7 @@ func (m *Monitor) Run(ctx context.Context) {
 			last, _ := m.lastRequestTime.Load().(time.Time)
 			if now.Sub(last) >= m.staleThreshold {
 				atomic.AddInt64(&m.warnCount, 1)
-				slog.Warn("monitor: daemon has been idle",
+				slog.Warn("monitor: gateway has been idle",
 					"idle_for", now.Sub(last).Round(time.Second).String(),
 					"threshold", m.staleThreshold.String(),
 				)

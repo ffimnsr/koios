@@ -19,12 +19,14 @@ import (
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/heartbeat"
+	"github.com/ffimnsr/koios/internal/mcp"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/memory/milvus"
 	"github.com/ffimnsr/koios/internal/monitor"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/presence"
 	"github.com/ffimnsr/koios/internal/provider"
+	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
@@ -35,7 +37,7 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-// BuildInfo describes the runtime build metadata reported by the daemon and CLI.
+// BuildInfo describes the runtime build metadata reported by the gateway and CLI.
 type BuildInfo struct {
 	Version   string `json:"version"`
 	GitHash   string `json:"git_hash"`
@@ -54,12 +56,12 @@ func (f *compactionMemoryFlusher) FlushCompaction(ctx context.Context, peerID st
 	if summary == "" {
 		return nil
 	}
-	_, err := f.store.InsertChunk(ctx, peerID, "Session checkpoint before compaction:\n\n"+summary)
+	_, err := f.store.InsertChunk(ctx, peerID, "Session checkpoint before compaction:\n\n"+redact.String(summary))
 	return err
 }
 
-// RunDaemon loads configuration, starts the Koios daemon, and blocks until shutdown.
-func RunDaemon(build BuildInfo) error {
+// RunGateway loads configuration, starts the Koios gateway, and blocks until shutdown.
+func RunGateway(build BuildInfo) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -71,7 +73,7 @@ func RunDaemon(build BuildInfo) error {
 		return err
 	}
 
-	prov, err := provider.New(cfg)
+	prov, err := provider.BuildRoutingProvider(cfg)
 	if err != nil {
 		return err
 	}
@@ -249,6 +251,16 @@ func RunDaemon(build BuildInfo) error {
 	usageStore := usage.New()
 	mon := monitor.New(cfg.MonitorStaleThreshold, cfg.MonitorMaxRestarts)
 
+	// Start MCP servers if any are configured.
+	var mcpMgr *mcp.Manager
+	if len(cfg.MCPServers) > 0 {
+		mcpMgr = mcp.NewManager(cfg.MCPServers)
+		if err := mcpMgr.Start(context.Background()); err != nil {
+			// Non-fatal: individual server errors are logged inside Start.
+			slog.Warn("mcp: one or more servers failed to start", "err", err)
+		}
+	}
+
 	wsHandler := handler.NewHandler(store, prov, handler.HandlerOptions{
 		Model:           cfg.Model,
 		Timeout:         cfg.RequestTimeout,
@@ -290,6 +302,7 @@ func RunDaemon(build BuildInfo) error {
 		UsageStore:     usageStore,
 		Monitor:        mon,
 		LogLevel:       logLevel,
+		MCPManager:     mcpMgr,
 	})
 
 	// Wire the full agent loop into heartbeat and cron so the LLM can invoke
@@ -465,6 +478,9 @@ shutdown:
 	}
 	if subRegistry != nil {
 		_ = subRegistry.Sweep(0)
+	}
+	if mcpMgr != nil {
+		mcpMgr.Close()
 	}
 	slog.Info("koios stopped")
 	return nil

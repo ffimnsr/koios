@@ -87,7 +87,7 @@ func runAgentOneShot(ctx context.Context, cmdCtx *commandContext, opts agentOpti
 	if err != nil {
 		return nil, err
 	}
-	client := newDaemonClient(state, opts.Timeout)
+	client := newGatewayClient(state, opts.Timeout)
 	reqCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	params := map[string]any{
@@ -126,7 +126,7 @@ func runAgentTUI(ctx context.Context, cmdCtx *commandContext, opts agentOptions)
 	if err != nil {
 		return err
 	}
-	client := newDaemonClient(state, opts.Timeout)
+	client := newGatewayClient(state, opts.Timeout)
 	model := newAgentTUIModel(client, opts)
 	prog := tea.NewProgram(model, tea.WithAltScreen())
 	model.program = prog

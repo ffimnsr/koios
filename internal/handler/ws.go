@@ -62,6 +62,7 @@ import (
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/heartbeat"
+	"github.com/ffimnsr/koios/internal/mcp"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/monitor"
 	"github.com/ffimnsr/koios/internal/ops"
@@ -222,6 +223,11 @@ type Handler struct {
 	usageStore      *usage.Store
 	monitor         *monitor.Monitor
 	logLevel        *slog.LevelVar
+	mcpManager      *mcp.Manager
+
+	// fetchClient is the HTTP client used by the web_fetch tool.  When nil,
+	// a client backed by ssrfSafeTransport() is used.  Override in tests only.
+	fetchClient *http.Client
 
 	// dispatchWG tracks in-flight dispatch goroutines for graceful shutdown.
 	dispatchWG sync.WaitGroup
@@ -274,6 +280,8 @@ type HandlerOptions struct {
 	// LogLevel, when non-nil, is updated by the server.set_log_level RPC and
 	// by hot-reload events.
 	LogLevel *slog.LevelVar
+	// MCPManager, when non-nil, provides tools from external MCP servers.
+	MCPManager *mcp.Manager
 }
 
 // NewHandler creates the WebSocket control-plane handler.
@@ -315,6 +323,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		usageStore:      opts.UsageStore,
 		monitor:         opts.Monitor,
 		logLevel:        opts.LogLevel,
+		mcpManager:      opts.MCPManager,
 		syncRuns:        make(map[string]context.CancelFunc),
 		clients:         make(map[*wsConn]struct{}),
 		execApprovals:   newExecApprovalStore(execCfg.ApprovalTTL),
@@ -364,7 +373,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Origin check: when AllowedOrigins is configured, reject any request whose
 	// Origin header does not match.  This prevents Cross-Site WebSocket
-	// Hijacking (CSWSH) when the daemon is reachable from browsers.
+	// Hijacking (CSWSH) when the gateway is reachable from browsers.
 	if len(h.allowedOrigins) > 0 {
 		origin := r.Header.Get("Origin")
 		allowed := false
@@ -980,10 +989,10 @@ func (h *Handler) rpcPresenceSet(wsc *wsConn, req *rpcRequest) {
 // FileAttachment is an image or file sent inline with a chat message.
 // Data must be a base64-encoded payload; MimeType must be a valid MIME type.
 type FileAttachment struct {
-	Data     string `json:"data"`               // base64-encoded content
-	MimeType string `json:"mime_type"`          // e.g. "image/jpeg"
-	Name     string `json:"name,omitempty"`     // optional filename hint
-	Detail   string `json:"detail,omitempty"`   // OpenAI detail level: auto/low/high
+	Data     string `json:"data"`             // base64-encoded content
+	MimeType string `json:"mime_type"`        // e.g. "image/jpeg"
+	Name     string `json:"name,omitempty"`   // optional filename hint
+	Detail   string `json:"detail,omitempty"` // OpenAI detail level: auto/low/high
 }
 
 type chatParams struct {
@@ -2365,7 +2374,7 @@ func (h *Handler) rpcUsageTotals(wsc *wsConn, req *rpcRequest) {
 
 // ── admin ─────────────────────────────────────────────────────────────────────
 
-// rpcSetLogLevel changes the daemon log level at runtime.
+// rpcSetLogLevel changes the gateway log level at runtime.
 func (h *Handler) rpcSetLogLevel(wsc *wsConn, req *rpcRequest) {
 	var p struct {
 		Level string `json:"level"`
@@ -2379,7 +2388,7 @@ func (h *Handler) rpcSetLogLevel(wsc *wsConn, req *rpcRequest) {
 		return
 	}
 	if h.logLevel == nil {
-		wsc.replyErr(req.ID, errCodeServer, "log level control is not enabled on this daemon")
+		wsc.replyErr(req.ID, errCodeServer, "log level control is not enabled on this gateway")
 		return
 	}
 	var level slog.Level

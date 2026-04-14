@@ -225,7 +225,11 @@ func toOpenAIResponse(ar *anthropicResponse) *types.ChatResponse {
 // — Provider methods ——————————————————————————————————————————————————————————
 
 func (p *anthropicProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
-	ar := toAnthropicRequest(req, p.model)
+	model := p.model
+	if req.Model != "" {
+		model = req.Model
+	}
+	ar := toAnthropicRequest(req, model)
 	ar.Stream = false
 
 	body, err := json.Marshal(ar)
@@ -259,7 +263,11 @@ func (p *anthropicProvider) Complete(ctx context.Context, req *types.ChatRequest
 }
 
 func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
-	ar := toAnthropicRequest(req, p.model)
+	model := p.model
+	if req.Model != "" {
+		model = req.Model
+	}
+	ar := toAnthropicRequest(req, model)
 	ar.Stream = true
 
 	body, err := json.Marshal(ar)

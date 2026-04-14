@@ -16,6 +16,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/ops"
+	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/ffimnsr/koios/internal/requestctx"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
@@ -294,6 +295,15 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		return nil, fmt.Errorf("model must not be empty")
 	}
 	sessionKey := rt.sessionKey(req)
+
+	// Apply session-persisted model override; it takes precedence over the
+	// runtime default but yields to an explicit per-request Model value.
+	if req.Model == rt.model {
+		if policy := rt.store.Policy(sessionKey); policy.ModelOverride != "" {
+			req.Model = policy.ModelOverride
+		}
+	}
+
 	result := &Result{SessionKey: sessionKey}
 	reqCopy := req
 	reqCopy.SessionKey = sessionKey
@@ -509,7 +519,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						}
 						workingMessages = append(workingMessages,
 							types.Message{Role: "assistant", Content: assistantText},
-							types.Message{Role: "user", Content: formatToolResult(call.Name, toolResult, execErr)},
+							types.Message{Role: "tool", ToolCallID: call.ID, Content: formatToolResult(call.Name, toolResult, execErr)},
 						)
 						if execErr != nil {
 							lastErr = execErr
@@ -690,7 +700,7 @@ func (rt *Runtime) persistTurn(peerID, sessionKey string, userMsgs, workingMessa
 	if chunk == "" {
 		return
 	}
-	if err := rt.memStore.Insert(context.Background(), peerID, chunk); err != nil {
+	if err := rt.memStore.Insert(context.Background(), peerID, redact.String(chunk)); err != nil {
 		slog.Warn("agent: long-term memory insert failed", "peer", peerID, "err", err)
 	}
 }
@@ -828,13 +838,13 @@ func parseToolCall(text string) (*ToolCall, bool, error) {
 func formatToolResult(name string, result any, err error) string {
 	body := map[string]any{"ok": err == nil}
 	if err != nil {
-		body["error"] = map[string]any{"message": err.Error()}
+		body["error"] = map[string]any{"message": redact.Error(err)}
 	} else {
-		body["result"] = result
+		body["result"] = redact.Value(result)
 	}
 	encoded, marshalErr := json.Marshal(body)
 	if marshalErr != nil {
-		return fmt.Sprintf("[tool_result %s]\n{\"ok\":false,\"error\":{\"message\":%q}}", name, marshalErr.Error())
+		return fmt.Sprintf("[tool_result %s]\n{\"ok\":false,\"error\":{\"message\":%q}}", name, redact.String(marshalErr.Error()))
 	}
 	return fmt.Sprintf("[tool_result %s]\n%s", name, encoded)
 }

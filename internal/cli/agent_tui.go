@@ -23,7 +23,7 @@ type chatLine struct {
 }
 
 type agentTUIModel struct {
-	client   *daemonClient
+	client   *gatewayClient
 	opts     agentOptions
 	program  *tea.Program
 	submit   func(string)
@@ -44,7 +44,7 @@ var (
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 )
 
-func newAgentTUIModel(client *daemonClient, opts agentOptions) *agentTUIModel {
+func newAgentTUIModel(client *gatewayClient, opts agentOptions) *agentTUIModel {
 	in := textarea.New()
 	in.Placeholder = "Type a message and press Enter"
 	in.Focus()

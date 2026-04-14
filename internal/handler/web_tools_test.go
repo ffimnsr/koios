@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -43,7 +45,7 @@ func TestRunWebFetchTool(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	h := &Handler{}
+	h := &Handler{fetchClient: srv.Client()}
 	result, err := h.runWebFetchTool(context.Background(), webFetchParams{URL: srv.URL})
 	if err != nil {
 		t.Fatalf("runWebFetchTool: %v", err)
@@ -53,5 +55,16 @@ func TestRunWebFetchTool(t *testing.T) {
 	}
 	if result["content"] != "Example Hello web" {
 		t.Fatalf("content=%#v", result["content"])
+	}
+}
+
+func TestRunWebFetchTool_BlocksPrivateAddress(t *testing.T) {
+	h := &Handler{}
+	_, err := h.runWebFetchTool(context.Background(), webFetchParams{URL: "http://127.0.0.1:8080"})
+	if err == nil {
+		t.Fatal("expected error for private address")
+	}
+	if !strings.Contains(err.Error(), "private or reserved IP addresses") && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

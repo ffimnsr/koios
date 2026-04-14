@@ -272,17 +272,22 @@ api_key = "test-key"
 	}
 }
 
-func TestRootNoArgsStartsDaemon(t *testing.T) {
+func TestRootNoArgsShowsHelp(t *testing.T) {
 	called := false
 	root := NewRootCommand(app.BuildInfo{Version: "test"}, func(app.BuildInfo) error {
 		called = true
 		return nil
 	})
+	var out strings.Builder
+	root.SetOut(&out)
 	root.SetArgs(nil)
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !called {
-		t.Fatal("expected daemon runner to be invoked")
+	if called {
+		t.Fatal("expected help to be shown, not daemon to start")
+	}
+	if !strings.Contains(out.String(), "Usage:") {
+		t.Fatalf("expected help output, got: %s", out.String())
 	}
 }

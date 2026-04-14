@@ -149,6 +149,29 @@ func TestStore_PersistReset(t *testing.T) {
 	}
 }
 
+func TestStore_PersistenceRedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	st := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: dir})
+	st.Append("alice", types.Message{Role: "tool", Content: `{"authorization":"Bearer sk_secret1234567890","password":"supersecret"}`})
+
+	data, err := os.ReadFile(filepath.Join(dir, "alice.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "sk_secret1234567890") || strings.Contains(text, "supersecret") {
+		t.Fatalf("expected persisted transcript to redact secrets, got %s", text)
+	}
+	if !strings.Contains(text, "[REDACTED]") {
+		t.Fatalf("expected persisted transcript to contain redaction marker, got %s", text)
+	}
+	st2 := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: dir})
+	h := st2.Get("alice").History()
+	if len(h) != 1 || !strings.Contains(h[0].Content, "[REDACTED]") {
+		t.Fatalf("expected reloaded history to remain redacted, got %#v", h)
+	}
+}
+
 // — Phase 2: LLM-based compaction —————————————————————————————————————————————
 
 // stubCompactor is a Compactor that returns a fixed summary for testing.

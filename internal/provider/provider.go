@@ -1,6 +1,6 @@
 // Package provider defines the Provider interface and its factory.
 //
-// Only one provider is active per daemon instance; the factory selects the
+// Only one provider is active per gateway instance; the factory selects the
 // correct implementation based on Config.Provider.
 package provider
 

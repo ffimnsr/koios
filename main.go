@@ -45,7 +45,7 @@ func main() {
 		GitHash:   gitHash,
 		BuildTime: buildTime,
 	}
-	root := cli.NewRootCommand(build, app.RunDaemon)
+	root := cli.NewRootCommand(build, app.RunGateway)
 	if err := root.Execute(); err != nil && err.Error() != "" {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

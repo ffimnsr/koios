@@ -12,6 +12,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/ffimnsr/koios/internal/redact"
 )
 
 // HookName identifies a lifecycle hook event.
@@ -167,7 +169,7 @@ func HTTPWebhookHandler(endpoint, secret string, client *http.Client) Handler {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 	return func(ctx context.Context, ev Event) error {
-		body, err := json.Marshal(ev)
+		body, err := json.Marshal(redactedEvent(ev))
 		if err != nil {
 			return err
 		}
@@ -201,7 +203,7 @@ func HTTPWebhookInterceptor(endpoint, secret string, client *http.Client) Interc
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 	return func(ctx context.Context, ev Event) (Event, error) {
-		body, err := json.Marshal(ev)
+		body, err := json.Marshal(redactedEvent(ev))
 		if err != nil {
 			return ev, err
 		}
@@ -244,4 +246,12 @@ func HTTPWebhookInterceptor(endpoint, secret string, client *http.Client) Interc
 		}
 		return out, nil
 	}
+}
+
+func redactedEvent(ev Event) Event {
+	copyEv := ev
+	copyEv.PeerID = redact.String(copyEv.PeerID)
+	copyEv.SessionKey = redact.String(copyEv.SessionKey)
+	copyEv.Data = redact.Map(copyEv.Data)
+	return copyEv
 }

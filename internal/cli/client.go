@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type daemonClient struct {
+type gatewayClient struct {
 	httpClient *http.Client
 	baseHTTP   string
 	baseWS     string
@@ -57,15 +57,15 @@ type agentRunResult struct {
 	Events        []map[string]any `json:"events,omitempty"`
 }
 
-func newDaemonClient(state *repoState, timeout time.Duration) *daemonClient {
-	return &daemonClient{
+func newGatewayClient(state *repoState, timeout time.Duration) *gatewayClient {
+	return &gatewayClient{
 		httpClient: &http.Client{Timeout: timeout},
 		baseHTTP:   state.baseHTTPURL(),
 		baseWS:     state.baseWSURL(),
 	}
 }
 
-func (c *daemonClient) health(ctx context.Context) (map[string]any, int, error) {
+func (c *gatewayClient) health(ctx context.Context) (map[string]any, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseHTTP+"/healthz", nil)
 	if err != nil {
 		return nil, 0, err
@@ -82,7 +82,7 @@ func (c *daemonClient) health(ctx context.Context) (map[string]any, int, error) 
 	return payload, resp.StatusCode, nil
 }
 
-func (c *daemonClient) version(ctx context.Context) (map[string]any, int, error) {
+func (c *gatewayClient) version(ctx context.Context) (map[string]any, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseHTTP+"/", nil)
 	if err != nil {
 		return nil, 0, err
@@ -103,7 +103,7 @@ func (c *daemonClient) version(ctx context.Context) (map[string]any, int, error)
 	return payload, resp.StatusCode, nil
 }
 
-func (c *daemonClient) rpc(ctx context.Context, peer, method string, params any, out any) error {
+func (c *gatewayClient) rpc(ctx context.Context, peer, method string, params any, out any) error {
 	conn, err := c.openConn(ctx, peer)
 	if err != nil {
 		return err
@@ -113,7 +113,7 @@ func (c *daemonClient) rpc(ctx context.Context, peer, method string, params any,
 	return c.rpcWithConn(conn, method, params, out)
 }
 
-func (c *daemonClient) openConn(ctx context.Context, peer string) (*websocket.Conn, error) {
+func (c *gatewayClient) openConn(ctx context.Context, peer string) (*websocket.Conn, error) {
 	u, err := url.Parse(c.baseWS + "/v1/ws")
 	if err != nil {
 		return nil, err
@@ -132,7 +132,7 @@ func (c *daemonClient) openConn(ctx context.Context, peer string) (*websocket.Co
 	return conn, nil
 }
 
-func (c *daemonClient) rpcWithConn(conn *websocket.Conn, method string, params any, out any) error {
+func (c *gatewayClient) rpcWithConn(conn *websocket.Conn, method string, params any, out any) error {
 	frame := map[string]any{
 		"id":     "1",
 		"method": method,
@@ -165,7 +165,7 @@ func (c *daemonClient) rpcWithConn(conn *websocket.Conn, method string, params a
 	}
 }
 
-func (c *daemonClient) agentRunStream(
+func (c *gatewayClient) agentRunStream(
 	ctx context.Context,
 	peer string,
 	params map[string]any,

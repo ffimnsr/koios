@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/google/uuid"
 
 	"github.com/ffimnsr/koios/internal/types"
@@ -202,7 +203,7 @@ func (r *Registry) saveLocked() error {
 	}
 	list := make([]*RunRecord, 0, len(r.records))
 	for _, rec := range r.records {
-		copyRec := *rec
+		copyRec := sanitizeRunRecord(*rec)
 		list = append(list, &copyRec)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].CreatedAt.Before(list[j].CreatedAt) })
@@ -229,7 +230,7 @@ func (r *Registry) Spawn(req SpawnRequest, sessionKey string) *RunRecord {
 		PeerID:       req.PeerID,
 		ParentID:     req.ParentID,
 		SessionKey:   sessionKey,
-		Task:         req.Task,
+		Task:         redact.String(req.Task),
 		Model:        req.Model,
 		Timeout:      req.Timeout,
 		SandboxMode:  req.SandboxMode,
@@ -255,7 +256,7 @@ func (r *Registry) Spawn(req SpawnRequest, sessionKey string) *RunRecord {
 	if rec.SubTurn.SourceSessionKey == "" {
 		rec.SubTurn.SourceSessionKey = req.ParentSessionKey
 	}
-	rec.Events = append(rec.Events, LifecycleEvent{At: rec.CreatedAt, Type: "spawn", Message: req.Task})
+	rec.Events = append(rec.Events, LifecycleEvent{At: rec.CreatedAt, Type: "spawn", Message: redact.String(req.Task)})
 	r.records[rec.ID] = rec
 	_ = r.saveLocked()
 	return rec
@@ -304,13 +305,39 @@ func (r *Registry) List() []*RunRecord {
 func (r *Registry) AppendEvent(id, typ, message string) (*RunRecord, bool) {
 	return r.Update(id, func(rec *RunRecord) {
 		now := time.Now().UTC()
-		rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: typ, Message: message})
+		rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: typ, Message: redact.String(message)})
 		rec.SubTurn.LastEvent = typ
 		rec.SubTurn.LastEventAt = now
 		if len(rec.Events) > r.maxEvents {
 			rec.Events = rec.Events[len(rec.Events)-r.maxEvents:]
 		}
 	})
+}
+
+func sanitizeRunRecord(rec RunRecord) RunRecord {
+	rec.PeerID = redact.String(rec.PeerID)
+	rec.ParentID = redact.String(rec.ParentID)
+	rec.SessionKey = redact.String(rec.SessionKey)
+	rec.Task = redact.String(rec.Task)
+	rec.FinalReply = redact.String(rec.FinalReply)
+	rec.Error = redact.String(rec.Error)
+	rec.Transcript = redact.Messages(rec.Transcript)
+	if len(rec.Events) > 0 {
+		events := make([]LifecycleEvent, len(rec.Events))
+		for i, ev := range rec.Events {
+			events[i] = ev
+			events[i].Message = redact.String(ev.Message)
+		}
+		rec.Events = events
+	}
+	if len(rec.Steering) > 0 {
+		steering := make([]string, len(rec.Steering))
+		for i, msg := range rec.Steering {
+			steering[i] = redact.String(msg)
+		}
+		rec.Steering = steering
+	}
+	return rec
 }
 
 // LinkChild records a parent/child run relationship when both run ids are known.

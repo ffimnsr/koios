@@ -21,6 +21,22 @@ type stubProvider struct {
 	stream   func(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error)
 }
 
+type stubToolExecutor struct {
+	execute func(ctx context.Context, peerID string, call agent.ToolCall) (any, error)
+}
+
+func (s stubToolExecutor) ToolPrompt(peerID string) string {
+	return "use tools"
+}
+
+func (s stubToolExecutor) ToolDefinitions(peerID string) []types.Tool {
+	return nil
+}
+
+func (s stubToolExecutor) ExecuteTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
+	return s.execute(ctx, peerID, call)
+}
+
 func (s *stubProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
 	_ = req
 	return s.complete(ctx, req)
@@ -233,6 +249,45 @@ func TestRuntime_BeforeLLMInterceptorCanRewriteRequest(t *testing.T) {
 	}
 	if len(captured.Messages) == 0 || captured.Messages[len(captured.Messages)-1].Content != "rewritten prompt" {
 		t.Fatalf("expected interceptor message rewrite, got %#v", captured.Messages)
+	}
+}
+
+func TestRuntime_XMLToolFallbackStoresToolResultAsToolRole(t *testing.T) {
+	store := session.New(20)
+	var seen []*types.ChatRequest
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			seen = append(seen, req)
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: `<tool_call>{"name":"web_fetch","arguments":{"url":"https://example.com?token=sk_secret1234567890"}}</tool_call>`}}}}, nil
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		MaxSteps: 2,
+		Messages: []types.Message{{Role: "user", Content: "fetch it"}},
+		ToolExecutor: stubToolExecutor{execute: func(_ context.Context, _ string, call agent.ToolCall) (any, error) {
+			return map[string]any{"url": "https://example.com?token=sk_secret1234567890"}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(seen) < 2 {
+		t.Fatalf("expected second request after tool call, got %d requests", len(seen))
+	}
+	last := seen[1].Messages[len(seen[1].Messages)-1]
+	if last.Role != "tool" {
+		t.Fatalf("expected tool-role message for tool result, got %#v", last)
+	}
+	if !strings.Contains(last.Content, "[REDACTED]") {
+		t.Fatalf("expected redacted tool result, got %q", last.Content)
 	}
 }
 

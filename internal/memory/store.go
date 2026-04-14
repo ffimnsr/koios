@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/memory/milvus"
+	"github.com/ffimnsr/koios/internal/redact"
 	_ "modernc.org/sqlite" // register "sqlite" driver
 )
 
@@ -94,6 +95,7 @@ func (s *Store) InsertChunk(ctx context.Context, peerID, content string) (*Chunk
 func (s *Store) InsertChunkWithTags(ctx context.Context, peerID, content string, tags []string, category string) (*Chunk, error) {
 	id := newID()
 	now := time.Now().Unix()
+	content = redact.String(content)
 	tagStr := strings.Join(tags, ",")
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

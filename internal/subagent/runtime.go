@@ -12,6 +12,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/eventbus"
+	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/types"
 )
@@ -187,25 +188,25 @@ func (r *Runtime) execute(ctx context.Context, id string, req SpawnRequest, pare
 	if err != nil {
 		_, _ = r.reg.Update(id, func(rec *RunRecord) {
 			rec.Status = StatusErrored
-			rec.Error = err.Error()
+			rec.Error = redact.Error(err)
 			rec.FinishedAt = now
 			rec.SubTurn.State = SubTurnErrored
 			rec.SubTurn.FinishedAt = now
-			rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: "error", Message: err.Error()})
+			rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: "error", Message: redact.Error(err)})
 		})
-		r.publishLifecycle(id, req.PeerID, req.SessionKey, "subagent.errored", map[string]any{"error": err.Error()})
+		r.publishLifecycle(id, req.PeerID, req.SessionKey, "subagent.errored", map[string]any{"error": redact.Error(err)})
 		slog.Warn("subagent run failed", "run", id, "error", err)
 		return
 	}
 	_, _ = r.reg.Update(id, func(rec *RunRecord) {
 		rec.Status = StatusCompleted
 		rec.FinishedAt = now
-		rec.FinalReply = result.AssistantText
-		rec.Transcript = append([]types.Message(nil), r.store.Get(result.SessionKey).History()...)
+		rec.FinalReply = redact.String(result.AssistantText)
+		rec.Transcript = redact.Messages(r.store.Get(result.SessionKey).History())
 		rec.SubTurn.State = SubTurnCompleted
 		rec.SubTurn.FinishedAt = now
 		rec.SubTurn.Steps = result.Steps
-		rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: "complete", Message: result.AssistantText})
+		rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: "complete", Message: redact.String(result.AssistantText)})
 	})
 	r.publishLifecycle(id, req.PeerID, req.SessionKey, "subagent.completed", map[string]any{
 		"steps":      result.Steps,
