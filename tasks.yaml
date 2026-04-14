@@ -8,6 +8,3 @@ tasks:
     commands:
       - command: go fmt ./...
     description: Format the code using go fmt
-  lint:
-    commands:
-      
