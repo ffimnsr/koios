@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -33,6 +34,7 @@ import (
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/usage"
+	"github.com/ffimnsr/koios/internal/workflow"
 	"github.com/ffimnsr/koios/internal/workspace"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -261,6 +263,17 @@ func RunGateway(build BuildInfo) error {
 		}
 	}
 
+	// Workflow engine setup.
+	var workflowRunner *workflow.Runner
+	{
+		wfStore, wfErr := workflow.NewStore(cfg.WorkflowDir())
+		if wfErr != nil {
+			return fmt.Errorf("workflow store: %w", wfErr)
+		}
+		workflowRunner = workflow.NewRunner(wfStore)
+		slog.Info("workflow engine started", "dir", cfg.WorkflowDir())
+	}
+
 	wsHandler := handler.NewHandler(store, prov, handler.HandlerOptions{
 		Model:           cfg.Model,
 		Timeout:         cfg.RequestTimeout,
@@ -303,14 +316,16 @@ func RunGateway(build BuildInfo) error {
 		Monitor:        mon,
 		LogLevel:       logLevel,
 		MCPManager:     mcpMgr,
+		WorkflowRunner: workflowRunner,
 	})
 
-	// Wire the full agent loop into heartbeat and cron so the LLM can invoke
-	// tools (and spawn subagents) during scheduled and heartbeat turns.
+	// Wire the full agent loop into heartbeat, cron, and workflows so the LLM
+	// can invoke tools (and spawn subagents) during scheduled and heartbeat turns.
 	if hbRunner != nil {
 		hbRunner.SetAgentRuntime(agentRuntime, wsHandler)
 	}
 	sched.SetAgentRuntime(agentRuntime, wsHandler)
+	workflowRunner.SetAgentRuntime(agentRuntime, wsHandler)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/ws", wsHandler)

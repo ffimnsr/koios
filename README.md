@@ -268,7 +268,7 @@ Example response:
       "web": true
     },
     "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
-    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "write", "edit", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
+    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "write", "edit", "apply_patch", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
     "stream_notifications": ["stream.delta", "stream.event", "session.message"]
   }
 }
@@ -758,6 +758,7 @@ When workspace is enabled, the agent can call:
 - `workspace.read`
 - `workspace.write`
 - `workspace.edit`
+- `apply_patch`
 - `workspace.mkdir`
 - `workspace.delete`
 - `read`

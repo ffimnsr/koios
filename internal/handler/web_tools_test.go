@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -36,8 +38,21 @@ func TestRunWebFetchTool(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	h := &Handler{fetchClient: srv.Client()}
-	result, err := h.runWebFetchTool(context.Background(), webFetchParams{URL: srv.URL})
+	targetURL, err := url.Parse("http://example.com/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{
+		fetchClient: &http.Client{
+			Transport: &http.Transport{
+				Proxy: nil,
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+				},
+			},
+		},
+	}
+	result, err := h.runWebFetchTool(context.Background(), webFetchParams{URL: targetURL.String()})
 	if err != nil {
 		t.Fatalf("runWebFetchTool: %v", err)
 	}

@@ -47,6 +47,7 @@ var toolGroups = map[string][]string{
 		"read",
 		"write",
 		"edit",
+		"apply_patch",
 		"workspace.list",
 		"workspace.read",
 		"workspace.write",

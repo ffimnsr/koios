@@ -406,6 +406,58 @@ func TestWS_WorkspaceRPC(t *testing.T) {
 	}
 }
 
+func TestExecuteTool_ApplyPatch(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	if _, err := wsStore.Write("alice", "notes/todo.md", "one\ntwo\n", false); err != nil {
+		t.Fatalf("workspace write setup: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+	})
+
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "apply_patch",
+		Arguments: json.RawMessage(`{"patch":"*** Begin Patch\n*** Update File: notes/todo.md\n@@\n one\n-two\n+TWO\n*** End Patch"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(apply_patch): %v", err)
+	}
+	var got struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Count int `json:"count"`
+			Files []struct {
+				Path   string `json:"path"`
+				Action string `json:"action"`
+			} `json:"files"`
+		} `json:"result"`
+	}
+	raw, _ := json.Marshal(result)
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal apply_patch result: %v", err)
+	}
+	if !got.OK || got.Result.Count != 1 || len(got.Result.Files) != 1 {
+		t.Fatalf("unexpected apply_patch result: %#v", got)
+	}
+	if got.Result.Files[0].Action != "update" || got.Result.Files[0].Path != "notes/todo.md" {
+		t.Fatalf("unexpected file result: %#v", got.Result.Files[0])
+	}
+	content, err := wsStore.Read("alice", "notes/todo.md")
+	if err != nil {
+		t.Fatalf("read patched content: %v", err)
+	}
+	if content != "one\nTWO\n" {
+		t.Fatalf("unexpected patched content: %q", content)
+	}
+}
+
 func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	store := session.New(10)
 	prov := &stubProvider{response: &types.ChatResponse{}}
@@ -547,6 +599,27 @@ func TestToolDefinitionsHonorPolicy(t *testing.T) {
 	}
 	if containsString(names, "exec") {
 		t.Fatalf("expected exec to be excluded by allow list, got %#v", names)
+	}
+}
+
+func TestToolDefinitionsIncludeApplyPatch(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+	})
+	names := []string{}
+	for _, tool := range h.ToolDefinitions("alice") {
+		names = append(names, tool.Function.Name)
+	}
+	if !containsString(names, "apply_patch") {
+		t.Fatalf("expected apply_patch tool, got %#v", names)
 	}
 }
 

@@ -21,6 +21,10 @@ func (c *Config) CronDir() string { return filepath.Join(c.WorkspaceRoot, "cron"
 // AgentDir returns the path where subagent registry data is stored, derived from WorkspaceRoot.
 func (c *Config) AgentDir() string { return filepath.Join(c.WorkspaceRoot, "agents") }
 
+// WorkflowDir returns the path where workflow definitions and run records are
+// stored, derived from WorkspaceRoot.
+func (c *Config) WorkflowDir() string { return filepath.Join(c.WorkspaceRoot, "workflows") }
+
 // MemoryDBPath returns the path for the long-term memory SQLite database, derived from WorkspaceRoot.
 func (c *Config) MemoryDBPath() string { return filepath.Join(c.WorkspaceRoot, "memory.db") }
 

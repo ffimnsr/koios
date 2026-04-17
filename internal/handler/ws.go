@@ -73,6 +73,7 @@ import (
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/usage"
+	"github.com/ffimnsr/koios/internal/workflow"
 	"github.com/ffimnsr/koios/internal/workspace"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -224,6 +225,7 @@ type Handler struct {
 	monitor         *monitor.Monitor
 	logLevel        *slog.LevelVar
 	mcpManager      *mcp.Manager
+	workflowRunner  *workflow.Runner
 
 	// fetchClient is the HTTP client used by the web_fetch tool.  When nil,
 	// a client backed by ssrfSafeTransport() is used.  Override in tests only.
@@ -282,6 +284,8 @@ type HandlerOptions struct {
 	LogLevel *slog.LevelVar
 	// MCPManager, when non-nil, provides tools from external MCP servers.
 	MCPManager *mcp.Manager
+	// WorkflowRunner, when non-nil, enables the workflow.* tool family.
+	WorkflowRunner *workflow.Runner
 }
 
 // NewHandler creates the WebSocket control-plane handler.
@@ -324,6 +328,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		monitor:         opts.Monitor,
 		logLevel:        opts.LogLevel,
 		mcpManager:      opts.MCPManager,
+		workflowRunner:  opts.WorkflowRunner,
 		syncRuns:        make(map[string]context.CancelFunc),
 		clients:         make(map[*wsConn]struct{}),
 		execApprovals:   newExecApprovalStore(execCfg.ApprovalTTL),

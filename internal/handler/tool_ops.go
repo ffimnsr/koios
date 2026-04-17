@@ -2,8 +2,11 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/ffimnsr/koios/internal/workflow"
 )
 
 func (h *Handler) memorySearch(peerID, query string, limit int, ctx context.Context) (map[string]any, error) {
@@ -200,6 +203,21 @@ func (h *Handler) workspaceEdit(peerID, path, oldText, newText string, replaceAl
 	return map[string]any{"ok": true, "result": result}, nil
 }
 
+func (h *Handler) workspaceApplyPatch(peerID, patch string) (map[string]any, error) {
+	if h.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace is not enabled")
+	}
+	patch = strings.TrimSpace(patch)
+	if patch == "" {
+		return nil, fmt.Errorf("patch is required")
+	}
+	result, err := h.workspaceStore.ApplyPatch(peerID, patch)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "result": result}, nil
+}
+
 func (h *Handler) workspaceMkdir(peerID, path string) (map[string]any, error) {
 	if h.workspaceStore == nil {
 		return nil, fmt.Errorf("workspace is not enabled")
@@ -224,4 +242,175 @@ func (h *Handler) workspaceDelete(peerID, path string, recursive bool) (map[stri
 		return nil, err
 	}
 	return map[string]any{"ok": true, "path": path, "recursive": recursive}, nil
+}
+
+// ── workflow tool helpers ─────────────────────────────────────────────────────
+
+type workflowCreateParams struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	FirstStep   string          `json:"first_step"`
+	Steps       json.RawMessage `json:"steps"`
+}
+
+func (h *Handler) workflowList(peerID string) (map[string]any, error) {
+	if h.workflowRunner == nil {
+		return nil, fmt.Errorf("workflow engine is not enabled")
+	}
+	wfs := h.workflowRunner.Store().List(peerID)
+	return map[string]any{"count": len(wfs), "workflows": wfs}, nil
+}
+
+func (h *Handler) workflowCreate(peerID string, p workflowCreateParams) (map[string]any, error) {
+	if h.workflowRunner == nil {
+		return nil, fmt.Errorf("workflow engine is not enabled")
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	var steps []workflow.Step
+	if len(p.Steps) > 0 && string(p.Steps) != "null" {
+		if err := json.Unmarshal(p.Steps, &steps); err != nil {
+			return nil, fmt.Errorf("invalid steps: %w", err)
+		}
+	}
+	if len(steps) == 0 {
+		return nil, fmt.Errorf("at least one step is required")
+	}
+	for i, s := range steps {
+		if strings.TrimSpace(s.ID) == "" {
+			steps[i].ID = fmt.Sprintf("step-%d", i+1)
+		}
+		if s.Kind == "" {
+			return nil, fmt.Errorf("step %d: kind is required", i+1)
+		}
+	}
+	wf, err := h.workflowRunner.Store().Create(workflow.Workflow{
+		Name:        name,
+		Description: strings.TrimSpace(p.Description),
+		PeerID:      peerID,
+		FirstStep:   strings.TrimSpace(p.FirstStep),
+		Steps:       steps,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "workflow": wf}, nil
+}
+
+func (h *Handler) workflowGet(peerID, id string) (map[string]any, error) {
+	if h.workflowRunner == nil {
+		return nil, fmt.Errorf("workflow engine is not enabled")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	wf := h.workflowRunner.Store().Get(id)
+	if wf == nil || wf.PeerID != peerID {
+		return nil, fmt.Errorf("workflow %s not found", id)
+	}
+	return map[string]any{"workflow": wf}, nil
+}
+
+func (h *Handler) workflowDelete(peerID, id string) (map[string]any, error) {
+	if h.workflowRunner == nil {
+		return nil, fmt.Errorf("workflow engine is not enabled")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	wf := h.workflowRunner.Store().Get(id)
+	if wf == nil || wf.PeerID != peerID {
+		return nil, fmt.Errorf("workflow %s not found", id)
+	}
+	if err := h.workflowRunner.Store().Delete(id); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "id": id}, nil
+}
+
+func (h *Handler) workflowStartRun(ctx context.Context, peerID, workflowID string) (map[string]any, error) {
+	if h.workflowRunner == nil {
+		return nil, fmt.Errorf("workflow engine is not enabled")
+	}
+	workflowID = strings.TrimSpace(workflowID)
+	if workflowID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	run, err := h.workflowRunner.Start(ctx, workflowID, peerID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"ok":          true,
+		"run_id":      run.ID,
+		"workflow_id": run.WorkflowID,
+		"status":      run.Status,
+	}, nil
+}
+
+func (h *Handler) workflowStatus(peerID, runID string) (map[string]any, error) {
+	if h.workflowRunner == nil {
+		return nil, fmt.Errorf("workflow engine is not enabled")
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, fmt.Errorf("run_id is required")
+	}
+	run, err := h.workflowRunner.Status(runID)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil || run.PeerID != peerID {
+		return nil, fmt.Errorf("run %s not found", runID)
+	}
+	return map[string]any{"run": run}, nil
+}
+
+func (h *Handler) workflowCancel(peerID, runID string) (map[string]any, error) {
+	if h.workflowRunner == nil {
+		return nil, fmt.Errorf("workflow engine is not enabled")
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, fmt.Errorf("run_id is required")
+	}
+	// Verify ownership before cancelling.
+	run, err := h.workflowRunner.Status(runID)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil || run.PeerID != peerID {
+		return nil, fmt.Errorf("run %s not found", runID)
+	}
+	if err := h.workflowRunner.Cancel(runID); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "run_id": runID}, nil
+}
+
+func (h *Handler) workflowRuns(peerID, workflowID string, limit int) (map[string]any, error) {
+	if h.workflowRunner == nil {
+		return nil, fmt.Errorf("workflow engine is not enabled")
+	}
+	workflowID = strings.TrimSpace(workflowID)
+	if workflowID == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	// Verify ownership.
+	wf := h.workflowRunner.Store().Get(workflowID)
+	if wf == nil || wf.PeerID != peerID {
+		return nil, fmt.Errorf("workflow %s not found", workflowID)
+	}
+	runs, err := h.workflowRunner.Store().ListRuns(peerID, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	if limit > 0 && len(runs) > limit {
+		runs = runs[:limit]
+	}
+	return map[string]any{"workflow_id": workflowID, "count": len(runs), "runs": runs}, nil
 }

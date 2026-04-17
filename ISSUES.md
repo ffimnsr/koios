@@ -245,16 +245,16 @@ This file is a merged checklist for the feature gap between Koios and the refere
 
 ## Tools
 
-- [ ] Standard `read` tool
+- [x] Standard `read` tool
 	- Research notes: OpenClaw already treats `read` as a first-class coding tool with sandbox/workspace boundary support. PicoClaw exposes `read_file` in its tool catalog and web management APIs. IronClaw ships built-in local file tools behind an explicit allow-local-tools gate.
 	- References: OpenClaw `src/agents/tool-catalog.ts`, `src/agents/pi-tools.ts`; PicoClaw `web/backend/api/tools.go`, `web/backend/api/tools_test.go`; IronClaw `docs/extensions/file-tools.mdx`, `tests/e2e_trace_file_tools.rs`.
-- [ ] Standard `write` tool
+- [x] Standard `write` tool
 	- Research notes: OpenClaw already bundles `write` under its coding tool surface. PicoClaw exposes `write_file` as a configurable tool. IronClaw has a dedicated `WriteFileTool` with approval and rate-limit hooks, which is the strongest typed implementation reference.
 	- References: OpenClaw `src/agents/tool-catalog.ts`, `src/agents/pi-tools.ts`; PicoClaw `web/backend/api/tools.go`; IronClaw `src/tools/builtin/file.rs`, `tests/e2e_trace_file_tools.rs`.
-- [ ] Standard `edit` tool
+- [x] Standard `edit` tool
 	- Research notes: OpenClaw already separates targeted edit operations from full writes. PicoClaw exposes `edit_file` in the launcher/tool catalog. IronClaw currently leans more on `apply_patch` for precise edits than on a separately branded `edit` tool.
 	- References: OpenClaw `src/agents/tool-catalog.ts`; PicoClaw `web/backend/api/tools.go`; IronClaw `docs/extensions/file-tools.mdx`, `src/tools/builtin/file.rs`.
-- [ ] Multi-hunk `apply_patch` tool for agent use
+- [x] Multi-hunk `apply_patch` tool for agent use
 	- Research notes: OpenClaw has an explicit `apply_patch` tool and sandbox-aware patch file ops, making it the best direct parity reference. PicoClaw does not appear to expose the same multi-hunk patch primitive in the current search. IronClaw also has a dedicated `ApplyPatchTool` with read-before-edit safety checks.
 	- References: OpenClaw `src/agents/apply-patch.ts`, `src/agents/tool-catalog.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/tools/builtin/file.rs`, `tests/e2e_tool_coverage.rs`.
 - [ ] Sandboxed code execution tool for analysis jobs
@@ -792,7 +792,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] X / Twitter search tool
 	- Research notes: None of the three repos surfaced a direct built-in X/Twitter search tool in the current searches. This is likely a Koios-native tool or an extension opportunity rather than a direct parity item.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Workflow engine comparable to Lobster
+- [x] Workflow engine comparable to Lobster
 	- Research notes: IronClaw is the strongest architectural reference because routines, jobs, orchestrator, and webhooks are already explicit subsystems there. OpenClaw has useful automation and hook concepts, but less of a general workflow engine in the current search. PicoClaw has heartbeat and hooks, but not a comparable workflow runtime.
 	- References: OpenClaw `src/hooks/gmail.ts`, `docs/automation/cron-jobs.md`; PicoClaw `pkg/agent/hooks.go`, `docs/configuration.md`; IronClaw `src/agent/routine_engine.rs`, `src/tools/builtin/job.rs`, `docs/internal/engine-v2-architecture.md`.
 - [ ] Structured JSON-only LLM task tool

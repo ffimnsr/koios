@@ -419,6 +419,20 @@ var toolDefs = []toolDef{
 		available: func(h *Handler) bool { return h.workspaceStore != nil },
 	},
 	{
+		name:        "apply_patch",
+		description: "Apply a multi-hunk patch to one or more peer workspace files.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"patch": map[string]any{"type": "string"},
+			},
+			"required":             []string{"patch"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"patch":"*** Begin Patch\\n*** Update File: notes/todo.md\\n@@\\n-old\\n+new\\n*** End Patch"}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
 		name:        "subagent.status",
 		description: "Poll the current state of a spawned subagent by run id.",
 		parameters: mustJSONSchema(map[string]any{
@@ -576,6 +590,110 @@ var toolDefs = []toolDef{
 			"additionalProperties": false,
 		}),
 		argHint: `{"url":"https://example.com"}`,
+	},
+	// ── workflow.* ────────────────────────────────────────────────────────────
+	{
+		name:        "workflow.list",
+		description: "List workflow definitions for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}),
+		argHint:   `{}`,
+		available: func(h *Handler) bool { return h.workflowRunner != nil },
+	},
+	{
+		name:        "workflow.create",
+		description: "Create a new workflow definition for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":        map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"first_step":  map[string]any{"type": "string"},
+				"steps":       map[string]any{"type": "array"},
+			},
+			"required":             []string{"name", "steps"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"my-workflow","description":"optional","first_step":"step-1","steps":[{"id":"step-1","kind":"agent_turn|webhook|condition","name":"optional","message":"prompt for agent_turn","model":"optional override","on_success":"step-2","on_failure":"","url":"https://example.com for webhook","headers":{},"body_template":"{{.Output}}","condition":"output_contains:success for condition","true_step":"step-3","false_step":""}]}`,
+		available: func(h *Handler) bool { return h.workflowRunner != nil },
+	},
+	{
+		name:        "workflow.get",
+		description: "Fetch one workflow definition by id.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"id": map[string]any{"type": "string"}},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"workflow-id"}`,
+		available: func(h *Handler) bool { return h.workflowRunner != nil },
+	},
+	{
+		name:        "workflow.delete",
+		description: "Delete a workflow definition by id.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"id": map[string]any{"type": "string"}},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"workflow-id"}`,
+		available: func(h *Handler) bool { return h.workflowRunner != nil },
+	},
+	{
+		name:        "workflow.run",
+		description: "Start a new run of a workflow definition. Returns the run ID immediately; poll workflow.status for updates.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"id": map[string]any{"type": "string"}},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"workflow-id"}`,
+		available: func(h *Handler) bool { return h.workflowRunner != nil },
+	},
+	{
+		name:        "workflow.status",
+		description: "Get the current status of a workflow run by run id.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"run_id": map[string]any{"type": "string"}},
+			"required":             []string{"run_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"run_id":"run-id"}`,
+		available: func(h *Handler) bool { return h.workflowRunner != nil },
+	},
+	{
+		name:        "workflow.cancel",
+		description: "Cancel an active workflow run.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"run_id": map[string]any{"type": "string"}},
+			"required":             []string{"run_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"run_id":"run-id"}`,
+		available: func(h *Handler) bool { return h.workflowRunner != nil },
+	},
+	{
+		name:        "workflow.runs",
+		description: "List recent runs for a workflow, newest first.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":    map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"workflow-id","limit":10}`,
+		available: func(h *Handler) bool { return h.workflowRunner != nil },
 	},
 }
 
@@ -1159,6 +1277,14 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.workspaceEdit(peerID, args.Path, args.OldText, args.NewText, args.ReplaceAll)
+	case "apply_patch":
+		var args struct {
+			Patch string `json:"patch"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workspaceApplyPatch(peerID, args.Patch)
 	case "workspace.mkdir":
 		var args struct {
 			Path string `json:"path"`
@@ -1263,6 +1389,63 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.updateCronJob(peerID, args)
+	case "workflow.list":
+		return h.workflowList(peerID)
+	case "workflow.create":
+		var args workflowCreateParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workflowCreate(peerID, args)
+	case "workflow.get":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workflowGet(peerID, args.ID)
+	case "workflow.delete":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workflowDelete(peerID, args.ID)
+	case "workflow.run":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workflowStartRun(ctx, peerID, args.ID)
+	case "workflow.status":
+		var args struct {
+			RunID string `json:"run_id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workflowStatus(peerID, args.RunID)
+	case "workflow.cancel":
+		var args struct {
+			RunID string `json:"run_id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workflowCancel(peerID, args.RunID)
+	case "workflow.runs":
+		var args struct {
+			ID    string `json:"id"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.workflowRuns(peerID, args.ID, args.Limit)
 	default:
 		// Dispatch to MCP manager for mcp__{server}__{tool} style names.
 		if h.mcpManager != nil {
