@@ -286,6 +286,7 @@ func RunGateway(build BuildInfo) error {
 	}
 
 	orchRuntime := orchestrator.New(subRuntime, agentRuntime, bus)
+	orchRuntime.SetLedger(runledger.NewOrchestratorAdapter(runLedger))
 
 	wsHandler := handler.NewHandler(store, prov, handler.HandlerOptions{
 		Model:           cfg.Model,

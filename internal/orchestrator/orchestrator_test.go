@@ -12,6 +12,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/eventbus"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
@@ -112,6 +113,54 @@ func TestOrchestrator_CollectAggregation(t *testing.T) {
 	}
 	if !strings.Contains(final.AggregatedReply, "[a]") || !strings.Contains(final.AggregatedReply, "[b]") {
 		t.Fatalf("aggregated reply missing labels: %q", final.AggregatedReply)
+	}
+}
+
+func TestOrchestrator_WritesUnifiedLedgerRecord(t *testing.T) {
+	sub, _, _, bus := buildRuntime(t, successProvider("hello"), 4)
+	orch := New(sub, nil, bus)
+	ledger, err := runledger.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("runledger.New: %v", err)
+	}
+	defer ledger.Close()
+	orch.SetLedger(runledger.NewOrchestratorAdapter(ledger))
+
+	run, err := orch.Start(context.Background(), FanOutRequest{
+		PeerID:           "alice",
+		ParentSessionKey: "alice-session",
+		ParentRunID:      "parent-run",
+		Tasks: []ChildTask{
+			{Label: "a", Task: "task a"},
+			{Label: "b", Task: "task b"},
+		},
+		Aggregation: AggregateCollect,
+		WaitPolicy:  WaitAll,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	final := waitRunStatus(t, orch, run.ID, 15*time.Second)
+	if final.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %s", final.Status)
+	}
+
+	got, ok := ledger.Get(run.ID)
+	if !ok {
+		t.Fatal("expected orchestrator ledger record")
+	}
+	if got.Kind != runledger.KindOrchestrator {
+		t.Fatalf("expected kind orchestrator, got %q", got.Kind)
+	}
+	if got.ParentID != "parent-run" {
+		t.Fatalf("expected parent-run, got %q", got.ParentID)
+	}
+	if got.Status != runledger.StatusCompleted {
+		t.Fatalf("expected completed ledger status, got %q", got.Status)
+	}
+	if got.StartedAt == nil || got.FinishedAt == nil {
+		t.Fatalf("expected started_at and finished_at to be set, got %+v", got)
 	}
 }
 

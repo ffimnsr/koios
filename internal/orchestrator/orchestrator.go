@@ -39,6 +39,7 @@ import (
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/redact"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
 )
@@ -348,11 +349,21 @@ type Orchestrator struct {
 	subRuntime *subagent.Runtime
 	agentRT    *agent.Runtime
 	bus        *eventbus.Bus
+	ledger     OrchestratorLedger
 
 	mu   sync.Mutex
 	runs map[string]*Run
 	// cancels maps orchestration run ID → cancel function.
 	cancels map[string]context.CancelFunc
+}
+
+// OrchestratorLedger persists orchestration lifecycle events into the unified
+// run ledger. Implementations must be safe for concurrent use.
+type OrchestratorLedger interface {
+	LedgerQueued(id, peerID, sessionKey, model string, queuedAt time.Time)
+	LedgerStarted(id string, startedAt time.Time)
+	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int)
+	LedgerMetadata(id, parentID string, toolCalls int)
 }
 
 // New creates an Orchestrator. agentRT is only required when reducer aggregation
@@ -365,6 +376,16 @@ func New(subRuntime *subagent.Runtime, agentRT *agent.Runtime, bus *eventbus.Bus
 		runs:       make(map[string]*Run),
 		cancels:    make(map[string]context.CancelFunc),
 	}
+}
+
+// SetLedger attaches the unified run ledger sink used for orchestration runs.
+func (o *Orchestrator) SetLedger(ledger OrchestratorLedger) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	o.ledger = ledger
+	o.mu.Unlock()
 }
 
 // Start spawns a new fan-out orchestration and returns the run ID immediately.
@@ -476,7 +497,16 @@ func (o *Orchestrator) Start(ctx context.Context, req FanOutRequest) (*Run, erro
 
 	o.mu.Lock()
 	o.runs[runID] = run
+	ledger := o.ledger
 	o.mu.Unlock()
+	if ledger != nil {
+		sessionKey := req.ParentSessionKey
+		if sessionKey == "" {
+			sessionKey = req.PeerID
+		}
+		ledger.LedgerQueued(run.ID, req.PeerID, sessionKey, req.Model, run.CreatedAt)
+		ledger.LedgerMetadata(run.ID, req.ParentRunID, 0)
+	}
 
 	var orchCtx context.Context
 	var cancel context.CancelFunc
@@ -594,7 +624,11 @@ func (o *Orchestrator) execute(ctx context.Context, cancel context.CancelFunc, r
 	run.mu.Lock()
 	run.Status = RunStatusRunning
 	run.StartedAt = time.Now().UTC()
+	startedAt := run.StartedAt
 	run.mu.Unlock()
+	if ledger := o.currentLedger(); ledger != nil {
+		ledger.LedgerStarted(run.ID, startedAt)
+	}
 
 	taskCount := len(req.Tasks)
 	if taskCount == 0 {
@@ -637,6 +671,7 @@ func (o *Orchestrator) execute(ctx context.Context, cancel context.CancelFunc, r
 		o.publishLifecycle(run.ID, req.PeerID, req.ParentSessionKey, "orchestrator.errored", map[string]any{
 			"error": "budget exceeded: max_steps reached",
 		})
+		o.recordTerminal(run, runledger.StatusErrored, run.Error)
 		return
 	}
 
@@ -653,6 +688,7 @@ func (o *Orchestrator) execute(ctx context.Context, cancel context.CancelFunc, r
 			o.publishSession(req.PeerID, req.ParentSessionKey, run.ID,
 				fmt.Sprintf("[orchestrator:%s] cancelled", run.ID))
 		}
+		o.recordTerminal(run, runledger.StatusCanceled, "")
 		return
 	}
 
@@ -1200,6 +1236,7 @@ func (o *Orchestrator) finishRun(
 		o.publishLifecycle(run.ID, req.PeerID, req.ParentSessionKey, "orchestrator.errored", map[string]any{
 			"error": redact.Error(aggErr),
 		})
+		o.recordTerminal(run, runledger.StatusErrored, run.Error)
 		return
 	}
 
@@ -1212,6 +1249,7 @@ func (o *Orchestrator) finishRun(
 		o.publishSession(req.PeerID, req.ParentSessionKey, run.ID,
 			fmt.Sprintf("[orchestrator:%s] %s", run.ID, aggregated))
 	}
+	o.recordTerminal(run, runledger.StatusCompleted, "")
 }
 
 // makeStageTasks returns a copy of tasks with the prior stage output prepended
@@ -1422,11 +1460,49 @@ func (o *Orchestrator) executeMultiStage(
 			o.publishSession(req.PeerID, req.ParentSessionKey, run.ID,
 				fmt.Sprintf("[orchestrator:%s] %s", run.ID, run.AggregatedReply))
 		}
+		o.recordTerminal(run, runledger.StatusCompleted, "")
 	} else {
 		run.appendTimeline("orchestration.cancelled", "", 0, nil)
 		slog.Info("orchestration cancelled (multi-stage)", "id", run.ID)
 		o.publishLifecycle(run.ID, req.PeerID, req.ParentSessionKey, "orchestrator.cancelled", nil)
+		o.recordTerminal(run, runledger.StatusCanceled, "")
 	}
+}
+
+func (o *Orchestrator) currentLedger() OrchestratorLedger {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.ledger
+}
+
+func (o *Orchestrator) recordTerminal(run *Run, status runledger.RunStatus, errMsg string) {
+	ledger := o.currentLedger()
+	if ledger == nil {
+		return
+	}
+	snapshot := run.snapshot()
+	finishedAt := snapshot.FinishedAt
+	if finishedAt.IsZero() {
+		finishedAt = time.Now().UTC()
+	}
+	ledger.LedgerMetadata(snapshot.ID, snapshot.ParentRunID, totalToolCalls(snapshot.Children))
+	ledger.LedgerFinished(snapshot.ID, finishedAt, string(status), errMsg, totalSteps(snapshot.Children), 0, 0)
+}
+
+func totalSteps(children []ChildResult) int {
+	total := 0
+	for _, child := range children {
+		total += child.Steps
+	}
+	return total
+}
+
+func totalToolCalls(children []ChildResult) int {
+	total := 0
+	for _, child := range children {
+		total += child.ToolCalls
+	}
+	return total
 }
 
 // waitPolicySatisfied returns true when the configured wait policy threshold

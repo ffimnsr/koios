@@ -174,6 +174,51 @@ func TestListRetainFor(t *testing.T) {
 	}
 }
 
+func TestListOrdersByLatestActivity(t *testing.T) {
+	dir := t.TempDir()
+	s, err := runledger.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	base := time.Now().UTC().Truncate(time.Second)
+	if err := s.Add(runledger.Record{
+		ID:       "older-created",
+		Kind:     runledger.KindAgent,
+		PeerID:   "alice",
+		Status:   runledger.StatusQueued,
+		QueuedAt: base,
+	}); err != nil {
+		t.Fatalf("Add older-created: %v", err)
+	}
+	if err := s.Add(runledger.Record{
+		ID:       "newer-created",
+		Kind:     runledger.KindAgent,
+		PeerID:   "alice",
+		Status:   runledger.StatusQueued,
+		QueuedAt: base.Add(10 * time.Second),
+	}); err != nil {
+		t.Fatalf("Add newer-created: %v", err)
+	}
+
+	finished := base.Add(20 * time.Second)
+	if err := s.Update("older-created", func(r *runledger.Record) {
+		r.Status = runledger.StatusCompleted
+		r.FinishedAt = &finished
+	}); err != nil {
+		t.Fatalf("Update older-created: %v", err)
+	}
+
+	got := s.List(runledger.Filter{}, 0)
+	if len(got) != 2 {
+		t.Fatalf("want 2 records, got %d", len(got))
+	}
+	if got[0].ID != "older-created" {
+		t.Fatalf("expected most recently updated record first, got %q", got[0].ID)
+	}
+}
+
 func TestPersistenceReload(t *testing.T) {
 	dir := t.TempDir()
 	s, err := runledger.New(dir)

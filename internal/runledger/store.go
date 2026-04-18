@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -187,7 +188,6 @@ func (s *Store) List(f Filter, retainFor time.Duration) []Record {
 		cutoff = time.Now().Add(-retainFor)
 	}
 	out := make([]Record, 0, len(s.order))
-	// Iterate in reverse insertion order so newest comes first.
 	for i := len(s.order) - 1; i >= 0; i-- {
 		id := s.order[i]
 		rec, ok := s.index[id]
@@ -214,9 +214,17 @@ func (s *Store) List(f Filter, retainFor time.Duration) []Record {
 			continue
 		}
 		out = append(out, *rec)
-		if f.Limit > 0 && len(out) >= f.Limit {
-			break
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ti := latestActivityAt(out[i])
+		tj := latestActivityAt(out[j])
+		if !ti.Equal(tj) {
+			return ti.After(tj)
 		}
+		return out[i].QueuedAt.After(out[j].QueuedAt)
+	})
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[:f.Limit]
 	}
 	return out
 }
@@ -244,4 +252,14 @@ func (s *Store) writeLocked(rec Record) error {
 
 func isTerminal(status RunStatus) bool {
 	return status == StatusCompleted || status == StatusErrored || status == StatusCanceled || status == StatusSkipped
+}
+
+func latestActivityAt(rec Record) time.Time {
+	if rec.FinishedAt != nil {
+		return *rec.FinishedAt
+	}
+	if rec.StartedAt != nil {
+		return *rec.StartedAt
+	}
+	return rec.QueuedAt
 }

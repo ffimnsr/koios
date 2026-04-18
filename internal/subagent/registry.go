@@ -166,6 +166,7 @@ type SubagentLedger interface {
 	LedgerQueued(id, peerID, sessionKey, model string, queuedAt time.Time)
 	LedgerStarted(id string, startedAt time.Time)
 	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int)
+	LedgerMetadata(id, parentID string, toolCalls int)
 }
 
 // NewRegistry creates a registry rooted at dir. When dir is empty the registry
@@ -277,6 +278,7 @@ func (r *Registry) Spawn(req SpawnRequest, sessionKey string) *RunRecord {
 	_ = r.saveLocked()
 	if r.ledger != nil {
 		r.ledger.LedgerQueued(rec.ID, rec.PeerID, sessionKey, req.Model, rec.CreatedAt)
+		r.ledger.LedgerMetadata(rec.ID, rec.SubTurn.ParentRunID, rec.SubTurn.ToolCalls)
 	}
 	return rec
 }
@@ -292,6 +294,9 @@ func (r *Registry) Update(id string, fn func(*RunRecord)) (*RunRecord, bool) {
 	prevStatus := rec.Status
 	fn(rec)
 	_ = r.saveLocked()
+	if r.ledger != nil {
+		r.ledger.LedgerMetadata(id, rec.SubTurn.ParentRunID, rec.SubTurn.ToolCalls)
+	}
 	// Notify ledger on status transitions.
 	if r.ledger != nil && rec.Status != prevStatus {
 		switch rec.Status {
