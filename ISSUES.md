@@ -165,28 +165,28 @@ This file is a merged checklist for the feature gap between Koios and the refere
 
 ## Agent Runtime & Session Controls
 
-- [ ] Thinking/reasoning level control (`/think off|minimal|low|medium|high|xhigh`)
+- [x] Thinking/reasoning level control (`/think off|minimal|low|medium|high|xhigh`)
 	- Research notes: OpenClaw already has the closest direct parity target here, with per-session `/think` and separate reasoning visibility controls. PicoClaw has internal thinking-level primitives, but the current search showed them more as agent/provider config than as a polished in-channel command surface. IronClaw exposes reasoning inspection via commands, but not the same explicit per-turn think ladder.
 	- References: OpenClaw `src/auto-reply/commands-registry.shared.ts`, `src/tui/tui-command-handlers.ts`, `docs/tools/thinking.md`; PicoClaw `pkg/agent/thinking.go`, `pkg/providers/types.go`; IronClaw `src/agent/commands.rs`, `src/llm/mod.rs`.
-- [ ] Verbose mode toggle (`/verbose on|off`)
+- [x] Verbose mode toggle (`/verbose on|off`)
 	- Research notes: OpenClaw already exposes `/verbose` as a first-class session toggle and threads it into status and reply formatting. PicoClaw's visible equivalent is mostly daemon-level debug logging rather than a session-scoped chat command. IronClaw has strong status/event plumbing, but the current search did not surface a direct `/verbose` session toggle.
 	- References: OpenClaw `src/auto-reply/commands-registry.shared.ts`, `src/tui/tui-command-handlers.ts`, `src/auto-reply/status.ts`; PicoClaw `docs/debug.md`; IronClaw `docs/drafts/ops/logging.mdx`, `crates/ironclaw_tui/src/event.rs`.
-- [ ] Trace/debug mode toggle (`/trace on|off`)
+- [x] Trace/debug mode toggle (`/trace on|off`)
 	- Research notes: OpenClaw distinguishes `/trace` from `/verbose` and uses it specifically for plugin/debug trace lines, which is a good model for Koios. PicoClaw again leans on process-level debug logging. IronClaw has deep tracing/logging and internal trace docs, but no obvious chat-native trace toggle in the searched tree.
 	- References: OpenClaw `docs/tools/thinking.md`, `src/auto-reply/command-status-builders.ts`, `src/tui/tui-command-handlers.ts`; PicoClaw `docs/debug.md`; IronClaw `.claude/commands/trace.md`, `docs/drafts/ops/logging.mdx`.
 - [ ] Usage footer per response (token count + cost)
 	- Research notes: OpenClaw already has the exact user-facing behavior via `/usage off|tokens|full`. PicoClaw tracks usage internally on turns/providers but the current search did not show the same polished reply-footer control. IronClaw emits structured per-turn token/cost events, which is a strong reference for transport-agnostic delivery.
 	- References: OpenClaw `src/auto-reply/commands-registry.shared.ts`, `README.md`, `src/commands/status.types.ts`; PicoClaw `pkg/agent/turn.go`, `pkg/providers/types.go`; IronClaw `crates/ironclaw_common/src/event.rs`, `src/channels/channel.rs`.
-- [ ] `/status` chat command (model, tokens, cost)
+- [x] `/status` chat command (model, tokens)
 	- Research notes: OpenClaw already has a compact in-channel `/status` that includes model, token, queue, and activation data. PicoClaw has a CLI status surface today rather than a cross-channel chat command. IronClaw supports `/status` and related job/progress commands on the agent side.
 	- References: OpenClaw `README.md`, `src/auto-reply/status.ts`, `src/commands/status.summary.ts`; PicoClaw `cmd/picoclaw/internal/status/helpers.go`, `README.fr.md`; IronClaw `src/agent/CLAUDE.md`, `src/agent/commands.rs`.
-- [ ] `/new` / `/reset` chat command in-channel
+- [x] `/new` / `/reset` chat command in-channel
 	- Research notes: OpenClaw already treats `/new` and `/reset` as first-class session commands. PicoClaw clearly has the underlying reset semantics in its context manager, but the current search did not show equivalent cross-channel slash-command handling. IronClaw supports starting a fresh thread and clearing the current one.
 	- References: OpenClaw `docs/tools/slash-commands.md`, `README.md`, `src/tui/commands.ts`; PicoClaw `pkg/agent/context_manager.go`; IronClaw `src/agent/submission.rs`, `src/agent/CLAUDE.md`.
-- [ ] `/compact` chat command (manual compaction trigger)
+- [x] `/compact` chat command (manual compaction trigger)
 	- Research notes: OpenClaw is again the clearest parity reference because `/compact` is both documented and wired through runtime compaction accounting. PicoClaw has substantial compaction machinery, but the current search showed it more as internal APIs than as a user-facing chat command. IronClaw already supports `/compact` and explicit compaction strategies.
 	- References: OpenClaw `src/auto-reply/reply/commands-compact.ts`, `docs/concepts/compaction.md`, `src/auto-reply/commands-registry.shared.ts`; PicoClaw `pkg/agent/context_manager.go`, `pkg/seahorse/short_engine.go`; IronClaw `src/agent/thread_ops.rs`, `src/agent/compaction.rs`, `src/agent/CLAUDE.md`.
-- [ ] `/restart` gateway chat command (owner-only)
+- [x] `/restart` gateway chat command (owner-only)
 	- Research notes: OpenClaw already has a user-facing `/restart` command with gateway restart wiring, which is the direct feature reference. PicoClaw did not surface an equivalent in-channel restart path in the current search. IronClaw exposes restart mostly through gateway/UI/admin flows rather than a chat command.
 	- References: OpenClaw `src/auto-reply/commands-registry.shared.ts`, `src/auto-reply/reply/commands-session.ts`, `README.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `crates/ironclaw_gateway/static/app.js`, `crates/ironclaw_gateway/static/admin.js`.
 - [ ] `/activation mention|always` toggle in chat
@@ -223,7 +223,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] LLM idle timeout handling
 	- Research notes: OpenClaw has an explicit `idleTimeoutSeconds` control for stalled streaming responses, which is the strongest direct parity reference. PicoClaw clearly uses context cancellation in streaming providers, but the current search did not show a named runtime idle-timeout feature. IronClaw may have transport-level timeouts elsewhere, but no obvious equivalent surfaced in the searched tree.
 	- References: OpenClaw `src/config/zod-schema.agent-defaults.ts`; PicoClaw `pkg/providers/openai_compat/provider.go`, `pkg/providers/anthropic/provider.go`; IronClaw no obvious equivalent found in current repo search.
-- [ ] Better background task and run ledger
+- [x] Better background task and run ledger
 	- Research notes: OpenClaw already tracks active runs, queue state, and task/status summaries, which is a useful baseline for Koios to exceed. PicoClaw has active turn metadata and heartbeat/subagent patterns, but a weaker user-facing run ledger in the current search. IronClaw has stronger job/status event streams and explicit job lifecycle UI hooks.
 	- References: OpenClaw `src/agents/pi-embedded-runner/runs.ts`, `src/commands/status.types.ts`; PicoClaw `pkg/agent/turn.go`, `docs/vi/configuration.md`; IronClaw `crates/ironclaw_tui/src/event.rs`, `src/channels/channel.rs`, `src/agent/commands.rs`.
 - [ ] `NO_REPLY` and silent token reply suppression semantics
@@ -557,16 +557,16 @@ This file is a merged checklist for the feature gap between Koios and the refere
 		9. Publish progress through `EventBus` so parent sessions can receive partial child completions before the final aggregate result.
 		10. Only after the standalone orchestrator stabilizes, add workflow integration through a `fanout` step kind and later a matching `aggregate` or `wait` step.
 	- Richer orchestrator follow-ups in recommended order:
-		1. Barrier and fan-in joins so a parent can wait on all or a named subset of child runs before continuing.
-		2. Multi-stage map/reduce orchestration where one fan-out stage feeds a reducer or verifier stage.
-		3. Partial-result streaming into the parent session as each child completes, followed by a final aggregated reply.
-		4. Structured output contracts so child runs can return typed JSON that the aggregator validates and merges.
-		5. Retry, hedging, and fallback policies such as retry-on-error, parallel prompt variants, or first-success wins.
-		6. Quorum and voting modes for agreement-based decisions, including explicit disagreement reporting.
-		7. Supervisor, verifier, and arbiter roles so one set of children produces work and another reviews or ranks it.
-		8. Dependency-graph execution for DAG-style orchestration instead of a single fan-out followed by one fan-in.
-		9. Budget and deadline controls for wall-clock time, max active children, total steps, and eventual token accounting.
-		10. Rich observability with orchestration timelines, child summaries, per-child durations, tool calls, and aggregation provenance.
+		1. [x] Barrier and fan-in joins so a parent can wait on all or a named subset of child runs before continuing.
+		2. [x] Multi-stage map/reduce orchestration where one fan-out stage feeds a reducer or verifier stage.
+		3. [x] Partial-result streaming into the parent session as each child completes, followed by a final aggregated reply.
+		4. [x] Structured output contracts so child runs can return typed JSON that the aggregator validates and merges.
+		5. [x] Retry, hedging, and fallback policies such as retry-on-error, parallel prompt variants, or first-success wins.
+		6. [x] Quorum and voting modes for agreement-based decisions, including explicit disagreement reporting.
+		7. [x] Supervisor, verifier, and arbiter roles so one set of children produces work and another reviews or ranks it.
+		8. [x] Dependency-graph execution for DAG-style orchestration instead of a single fan-out followed by one fan-in.
+		9. [x] Budget and deadline controls for wall-clock time, max active children, total steps, and eventual token accounting.
+		10. [x] Rich observability with orchestration timelines, child summaries, per-child durations, tool calls, and aggregation provenance.
 	- Workflow engine upgrades that would make orchestration richer after the standalone orchestrator exists:
 		1. Add a `fanout` workflow step kind that starts multiple child sessions from one workflow node and records the orchestration run ID.
 		2. Add an `aggregate` workflow step kind that joins child outputs and optionally performs a reducer-agent synthesis pass.

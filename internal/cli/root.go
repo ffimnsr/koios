@@ -71,6 +71,7 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newWorkflowCommand(ctx))
 	root.AddCommand(newMigrateCommand(ctx))
 	root.AddCommand(newUsageCommand(ctx))
+	root.AddCommand(newRunsCommand(ctx))
 	root.AddCommand(newMemoryCommand(ctx))
 	root.AddCommand(newModelCommand(ctx))
 	root.AddCommand(newHostCommand(ctx))

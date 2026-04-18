@@ -63,9 +63,21 @@ type laneEntry struct {
 	lastActivity time.Time
 }
 
+// RunLedger is a minimal interface for persisting async run lifecycle events.
+// Implementations must be safe for concurrent use.
+type RunLedger interface {
+	// LedgerQueued records that an async run was queued.
+	LedgerQueued(id, peerID, sessionKey, model string, queuedAt time.Time)
+	// LedgerStarted records that an async run began executing.
+	LedgerStarted(id string, startedAt time.Time)
+	// LedgerFinished records the terminal state of an async run.
+	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int)
+}
+
 // Coordinator serializes runs per session key and supports queued async runs.
 type Coordinator struct {
 	runtime *Runtime
+	ledger  RunLedger
 
 	mu    sync.Mutex
 	lanes map[string]*laneEntry
@@ -91,6 +103,14 @@ func NewCoordinator(runtime *Runtime) *Coordinator {
 	c.wg.Add(1)
 	go c.sweepLoop()
 	return c
+}
+
+// SetLedger attaches a run ledger to the coordinator.  The ledger receives
+// lifecycle notifications for every async run started via Start.
+func (c *Coordinator) SetLedger(l RunLedger) {
+	c.mu.Lock()
+	c.ledger = l
+	c.mu.Unlock()
 }
 
 // Stop signals the background sweeper goroutine to exit and waits for it.
@@ -161,7 +181,12 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 	c.mu.Lock()
 	c.runs[id] = run
 	entry := c.laneLocked(sessionKey)
+	ledger := c.ledger
 	c.mu.Unlock()
+
+	if ledger != nil {
+		ledger.LedgerQueued(id, req.PeerID, sessionKey, req.Model, now)
+	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	run.cancel = cancel
@@ -177,24 +202,44 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 			started := time.Now().UTC()
 			run.record.Status = StatusRunning
 			run.record.StartedAt = &started
+			if ledger != nil {
+				ledger.LedgerStarted(id, started)
+			}
 		},
 		onDone: func(result *Result, err error) {
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			finished := time.Now().UTC()
+			var (
+				finalStatus               RunStatus
+				errMsg                    string
+				steps, prompt, completion int
+			)
 			if err != nil {
 				if err == context.Canceled {
 					run.record.Status = StatusCanceled
+					finalStatus = StatusCanceled
 				} else {
 					run.record.Status = StatusErrored
 					run.record.Error = err.Error()
+					finalStatus = StatusErrored
+					errMsg = err.Error()
 				}
 			} else {
 				run.record.Status = StatusCompleted
 				run.record.Result = result
+				finalStatus = StatusCompleted
+				if result != nil {
+					steps = result.Steps
+					prompt = result.Usage.PromptTokens
+					completion = result.Usage.CompletionTokens
+				}
 			}
 			run.record.FinishedAt = &finished
 			close(run.done)
+			if ledger != nil {
+				ledger.LedgerFinished(id, finished, string(finalStatus), errMsg, steps, prompt, completion)
+			}
 		},
 	}
 

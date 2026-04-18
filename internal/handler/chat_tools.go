@@ -970,6 +970,22 @@ var toolDefs = []toolDef{
 		available: func(h *Handler) bool { return h.orchestrator != nil },
 	},
 	{
+		name:        "orchestrator.barrier",
+		description: "Block until all children in a named barrier group (or all children) reach a terminal state.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":                  map[string]any{"type": "string"},
+				"group":               map[string]any{"type": "string", "description": "Barrier group name from BarrierGroups; omit to wait on all children."},
+				"wait_timeout_seconds": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"orchestration-run-id","group":"phase1","wait_timeout_seconds":120}`,
+		available: func(h *Handler) bool { return h.orchestrator != nil },
+	},
+	{
 		name:        "orchestrator.runs",
 		description: "List recent orchestration runs for this peer.",
 		parameters: mustJSONSchema(map[string]any{
@@ -1845,6 +1861,16 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.orchestratorCancel(peerID, args.ID)
+	case "orchestrator.barrier":
+		var args struct {
+			ID                 string `json:"id"`
+			Group              string `json:"group"`
+			WaitTimeoutSeconds int    `json:"wait_timeout_seconds"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.orchestratorBarrier(ctx, peerID, args.ID, args.Group, args.WaitTimeoutSeconds)
 	case "orchestrator.runs":
 		return h.orchestratorRuns(peerID)
 	default:
@@ -2136,6 +2162,36 @@ func (h *Handler) orchestratorCancel(peerID, id string) (map[string]string, erro
 		return nil, err
 	}
 	return map[string]string{"id": id, "status": "cancelling"}, nil
+}
+
+func (h *Handler) orchestratorBarrier(ctx context.Context, peerID, id, group string, waitTimeoutSeconds int) (map[string]any, error) {
+	if h.orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator is not enabled")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	// Ownership check.
+	run, ok := h.orchestrator.Get(id)
+	if !ok || run.PeerID != peerID {
+		return nil, fmt.Errorf("orchestration %s not found", id)
+	}
+	barrierCtx := ctx
+	if waitTimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		barrierCtx, cancel = context.WithTimeout(ctx, time.Duration(waitTimeoutSeconds)*time.Second)
+		defer cancel()
+	}
+	final, err := h.orchestrator.Barrier(barrierCtx, id, group)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"id":       final.ID,
+		"status":   string(final.Status),
+		"children": final.Children,
+	}, nil
 }
 
 func (h *Handler) orchestratorRuns(peerID string) (map[string]any, error) {

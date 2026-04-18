@@ -25,6 +25,10 @@ func (c *Config) AgentDir() string { return filepath.Join(c.WorkspaceRoot, "agen
 // stored, derived from WorkspaceRoot.
 func (c *Config) WorkflowDir() string { return filepath.Join(c.WorkspaceRoot, "workflows") }
 
+// RunsDir returns the path where the unified run ledger is stored, derived
+// from WorkspaceRoot.
+func (c *Config) RunsDir() string { return filepath.Join(c.WorkspaceRoot, "runs") }
+
 // MemoryDBPath returns the path for the long-term memory SQLite database, derived from WorkspaceRoot.
 func (c *Config) MemoryDBPath() string { return filepath.Join(c.WorkspaceRoot, "memory.db") }
 
@@ -121,6 +125,9 @@ type Config struct {
 	AgentRetryStatusCodes    []int
 
 	AllowedOrigins []string
+	// OwnerPeerIDs restricts owner-only slash commands (e.g. /restart) to
+	// the listed peer IDs. An empty list grants the commands to all peers.
+	OwnerPeerIDs []string
 
 	ToolProfile             string
 	ToolsAllow              []string
@@ -185,6 +192,7 @@ type fileConfig struct {
 		ListenAddr     string   `toml:"listen_addr"`
 		RequestTimeout string   `toml:"request_timeout"`
 		AllowedOrigins []string `toml:"allowed_origins"`
+		OwnerPeerIDs   []string `toml:"owner_peer_ids"`
 	} `toml:"server"`
 	LLM struct {
 		// DefaultProfile selects a named profile as the primary LLM.
@@ -552,6 +560,9 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.Server.AllowedOrigins != nil {
 		dst.AllowedOrigins = src.Server.AllowedOrigins
+	}
+	if src.Server.OwnerPeerIDs != nil {
+		dst.OwnerPeerIDs = src.Server.OwnerPeerIDs
 	}
 
 	// Apply legacy flat LLM fields first; default_profile overrides them below.

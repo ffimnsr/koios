@@ -157,6 +157,15 @@ type Registry struct {
 	path      string
 	maxAge    time.Duration
 	maxEvents int
+	ledger    SubagentLedger
+}
+
+// SubagentLedger is a minimal interface for persisting subagent run lifecycle
+// events to a unified ledger.  Implementations must be safe for concurrent use.
+type SubagentLedger interface {
+	LedgerQueued(id, peerID, sessionKey, model string, queuedAt time.Time)
+	LedgerStarted(id string, startedAt time.Time)
+	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int)
 }
 
 // NewRegistry creates a registry rooted at dir. When dir is empty the registry
@@ -174,6 +183,13 @@ func NewRegistry(dir string) (*Registry, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// SetLedger attaches a run ledger to the registry.
+func (r *Registry) SetLedger(l SubagentLedger) {
+	r.mu.Lock()
+	r.ledger = l
+	r.mu.Unlock()
 }
 
 func (r *Registry) load() error {
@@ -259,6 +275,9 @@ func (r *Registry) Spawn(req SpawnRequest, sessionKey string) *RunRecord {
 	rec.Events = append(rec.Events, LifecycleEvent{At: rec.CreatedAt, Type: "spawn", Message: redact.String(req.Task)})
 	r.records[rec.ID] = rec
 	_ = r.saveLocked()
+	if r.ledger != nil {
+		r.ledger.LedgerQueued(rec.ID, rec.PeerID, sessionKey, req.Model, rec.CreatedAt)
+	}
 	return rec
 }
 
@@ -270,8 +289,19 @@ func (r *Registry) Update(id string, fn func(*RunRecord)) (*RunRecord, bool) {
 	if !ok {
 		return nil, false
 	}
+	prevStatus := rec.Status
 	fn(rec)
 	_ = r.saveLocked()
+	// Notify ledger on status transitions.
+	if r.ledger != nil && rec.Status != prevStatus {
+		switch rec.Status {
+		case StatusRunning:
+			r.ledger.LedgerStarted(id, rec.StartedAt)
+		case StatusCompleted, StatusErrored, StatusKilled, StatusReset, StatusDeleted:
+			r.ledger.LedgerFinished(id, rec.FinishedAt, string(rec.Status), rec.Error,
+				rec.SubTurn.Steps, 0, 0)
+		}
+	}
 	copyRec := *rec
 	return &copyRec, true
 }

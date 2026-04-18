@@ -17,6 +17,7 @@ import (
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/presence"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/types"
@@ -75,6 +76,7 @@ type Scheduler struct {
 	toolExec     agent.ToolExecutor
 	hooks        *ops.Manager
 	presence     *presence.Manager
+	runLedger    *runledger.Store
 	httpClient   *http.Client
 
 	wakeCh  chan struct{}
@@ -154,6 +156,14 @@ func (s *Scheduler) TriggerRun(jobID string) (string, error) {
 		s.executeJob(context.Background(), job, runID)
 	}()
 	return runID, nil
+}
+
+// SetRunLedger configures an optional unified run ledger sink.
+func (s *Scheduler) SetRunLedger(ledger *runledger.Store) {
+	if s == nil {
+		return
+	}
+	s.runLedger = ledger
 }
 
 func (s *Scheduler) loop(ctx context.Context) {
@@ -269,6 +279,19 @@ func (s *Scheduler) recordSkip(job *Job, reason string) {
 	if err := s.store.AppendRunRecord(rec); err != nil {
 		slog.Warn("cron: failed to write skipped run record", "job", job.JobID, "error", err)
 	}
+	if s.runLedger != nil {
+		_ = s.runLedger.Add(runledger.Record{
+			ID:         rec.RunID,
+			Kind:       runledger.KindCron,
+			PeerID:     job.PeerID,
+			SessionKey: job.PeerID,
+			Status:     runledger.StatusSkipped,
+			Error:      reason,
+			QueuedAt:   rec.StartedAt,
+			StartedAt:  &rec.StartedAt,
+			FinishedAt: &rec.EndedAt,
+		})
+	}
 }
 
 // executeJob runs a single job, updates its state in the store, and persists
@@ -298,6 +321,23 @@ func (s *Scheduler) executeJob(ctx context.Context, job *Job, runID string) {
 	}
 	if err := s.store.AppendRunRecord(rec); err != nil {
 		slog.Warn("cron: failed to write run record", "job", job.JobID, "error", err)
+	}
+	if s.runLedger != nil {
+		status := runledger.StatusCompleted
+		if rec.Status == RunError {
+			status = runledger.StatusErrored
+		}
+		_ = s.runLedger.Add(runledger.Record{
+			ID:         rec.RunID,
+			Kind:       runledger.KindCron,
+			PeerID:     job.PeerID,
+			SessionKey: job.PeerID,
+			Status:     status,
+			Error:      rec.Error,
+			QueuedAt:   rec.StartedAt,
+			StartedAt:  &rec.StartedAt,
+			FinishedAt: &rec.EndedAt,
+		})
 	}
 
 	// Reload the current version of the job (may have changed while we ran).

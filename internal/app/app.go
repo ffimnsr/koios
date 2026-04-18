@@ -24,11 +24,12 @@ import (
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/memory/milvus"
 	"github.com/ffimnsr/koios/internal/monitor"
-	"github.com/ffimnsr/koios/internal/orchestrator"
 	"github.com/ffimnsr/koios/internal/ops"
+	"github.com/ffimnsr/koios/internal/orchestrator"
 	"github.com/ffimnsr/koios/internal/presence"
 	"github.com/ffimnsr/koios/internal/provider"
 	"github.com/ffimnsr/koios/internal/redact"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
@@ -173,6 +174,7 @@ func RunGateway(build BuildInfo) error {
 		agentCoord    *agent.Coordinator
 		subRegistry   *subagent.Registry
 		subRuntime    *subagent.Runtime
+		runLedger     *runledger.Store
 	)
 	standingMgr = standing.NewManager(nil, workspaceDir)
 	agentRuntime = agent.NewRuntime(store, prov, cfg.Model, cfg.RequestTimeout, agent.RetryPolicy{
@@ -188,13 +190,20 @@ func RunGateway(build BuildInfo) error {
 	agentRuntime.SetStandingOrders(standingMgr)
 	agentRuntime.SetIdentityDir(cfg.WorkspaceRoot)
 	agentCoord = agent.NewCoordinator(agentRuntime)
+	runLedger, err = runledger.New(cfg.RunsDir())
+	if err != nil {
+		return fmt.Errorf("run ledger: %w", err)
+	}
+	agentCoord.SetLedger(runledger.NewCoordinatorAdapter(runLedger))
 	subRegistry, err = subagent.NewRegistry(cfg.AgentDir())
 	if err != nil {
 		return err
 	}
+	subRegistry.SetLedger(runledger.NewSubagentAdapter(runLedger))
 	subRuntime = subagent.NewRuntime(agentRuntime, store, subRegistry, bus, cfg.AgentMaxChildren)
 	{
 		slog.Info("subagent registry enabled", "dir", cfg.AgentDir(), "max_children", cfg.AgentMaxChildren)
+		slog.Info("run ledger enabled", "dir", cfg.RunsDir())
 		go func() {
 			ticker := time.NewTicker(15 * time.Minute)
 			defer ticker.Stop()
@@ -219,6 +228,7 @@ func RunGateway(build BuildInfo) error {
 	sched = scheduler.New(jobStore, prov, store, standingMgr, cfg.Model, cfg.CronMaxConcurrentRuns)
 	sched.SetHooks(hooks)
 	sched.SetPresence(presenceMgr)
+	sched.SetRunLedger(runLedger)
 	sched.Start(context.Background())
 	slog.Info("cron scheduler started", "dir", cfg.CronDir(), "max_concurrent", cfg.CronMaxConcurrentRuns)
 
@@ -293,6 +303,7 @@ func RunGateway(build BuildInfo) error {
 		JobStore:        jobStore,
 		Sched:           sched,
 		AllowedOrigins:  cfg.AllowedOrigins,
+		OwnerPeerIDs:    cfg.OwnerPeerIDs,
 		ToolPolicy: handler.ToolPolicy{
 			Profile: cfg.ToolProfile,
 			Allow:   cfg.ToolsAllow,
@@ -321,6 +332,7 @@ func RunGateway(build BuildInfo) error {
 		MCPManager:     mcpMgr,
 		WorkflowRunner: workflowRunner,
 		Orchestrator:   orchRuntime,
+		RunLedger:      runLedger,
 	})
 
 	// Wire the full agent loop into heartbeat, cron, and workflows so the LLM
@@ -497,6 +509,9 @@ shutdown:
 	}
 	if subRegistry != nil {
 		_ = subRegistry.Sweep(0)
+	}
+	if runLedger != nil {
+		_ = runLedger.Close()
 	}
 	if mcpMgr != nil {
 		mcpMgr.Close()

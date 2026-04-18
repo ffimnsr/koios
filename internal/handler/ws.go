@@ -45,6 +45,7 @@
 //	subagent.list / .spawn / .get / .status / .kill / .steer / .transcript
 //	memory.search / .insert / .list / .delete
 //	cron.list / .create / .get / .update / .delete / .trigger / .runs
+//	runs.list / .get
 //	heartbeat.get / .set / .wake
 package handler
 
@@ -66,13 +67,14 @@ import (
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/monitor"
 	"github.com/ffimnsr/koios/internal/ops"
+	"github.com/ffimnsr/koios/internal/orchestrator"
 	"github.com/ffimnsr/koios/internal/presence"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
-	"github.com/ffimnsr/koios/internal/orchestrator"
 	"github.com/ffimnsr/koios/internal/usage"
 	"github.com/ffimnsr/koios/internal/workflow"
 	"github.com/ffimnsr/koios/internal/workspace"
@@ -235,13 +237,18 @@ type Handler struct {
 	monitor         *monitor.Monitor
 	logLevel        *slog.LevelVar
 	mcpManager      *mcp.Manager
-	workflowRunner     *workflow.Runner
-	orchestrator       *orchestrator.Orchestrator
-	idempotency        *idempotencyStore
+	workflowRunner  *workflow.Runner
+	orchestrator    *orchestrator.Orchestrator
+	idempotency     *idempotencyStore
+	runLedger       *runledger.Store
 
 	// fetchClient is the HTTP client used by the web_fetch tool.  When nil,
 	// a client backed by ssrfSafeTransport() is used.  Override in tests only.
 	fetchClient *http.Client
+
+	// ownerPeerIDs, when non-empty, restricts owner-only commands (e.g. /restart)
+	// to the listed peer IDs.
+	ownerPeerIDs []string
 
 	// dispatchWG tracks in-flight dispatch goroutines for graceful shutdown.
 	dispatchWG sync.WaitGroup
@@ -300,6 +307,11 @@ type HandlerOptions struct {
 	WorkflowRunner *workflow.Runner
 	// Orchestrator, when non-nil, enables the orchestrator.* tool family.
 	Orchestrator *orchestrator.Orchestrator
+	// OwnerPeerIDs, when non-empty, restricts owner-only slash commands such as
+	// /restart to the listed peer IDs. An empty slice grants the commands to all.
+	OwnerPeerIDs []string
+	// RunLedger, when non-nil, enables the runs.list and runs.get RPC methods.
+	RunLedger *runledger.Store
 }
 
 // NewHandler creates the WebSocket control-plane handler.
@@ -344,6 +356,8 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		mcpManager:      opts.MCPManager,
 		workflowRunner:  opts.WorkflowRunner,
 		orchestrator:    opts.Orchestrator,
+		ownerPeerIDs:    opts.OwnerPeerIDs,
+		runLedger:       opts.RunLedger,
 		syncRuns:        make(map[string]context.CancelFunc),
 		clients:         make(map[*wsConn]struct{}),
 		execApprovals:   newExecApprovalStore(execCfg.ApprovalTTL),
@@ -922,6 +936,12 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 	case "usage.totals":
 		h.rpcUsageTotals(wsc, req)
 
+	// ── Runs ledger ───────────────────────────────────────────────────────
+	case "runs.list":
+		h.rpcRunsList(wsc, req)
+	case "runs.get":
+		h.rpcRunsGet(wsc, req)
+
 	// ── Admin / hot-reload ────────────────────────────────────────────────
 	case "server.set_log_level":
 		h.rpcSetLogLevel(wsc, req)
@@ -1045,6 +1065,9 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		methods = append(methods, "heartbeat.get", "heartbeat.set", "heartbeat.wake")
 	}
 	methods = append(methods, "usage.get", "usage.list", "usage.totals", "server.set_log_level")
+	if h.runLedger != nil {
+		methods = append(methods, "runs.list", "runs.get")
+	}
 
 	tools := make([]string, 0, len(h.ToolDefinitions(peerID)))
 	for _, tool := range h.ToolDefinitions(peerID) {
@@ -1143,6 +1166,11 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	}
 	if len(p.Messages) == 0 {
 		wsc.replyErr(req.ID, errCodeInvalidParams, "messages must not be empty")
+		return
+	}
+	// Check if the last user message is a slash command; handle it without
+	// forwarding to the LLM.
+	if h.handleSlashCommand(ctx, wsc, req, p.Messages) {
 		return
 	}
 	// Vision pipeline: attach files to the last user message as multipart content.

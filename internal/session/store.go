@@ -42,6 +42,13 @@ type SessionPolicy struct {
 	// (profile name or raw model ID). The agent runtime applies it before
 	// each turn.
 	ModelOverride string `json:"model_override,omitempty"`
+	// ThinkLevel controls the reasoning budget sent to the model.
+	// Valid values: off | minimal | low | medium | high | xhigh
+	ThinkLevel string `json:"think_level,omitempty"`
+	// VerboseMode, when true, enables verbose tool summaries in responses.
+	VerboseMode bool `json:"verbose_mode,omitempty"`
+	// TraceMode, when true, emits per-step debug trace events.
+	TraceMode bool `json:"trace_mode,omitempty"`
 }
 
 // Session holds the conversation history for a single peer.
@@ -708,10 +715,25 @@ func pruneSessionMessages(sess *Session, keep int) bool {
 func (st *Store) SetPolicy(sessionKey string, policy SessionPolicy) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if !policy.ReplyBack {
+	if policy == (SessionPolicy{}) {
 		delete(st.policies, sessionKey)
 	} else {
 		st.policies[sessionKey] = policy
+	}
+	return st.savePoliciesLocked()
+}
+
+// PatchPolicy reads the current policy for sessionKey, calls patch to mutate
+// it in place, then persists the result. A zero-value policy is deleted.
+func (st *Store) PatchPolicy(sessionKey string, patch func(*SessionPolicy)) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	p := st.policies[sessionKey]
+	patch(&p)
+	if p == (SessionPolicy{}) {
+		delete(st.policies, sessionKey)
+	} else {
+		st.policies[sessionKey] = p
 	}
 	return st.savePoliciesLocked()
 }
@@ -780,6 +802,23 @@ func shouldDailyReset(now, lastActivity time.Time, resetMinutes int) bool {
 		return false
 	}
 	return lastActivity.In(loc).Before(cutover)
+}
+
+// CompactNow forces immediate compaction for peerID if a compactor is
+// configured. Returns true if compaction ran successfully.
+func (st *Store) CompactNow(ctx context.Context, peerID string) bool {
+	if st.compactor == nil {
+		return false
+	}
+	st.mu.Lock()
+	sess := st.peers[peerID]
+	st.mu.Unlock()
+	if sess == nil {
+		return false
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.compact(ctx, peerID, st.compactor, st.memoryFlusher, st.hooks, st.compactReserve)
 }
 
 func (st *Store) deleteSession(peerID string) bool {
