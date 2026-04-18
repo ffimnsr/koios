@@ -121,9 +121,10 @@ const (
 // wsConn wraps a gorilla WebSocket connection with a write mutex so that
 // concurrent goroutines (e.g. concurrent streaming requests) can write safely.
 type wsConn struct {
-	mu     sync.Mutex
-	conn   *websocket.Conn
-	peerID string
+	mu      *sync.Mutex
+	conn    *websocket.Conn
+	peerID  string
+	onReply func(rpcResponse)
 }
 
 func (c *wsConn) send(v any) {
@@ -141,11 +142,19 @@ func (c *wsConn) send(v any) {
 }
 
 func (c *wsConn) reply(id json.RawMessage, result any) {
-	c.send(rpcResponse{ID: id, Result: result})
+	resp := rpcResponse{ID: id, Result: result}
+	if c.onReply != nil {
+		c.onReply(resp)
+	}
+	c.send(resp)
 }
 
 func (c *wsConn) replyErr(id json.RawMessage, code int, msg string) {
-	c.send(rpcResponse{ID: id, Error: &rpcError{Code: code, Message: msg}})
+	resp := rpcResponse{ID: id, Error: &rpcError{Code: code, Message: msg}}
+	if c.onReply != nil {
+		c.onReply(resp)
+	}
+	c.send(resp)
 }
 
 func (c *wsConn) notify(method string, params any) {
@@ -226,6 +235,7 @@ type Handler struct {
 	logLevel        *slog.LevelVar
 	mcpManager      *mcp.Manager
 	workflowRunner  *workflow.Runner
+	idempotency     *idempotencyStore
 
 	// fetchClient is the HTTP client used by the web_fetch tool.  When nil,
 	// a client backed by ssrfSafeTransport() is used.  Override in tests only.
@@ -332,6 +342,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		syncRuns:        make(map[string]context.CancelFunc),
 		clients:         make(map[*wsConn]struct{}),
 		execApprovals:   newExecApprovalStore(execCfg.ApprovalTTL),
+		idempotency:     newIdempotencyStore(idempotencyTTL),
 	}
 	if h.presence != nil {
 		h.presence.Subscribe(func(state presence.State) {
@@ -414,7 +425,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	wsc := &wsConn{conn: conn, peerID: peerID}
+	wsc := &wsConn{mu: &sync.Mutex{}, conn: conn, peerID: peerID}
 	h.addClient(wsc)
 	defer h.removeClient(wsc)
 	if h.presence != nil {
@@ -543,6 +554,76 @@ func (h *Handler) Drain() {
 
 // dispatch routes a parsed RPC request to its handler method.
 func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	if h.handleIdempotentRPC(ctx, wsc, req) {
+		return
+	}
+	h.dispatchOnce(ctx, wsc, req)
+}
+
+func (h *Handler) handleIdempotentRPC(ctx context.Context, wsc *wsConn, req *rpcRequest) bool {
+	if h == nil || h.idempotency == nil || !isIdempotentRPCMethod(req.Method) {
+		return false
+	}
+	key, err := idempotencyKeyFromParams(req.Params)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return true
+	}
+	if key == "" {
+		return false
+	}
+	paramsHash, err := canonicalParamsHash(req.Params)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return true
+	}
+	scope := wsc.peerID + "\x00" + req.Method + "\x00" + key
+	reservation := h.idempotency.reserve(scope, paramsHash, time.Now().UTC())
+	if reservation.conflict {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "idempotency_key cannot be reused with different params")
+		return true
+	}
+	if reservation.wait {
+		resp, err := h.idempotency.wait(ctx, reservation.record)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "idempotent wait failed: "+err.Error())
+			return true
+		}
+		resp.ID = req.ID
+		wsc.send(resp)
+		return true
+	}
+
+	var (
+		captureMu sync.Mutex
+		captured  bool
+		finalResp rpcResponse
+	)
+	capturedConn := *wsc
+	capturedConn.onReply = func(resp rpcResponse) {
+		captureMu.Lock()
+		defer captureMu.Unlock()
+		if captured {
+			return
+		}
+		captured = true
+		finalResp = resp
+	}
+	h.dispatchOnce(ctx, &capturedConn, req)
+
+	captureMu.Lock()
+	if !captured {
+		finalResp = rpcResponse{
+			ID:    req.ID,
+			Error: &rpcError{Code: errCodeServer, Message: "internal error: missing rpc response"},
+		}
+	}
+	captureMu.Unlock()
+	h.idempotency.finish(reservation.record, finalResp)
+	return true
+}
+
+func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	if h.hooks != nil {
 		if err := h.hooks.Emit(ctx, ops.Event{
 			Name:   ops.HookBeforeMessage,
@@ -687,6 +768,42 @@ func (h *Handler) dispatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 			return
 		}
 		h.rpcWorkspaceRead(ctx, wsc, req)
+	case "workspace.head":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceHead(ctx, wsc, req)
+	case "workspace.tail":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceTail(ctx, wsc, req)
+	case "workspace.grep":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceGrep(ctx, wsc, req)
+	case "workspace.sort":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceSort(ctx, wsc, req)
+	case "workspace.uniq":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceUniq(ctx, wsc, req)
+	case "workspace.diff":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceDiff(ctx, wsc, req)
 	case "workspace.write":
 		if h.workspaceStore == nil {
 			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
@@ -900,7 +1017,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		methods = append(methods, "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete")
 	}
 	if caps["workspace"] {
-		methods = append(methods, "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete")
+		methods = append(methods, "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete")
 	}
 	if caps["exec"] {
 		methods = append(methods, "exec", "exec.pending", "exec.approve", "exec.reject")
@@ -940,10 +1057,14 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 	}
 
 	return map[string]any{
-		"peer_id":              peerID,
-		"capabilities":         caps,
-		"methods":              methods,
-		"chat_tools":           tools,
+		"peer_id":      peerID,
+		"capabilities": caps,
+		"methods":      methods,
+		"chat_tools":   tools,
+		"idempotency": map[string]any{
+			"params_field": "idempotency_key",
+			"methods":      idempotentRPCMethods(),
+		},
 		"stream_notifications": append(streamNotifications, "session.message"),
 	}
 }
@@ -1784,6 +1905,141 @@ func (h *Handler) rpcWorkspaceRead(_ context.Context, wsc *wsConn, req *rpcReque
 		return
 	}
 	result, err := h.workspaceRead(wsc.peerID, p.Path, p.StartLine, p.EndLine)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceHead(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path  string `json:"path"`
+		Lines int    `json:"lines,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if p.Lines == 0 {
+		p.Lines = 10
+	}
+	result, err := h.workspaceHead(wsc.peerID, p.Path, p.Lines)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceTail(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path  string `json:"path"`
+		Lines int    `json:"lines,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if p.Lines == 0 {
+		p.Lines = 10
+	}
+	result, err := h.workspaceTail(wsc.peerID, p.Path, p.Lines)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceGrep(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path          string `json:"path,omitempty"`
+		Pattern       string `json:"pattern"`
+		Recursive     *bool  `json:"recursive,omitempty"`
+		Limit         int    `json:"limit,omitempty"`
+		CaseSensitive *bool  `json:"case_sensitive,omitempty"`
+		Regexp        bool   `json:"regexp,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	recursive := true
+	if p.Recursive != nil {
+		recursive = *p.Recursive
+	}
+	caseSensitive := true
+	if p.CaseSensitive != nil {
+		caseSensitive = *p.CaseSensitive
+	}
+	result, err := h.workspaceGrep(wsc.peerID, p.Path, p.Pattern, recursive, p.Limit, caseSensitive, p.Regexp)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceSort(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path          string `json:"path"`
+		Reverse       bool   `json:"reverse,omitempty"`
+		CaseSensitive *bool  `json:"case_sensitive,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	caseSensitive := true
+	if p.CaseSensitive != nil {
+		caseSensitive = *p.CaseSensitive
+	}
+	result, err := h.workspaceSort(wsc.peerID, p.Path, p.Reverse, caseSensitive)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceUniq(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path          string `json:"path"`
+		Count         bool   `json:"count,omitempty"`
+		CaseSensitive *bool  `json:"case_sensitive,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	caseSensitive := true
+	if p.CaseSensitive != nil {
+		caseSensitive = *p.CaseSensitive
+	}
+	result, err := h.workspaceUniq(wsc.peerID, p.Path, p.Count, caseSensitive)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcWorkspaceDiff(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path      string `json:"path"`
+		OtherPath string `json:"other_path,omitempty"`
+		Content   string `json:"content,omitempty"`
+		Context   int    `json:"context,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	if p.Context == 0 {
+		p.Context = 3
+	}
+	result, err := h.workspaceDiff(wsc.peerID, p.Path, p.OtherPath, p.Content, p.Context)
 	if err != nil {
 		wsc.replyErr(req.ID, errCodeServer, err.Error())
 		return

@@ -1,11 +1,13 @@
 package workspace
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +35,14 @@ type ReadResult struct {
 	StartLine  int    `json:"start_line"`
 	EndLine    int    `json:"end_line"`
 	TotalLines int    `json:"total_lines"`
+}
+
+// GrepMatch describes one matched line returned from a workspace grep query.
+type GrepMatch struct {
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+	Text   string `json:"text"`
 }
 
 // Manager provides safe, peer-scoped filesystem operations.
@@ -258,6 +268,117 @@ func (m *Manager) Mkdir(peerID, relPath string) (string, error) {
 	return target, nil
 }
 
+func (m *Manager) Grep(peerID, relPath, pattern string, recursive bool, limit int, caseSensitive, useRegexp bool) ([]GrepMatch, error) {
+	target, err := m.resolve(peerID, relPath)
+	if err != nil {
+		return nil, err
+	}
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return nil, fmt.Errorf("pattern is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		return nil, err
+	}
+
+	matcher, err := compileGrepMatcher(pattern, caseSensitive, useRegexp)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]GrepMatch, 0, min(limit, 16))
+	processFile := func(path string, info fs.FileInfo) error {
+		if info.IsDir() || len(matches) >= limit {
+			return nil
+		}
+		if info.Size() > int64(m.maxFileBytes) {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(m.PeerRoot(peerID), path)
+		if err != nil {
+			rel = info.Name()
+		}
+		scanner := bufio.NewScanner(strings.NewReader(string(b)))
+		scanner.Buffer(make([]byte, 0, 64*1024), m.maxFileBytes)
+		lineNo := 0
+		for scanner.Scan() {
+			lineNo++
+			line := scanner.Text()
+			column, ok := matcher(line)
+			if !ok {
+				continue
+			}
+			matches = append(matches, GrepMatch{
+				Path:   filepath.ToSlash(rel),
+				Line:   lineNo,
+				Column: column,
+				Text:   line,
+			})
+			if len(matches) >= limit {
+				return nil
+			}
+		}
+		return nil
+	}
+
+	if !info.IsDir() {
+		if err := processFile(target, info); err != nil {
+			return nil, err
+		}
+		return matches, nil
+	}
+
+	if !recursive {
+		entries, err := os.ReadDir(target)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if len(matches) >= limit {
+				break
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			if err := processFile(filepath.Join(target, entry.Name()), info); err != nil {
+				return nil, err
+			}
+		}
+		return matches, nil
+	}
+
+	walkErr := filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if len(matches) >= limit {
+			return errors.New("grep limit reached")
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		return processFile(path, info)
+	})
+	if walkErr != nil && walkErr.Error() != "grep limit reached" {
+		return nil, walkErr
+	}
+	return matches, nil
+}
+
 func (m *Manager) List(peerID, relPath string, recursive bool, limit int) ([]Entry, error) {
 	target, err := m.resolve(peerID, relPath)
 	if err != nil {
@@ -360,4 +481,47 @@ func splitLinesKeepNewline(content string) []string {
 		lines = lines[:len(lines)-1]
 	}
 	return lines
+}
+
+func compileGrepMatcher(pattern string, caseSensitive, useRegexp bool) (func(string) (int, bool), error) {
+	if useRegexp {
+		expr := pattern
+		if !caseSensitive {
+			expr = "(?i)" + expr
+		}
+		re, err := regexp.Compile(expr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pattern: %w", err)
+		}
+		return func(line string) (int, bool) {
+			loc := re.FindStringIndex(line)
+			if loc == nil {
+				return 0, false
+			}
+			return loc[0] + 1, true
+		}, nil
+	}
+
+	needle := pattern
+	if !caseSensitive {
+		needle = strings.ToLower(pattern)
+	}
+	return func(line string) (int, bool) {
+		haystack := line
+		if !caseSensitive {
+			haystack = strings.ToLower(line)
+		}
+		idx := strings.Index(haystack, needle)
+		if idx < 0 {
+			return 0, false
+		}
+		return idx + 1, true
+	}, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

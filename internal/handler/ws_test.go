@@ -245,7 +245,11 @@ func TestWS_ServerCapabilities(t *testing.T) {
 		Capabilities map[string]bool `json:"capabilities"`
 		Methods      []string        `json:"methods"`
 		ChatTools    []string        `json:"chat_tools"`
-		StreamEvents []string        `json:"stream_notifications"`
+		Idempotency  struct {
+			ParamsField string   `json:"params_field"`
+			Methods     []string `json:"methods"`
+		} `json:"idempotency"`
+		StreamEvents []string `json:"stream_notifications"`
 	}
 	if err := json.Unmarshal(msg.Result, &result); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
@@ -267,6 +271,12 @@ func TestWS_ServerCapabilities(t *testing.T) {
 	}
 	if !containsString(result.ChatTools, "session.history") {
 		t.Fatalf("expected chat tools to include session.history, got %#v", result.ChatTools)
+	}
+	if result.Idempotency.ParamsField != "idempotency_key" {
+		t.Fatalf("expected idempotency params_field, got %#v", result.Idempotency)
+	}
+	if !containsString(result.Idempotency.Methods, "cron.create") || !containsString(result.Idempotency.Methods, "workspace.write") {
+		t.Fatalf("expected idempotent methods in capabilities, got %#v", result.Idempotency.Methods)
 	}
 	if !containsString(result.StreamEvents, "stream.delta") || !containsString(result.StreamEvents, "stream.event") {
 		t.Fatalf("expected stream notifications, got %#v", result.StreamEvents)
@@ -304,7 +314,7 @@ func TestWS_ServerCapabilities_WorkspaceMethods(t *testing.T) {
 	if !result.Capabilities["workspace"] {
 		t.Fatalf("expected workspace capability, got %#v", result.Capabilities)
 	}
-	if !containsString(result.Methods, "workspace.list") || !containsString(result.Methods, "workspace.write") {
+	if !containsString(result.Methods, "workspace.list") || !containsString(result.Methods, "workspace.head") || !containsString(result.Methods, "workspace.tail") || !containsString(result.Methods, "workspace.grep") || !containsString(result.Methods, "workspace.sort") || !containsString(result.Methods, "workspace.uniq") || !containsString(result.Methods, "workspace.diff") || !containsString(result.Methods, "workspace.write") {
 		t.Fatalf("expected workspace methods in capabilities, got %#v", result.Methods)
 	}
 }
@@ -360,6 +370,40 @@ func TestWS_WorkspaceRPC(t *testing.T) {
 		t.Fatalf("workspace.write range file error: %#v", msg.Error)
 	}
 
+	sendRPC(t, conn, "w3d", "workspace.head", map[string]any{"path": "project/range.txt", "lines": 2})
+	msg = readUntilID(t, conn, "w3d")
+	if msg.Error != nil {
+		t.Fatalf("workspace.head error: %#v", msg.Error)
+	}
+	var headRes struct {
+		Content   string `json:"content"`
+		StartLine int    `json:"start_line"`
+		EndLine   int    `json:"end_line"`
+	}
+	if err := json.Unmarshal(msg.Result, &headRes); err != nil {
+		t.Fatalf("unmarshal workspace.head result: %v", err)
+	}
+	if headRes.Content != "one\ntwo\n" || headRes.StartLine != 1 || headRes.EndLine != 2 {
+		t.Fatalf("unexpected head result: %#v", headRes)
+	}
+
+	sendRPC(t, conn, "w3e", "workspace.tail", map[string]any{"path": "project/range.txt", "lines": 2})
+	msg = readUntilID(t, conn, "w3e")
+	if msg.Error != nil {
+		t.Fatalf("workspace.tail error: %#v", msg.Error)
+	}
+	var tailRes struct {
+		Content   string `json:"content"`
+		StartLine int    `json:"start_line"`
+		EndLine   int    `json:"end_line"`
+	}
+	if err := json.Unmarshal(msg.Result, &tailRes); err != nil {
+		t.Fatalf("unmarshal workspace.tail result: %v", err)
+	}
+	if tailRes.Content != "three\nfour\n" || tailRes.StartLine != 3 || tailRes.EndLine != 4 {
+		t.Fatalf("unexpected tail result: %#v", tailRes)
+	}
+
 	sendRPC(t, conn, "w3c", "workspace.read", map[string]any{"path": "project/range.txt", "start_line": 2, "end_line": 3})
 	msg = readUntilID(t, conn, "w3c")
 	if msg.Error != nil {
@@ -397,6 +441,82 @@ func TestWS_WorkspaceRPC(t *testing.T) {
 	}
 	if listRes.Count == 0 {
 		t.Fatalf("expected at least one workspace entry")
+	}
+
+	sendRPC(t, conn, "w4b", "workspace.grep", map[string]any{"path": "project", "pattern": "three", "recursive": true})
+	msg = readUntilID(t, conn, "w4b")
+	if msg.Error != nil {
+		t.Fatalf("workspace.grep error: %#v", msg.Error)
+	}
+	var grepRes struct {
+		Count   int `json:"count"`
+		Matches []struct {
+			Path   string `json:"path"`
+			Line   int    `json:"line"`
+			Column int    `json:"column"`
+			Text   string `json:"text"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal(msg.Result, &grepRes); err != nil {
+		t.Fatalf("unmarshal workspace.grep result: %v", err)
+	}
+	if grepRes.Count != 1 || len(grepRes.Matches) != 1 {
+		t.Fatalf("unexpected grep result: %#v", grepRes)
+	}
+	if grepRes.Matches[0].Path != "project/range.txt" || grepRes.Matches[0].Line != 3 {
+		t.Fatalf("unexpected grep match: %#v", grepRes.Matches[0])
+	}
+
+	sendRPC(t, conn, "w4d", "workspace.sort", map[string]any{"path": "project/range.txt"})
+	msg = readUntilID(t, conn, "w4d")
+	if msg.Error != nil {
+		t.Fatalf("workspace.sort error: %#v", msg.Error)
+	}
+	var sortRes struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(msg.Result, &sortRes); err != nil {
+		t.Fatalf("unmarshal workspace.sort result: %v", err)
+	}
+	if sortRes.Content != "four\none\nthree\ntwo\n" {
+		t.Fatalf("unexpected sort result: %#v", sortRes)
+	}
+
+	sendRPC(t, conn, "w4e0", "workspace.write", map[string]any{"path": "project/uniq.txt", "content": "a\na\nb\nb\nb\n"})
+	msg = readUntilID(t, conn, "w4e0")
+	if msg.Error != nil {
+		t.Fatalf("workspace.write uniq file error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "w4e", "workspace.uniq", map[string]any{"path": "project/uniq.txt", "count": true})
+	msg = readUntilID(t, conn, "w4e")
+	if msg.Error != nil {
+		t.Fatalf("workspace.uniq error: %#v", msg.Error)
+	}
+	var uniqRes struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(msg.Result, &uniqRes); err != nil {
+		t.Fatalf("unmarshal workspace.uniq result: %v", err)
+	}
+	if uniqRes.Content != "2 a\n3 b\n" {
+		t.Fatalf("unexpected uniq result: %#v", uniqRes)
+	}
+
+	sendRPC(t, conn, "w4c", "workspace.diff", map[string]any{"path": "project/range.txt", "content": "one\ntwo\nTHREE\nfour\n"})
+	msg = readUntilID(t, conn, "w4c")
+	if msg.Error != nil {
+		t.Fatalf("workspace.diff error: %#v", msg.Error)
+	}
+	var diffRes struct {
+		HasDiff bool   `json:"has_diff"`
+		Diff    string `json:"diff"`
+	}
+	if err := json.Unmarshal(msg.Result, &diffRes); err != nil {
+		t.Fatalf("unmarshal workspace.diff result: %v", err)
+	}
+	if !diffRes.HasDiff || !strings.Contains(diffRes.Diff, "-three") || !strings.Contains(diffRes.Diff, "+THREE") {
+		t.Fatalf("unexpected diff result: %#v", diffRes)
 	}
 
 	sendRPC(t, conn, "w5", "workspace.delete", map[string]any{"path": "project/readme.txt"})
@@ -512,6 +632,106 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	}
 }
 
+func TestWS_IdempotencyReplayForCronCreate(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	jobStore, err := scheduler.NewJobStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJobStore: %v", err)
+	}
+	sched := scheduler.New(jobStore, prov, store, nil, "test-model", 1)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:    "test-model",
+		Timeout:  5 * time.Second,
+		JobStore: jobStore,
+		Sched:    sched,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	params := map[string]any{
+		"idempotency_key": "cron-create-1",
+		"name":            "nightly",
+		"schedule": map[string]any{
+			"kind":     "every",
+			"every_ms": 60000,
+		},
+		"payload": map[string]any{
+			"kind": "systemEvent",
+			"text": "tick",
+		},
+	}
+
+	sendRPC(t, conn, "c1", "cron.create", params)
+	first := readUntilID(t, conn, "c1")
+	if first.Error != nil {
+		t.Fatalf("first cron.create error: %#v", first.Error)
+	}
+
+	sendRPC(t, conn, "c2", "cron.create", params)
+	second := readUntilID(t, conn, "c2")
+	if second.Error != nil {
+		t.Fatalf("second cron.create error: %#v", second.Error)
+	}
+
+	var firstJob, secondJob struct {
+		JobID string `json:"job_id"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal(first.Result, &firstJob); err != nil {
+		t.Fatalf("unmarshal first cron.create: %v", err)
+	}
+	if err := json.Unmarshal(second.Result, &secondJob); err != nil {
+		t.Fatalf("unmarshal second cron.create: %v", err)
+	}
+	if firstJob.JobID == "" || firstJob.JobID != secondJob.JobID {
+		t.Fatalf("expected replayed cron job result, got first=%#v second=%#v", firstJob, secondJob)
+	}
+	jobs := jobStore.List("alice")
+	if len(jobs) != 1 {
+		t.Fatalf("expected exactly one job after idempotent replay, got %d", len(jobs))
+	}
+}
+
+func TestWS_IdempotencyRejectsChangedParams(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "i1", "workspace.mkdir", map[string]any{
+		"idempotency_key": "mkdir-1",
+		"path":            "project-a",
+	})
+	first := readUntilID(t, conn, "i1")
+	if first.Error != nil {
+		t.Fatalf("first workspace.mkdir error: %#v", first.Error)
+	}
+
+	sendRPC(t, conn, "i2", "workspace.mkdir", map[string]any{
+		"idempotency_key": "mkdir-1",
+		"path":            "project-b",
+	})
+	second := readUntilID(t, conn, "i2")
+	if second.Error == nil {
+		t.Fatal("expected idempotency params mismatch error")
+	}
+	if !strings.Contains(second.Error.Message, "idempotency_key cannot be reused") {
+		t.Fatalf("unexpected error message: %#v", second.Error)
+	}
+}
+
 func TestWS_ExecApprovalFlow(t *testing.T) {
 	store := session.New(10)
 	prov := &stubProvider{response: &types.ChatResponse{}}
@@ -620,6 +840,180 @@ func TestToolDefinitionsIncludeApplyPatch(t *testing.T) {
 	}
 	if !containsString(names, "apply_patch") {
 		t.Fatalf("expected apply_patch tool, got %#v", names)
+	}
+	if !containsString(names, "grep") || !containsString(names, "workspace.grep") {
+		t.Fatalf("expected grep tools, got %#v", names)
+	}
+	if !containsString(names, "head") || !containsString(names, "workspace.head") || !containsString(names, "tail") || !containsString(names, "workspace.tail") {
+		t.Fatalf("expected head/tail tools, got %#v", names)
+	}
+	if !containsString(names, "sort") || !containsString(names, "workspace.sort") || !containsString(names, "uniq") || !containsString(names, "workspace.uniq") {
+		t.Fatalf("expected sort/uniq tools, got %#v", names)
+	}
+	if !containsString(names, "diff") || !containsString(names, "workspace.diff") {
+		t.Fatalf("expected diff tools, got %#v", names)
+	}
+}
+
+func TestExecuteTool_TextOpsAliases(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	if _, err := wsStore.Write("alice", "notes/list.txt", "delta\nbeta\nbeta\nAlpha\n", false); err != nil {
+		t.Fatalf("workspace write setup: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+	})
+
+	headAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "head",
+		Arguments: json.RawMessage(`{"path":"notes/list.txt","lines":2}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(head): %v", err)
+	}
+	sortAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "sort",
+		Arguments: json.RawMessage(`{"path":"notes/list.txt","case_sensitive":false}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(sort): %v", err)
+	}
+	uniqAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "uniq",
+		Arguments: json.RawMessage(`{"path":"notes/list.txt","count":true}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(uniq): %v", err)
+	}
+	tailAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "tail",
+		Arguments: json.RawMessage(`{"path":"notes/list.txt","lines":2}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(tail): %v", err)
+	}
+
+	var headGot struct {
+		Content string `json:"content"`
+	}
+	var sortGot struct {
+		Content string `json:"content"`
+	}
+	var uniqGot struct {
+		Content string `json:"content"`
+	}
+	var tailGot struct {
+		Content string `json:"content"`
+	}
+	headRaw, _ := json.Marshal(headAny)
+	sortRaw, _ := json.Marshal(sortAny)
+	uniqRaw, _ := json.Marshal(uniqAny)
+	tailRaw, _ := json.Marshal(tailAny)
+	if err := json.Unmarshal(headRaw, &headGot); err != nil {
+		t.Fatalf("unmarshal head result: %v", err)
+	}
+	if err := json.Unmarshal(sortRaw, &sortGot); err != nil {
+		t.Fatalf("unmarshal sort result: %v", err)
+	}
+	if err := json.Unmarshal(uniqRaw, &uniqGot); err != nil {
+		t.Fatalf("unmarshal uniq result: %v", err)
+	}
+	if err := json.Unmarshal(tailRaw, &tailGot); err != nil {
+		t.Fatalf("unmarshal tail result: %v", err)
+	}
+	if headGot.Content != "delta\nbeta\n" {
+		t.Fatalf("unexpected head result: %#v", headGot)
+	}
+	if sortGot.Content != "Alpha\nbeta\nbeta\ndelta\n" {
+		t.Fatalf("unexpected sort result: %#v", sortGot)
+	}
+	if uniqGot.Content != "1 delta\n2 beta\n1 Alpha\n" {
+		t.Fatalf("unexpected uniq result: %#v", uniqGot)
+	}
+	if tailGot.Content != "beta\nAlpha\n" {
+		t.Fatalf("unexpected tail result: %#v", tailGot)
+	}
+}
+
+func TestExecuteTool_GrepAlias(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	if _, err := wsStore.Write("alice", "notes/todo.md", "TODO one\nskip\nTODO two\n", false); err != nil {
+		t.Fatalf("workspace write setup: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+	})
+
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "grep",
+		Arguments: json.RawMessage(`{"path":"notes","pattern":"TODO","recursive":true}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(grep): %v", err)
+	}
+	raw, _ := json.Marshal(result)
+	var got struct {
+		Count   int `json:"count"`
+		Matches []struct {
+			Path string `json:"path"`
+			Line int    `json:"line"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal grep result: %v", err)
+	}
+	if got.Count != 2 || len(got.Matches) != 2 {
+		t.Fatalf("unexpected grep result: %#v", got)
+	}
+}
+
+func TestExecuteTool_DiffAlias(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	if _, err := wsStore.Write("alice", "notes/todo.md", "one\ntwo\n", false); err != nil {
+		t.Fatalf("workspace write setup: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+	})
+
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "diff",
+		Arguments: json.RawMessage(`{"path":"notes/todo.md","content":"one\nTWO\n"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(diff): %v", err)
+	}
+	raw, _ := json.Marshal(result)
+	var got struct {
+		HasDiff bool   `json:"has_diff"`
+		Diff    string `json:"diff"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal diff result: %v", err)
+	}
+	if !got.HasDiff || !strings.Contains(got.Diff, "-two") || !strings.Contains(got.Diff, "+TWO") {
+		t.Fatalf("unexpected diff result: %#v", got)
 	}
 }
 

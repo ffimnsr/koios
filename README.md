@@ -219,6 +219,8 @@ Every frame is a JSON object.
 
 When `"stream": true` is set on `chat` or `agent.run`, server pushes `stream.delta` notifications for each token, then sends the normal response frame as the terminal event.
 
+For side-effecting RPCs, clients may include `"idempotency_key": "<opaque-client-key>"` inside `params`. Koios scopes deduplication by `peer_id + method + idempotency_key`, replays the original terminal response for exact retries, and rejects reuse of the same key with different params. Replayed requests return the stored final response; they do not re-emit prior stream notifications.
+
 ### Error codes
 
 | Code | Meaning |
@@ -267,8 +269,12 @@ Example response:
       "exec": true,
       "web": true
     },
-    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
-    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "workspace.list", "workspace.read", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "write", "edit", "apply_patch", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
+    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
+    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "head", "tail", "grep", "sort", "uniq", "diff", "write", "edit", "apply_patch", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
+    "idempotency": {
+      "params_field": "idempotency_key",
+      "methods": ["chat", "session.reset", "presence.set", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.cancel", "agent.steer", "subagent.spawn", "subagent.kill", "subagent.steer", "memory.insert", "memory.delete", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.approve", "exec.reject", "cron.create", "cron.update", "cron.delete", "cron.trigger", "heartbeat.set", "heartbeat.wake", "server.set_log_level"]
+    },
     "stream_notifications": ["stream.delta", "stream.event", "session.message"]
   }
 }
@@ -696,7 +702,7 @@ Trigger an immediate out-of-schedule heartbeat run.
 {"id": "17", "method": "heartbeat.wake"}
 ```
 
-### `workspace.list` / `workspace.read` / `workspace.write` / `workspace.edit` / `workspace.mkdir` / `workspace.delete`
+### `workspace.list` / `workspace.read` / `workspace.head` / `workspace.tail` / `workspace.grep` / `workspace.sort` / `workspace.uniq` / `workspace.diff` / `workspace.write` / `workspace.edit` / `workspace.mkdir` / `workspace.delete`
 
 Direct workspace RPC methods for peer sandbox operations. These target the same
 workspace sandbox used by agent tools.
@@ -710,11 +716,35 @@ workspace sandbox used by agent tools.
 ```
 
 ```json
-{"id":"20","method":"workspace.list","params":{"path":"project","recursive":true,"limit":200}}
+{"id":"20","method":"workspace.grep","params":{"path":"project","pattern":"Hello","recursive":true,"limit":50,"case_sensitive":true,"regexp":false}}
 ```
 
 ```json
-{"id":"21","method":"workspace.edit","params":{"path":"project/readme.md","old_text":"Hello","new_text":"Hi","replace_all":false}}
+{"id":"21","method":"workspace.head","params":{"path":"project/log.txt","lines":20}}
+```
+
+```json
+{"id":"22","method":"workspace.tail","params":{"path":"project/log.txt","lines":20}}
+```
+
+```json
+{"id":"23","method":"workspace.sort","params":{"path":"project/list.txt","reverse":false,"case_sensitive":true}}
+```
+
+```json
+{"id":"24","method":"workspace.uniq","params":{"path":"project/list.txt","count":true,"case_sensitive":true}}
+```
+
+```json
+{"id":"25","method":"workspace.diff","params":{"path":"project/readme.md","content":"# Hi\n","context":3}}
+```
+
+```json
+{"id":"26","method":"workspace.list","params":{"path":"project","recursive":true,"limit":200}}
+```
+
+```json
+{"id":"27","method":"workspace.edit","params":{"path":"project/readme.md","old_text":"Hello","new_text":"Hi","replace_all":false}}
 ```
 
 ### `exec` / `exec.pending` / `exec.approve` / `exec.reject`
@@ -722,15 +752,15 @@ workspace sandbox used by agent tools.
 Run shell commands on the host with the peer workspace as the default working directory. Commands that match the configured dangerous-command policy can return `status: "approval_required"` instead of executing; operators can inspect or resolve those pending requests through the companion exec approval RPC methods.
 
 ```json
-{"id":"22","method":"exec","params":{"command":"go test ./...","workdir":".","timeout_seconds":30}}
+{"id":"28","method":"exec","params":{"command":"go test ./...","workdir":".","timeout_seconds":30}}
 ```
 
 ```json
-{"id":"23","method":"exec.pending"}
+{"id":"29","method":"exec.pending"}
 ```
 
 ```json
-{"id":"24","method":"exec.approve","params":{"id":"<approval-id>"}}
+{"id":"30","method":"exec.approve","params":{"id":"<approval-id>"}}
 ```
 
 ### `web_search` / `web_fetch`
@@ -738,11 +768,11 @@ Run shell commands on the host with the peer workspace as the default working di
 Search the public web or fetch page content.
 
 ```json
-{"id":"25","method":"web_search","params":{"query":"golang context tutorial","limit":5}}
+{"id":"31","method":"web_search","params":{"query":"golang context tutorial","limit":5}}
 ```
 
 ```json
-{"id":"26","method":"web_fetch","params":{"url":"https://example.com"}}
+{"id":"32","method":"web_fetch","params":{"url":"https://example.com"}}
 ```
 
 ---
@@ -756,12 +786,24 @@ When workspace is enabled, the agent can call:
 - `session.patch`
 - `workspace.list`
 - `workspace.read`
+- `workspace.head`
+- `workspace.tail`
+- `workspace.grep`
+- `workspace.sort`
+- `workspace.uniq`
+- `workspace.diff`
 - `workspace.write`
 - `workspace.edit`
 - `apply_patch`
 - `workspace.mkdir`
 - `workspace.delete`
 - `read`
+- `head`
+- `tail`
+- `grep`
+- `sort`
+- `uniq`
+- `diff`
 - `write`
 - `edit`
 - `exec`

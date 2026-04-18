@@ -176,6 +176,128 @@ func (h *Handler) workspaceRead(peerID, path string, startLine, endLine int) (ma
 	}, nil
 }
 
+func (h *Handler) workspaceHead(peerID, path string, lines int) (map[string]any, error) {
+	if h.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace is not enabled")
+	}
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	result, err := h.workspaceStore.Head(peerID, path, lines)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":        path,
+		"content":     result.Content,
+		"start_line":  result.StartLine,
+		"end_line":    result.EndLine,
+		"total_lines": result.TotalLines,
+	}, nil
+}
+
+func (h *Handler) workspaceTail(peerID, path string, lines int) (map[string]any, error) {
+	if h.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace is not enabled")
+	}
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	result, err := h.workspaceStore.Tail(peerID, path, lines)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":        path,
+		"content":     result.Content,
+		"start_line":  result.StartLine,
+		"end_line":    result.EndLine,
+		"total_lines": result.TotalLines,
+	}, nil
+}
+
+func (h *Handler) workspaceGrep(peerID, path, pattern string, recursive bool, limit int, caseSensitive, useRegexp bool) (map[string]any, error) {
+	if h.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace is not enabled")
+	}
+	if strings.TrimSpace(path) == "" {
+		path = "."
+	}
+	if strings.TrimSpace(pattern) == "" {
+		return nil, fmt.Errorf("pattern is required")
+	}
+	matches, err := h.workspaceStore.Grep(peerID, path, pattern, recursive, limit, caseSensitive, useRegexp)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":           path,
+		"pattern":        pattern,
+		"recursive":      recursive,
+		"case_sensitive": caseSensitive,
+		"regexp":         useRegexp,
+		"matches":        matches,
+		"count":          len(matches),
+	}, nil
+}
+
+func (h *Handler) workspaceSort(peerID, path string, reverse, caseSensitive bool) (map[string]any, error) {
+	if h.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace is not enabled")
+	}
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	result, err := h.workspaceStore.SortLines(peerID, path, reverse, caseSensitive)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":        path,
+		"content":     result.Content,
+		"line_count":  result.LineCount,
+		"total_lines": result.TotalLines,
+		"reverse":     reverse,
+	}, nil
+}
+
+func (h *Handler) workspaceUniq(peerID, path string, count, caseSensitive bool) (map[string]any, error) {
+	if h.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace is not enabled")
+	}
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("path is required")
+	}
+	result, err := h.workspaceStore.UniqLines(peerID, path, count, caseSensitive)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":           path,
+		"content":        result.Content,
+		"line_count":     result.LineCount,
+		"total_lines":    result.TotalLines,
+		"count":          count,
+		"case_sensitive": caseSensitive,
+	}, nil
+}
+
+func (h *Handler) workspaceDiff(peerID, path, otherPath, content string, contextLines int) (map[string]any, error) {
+	if h.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace is not enabled")
+	}
+	result, err := h.workspaceStore.Diff(peerID, path, otherPath, content, contextLines)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":       result.Path,
+		"other_path": result.OtherPath,
+		"has_diff":   result.HasDiff,
+		"diff":       result.Diff,
+	}, nil
+}
+
 func (h *Handler) workspaceWrite(peerID, path, content string, appendMode bool) (map[string]any, error) {
 	if h.workspaceStore == nil {
 		return nil, fmt.Errorf("workspace is not enabled")

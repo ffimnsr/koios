@@ -1,6 +1,6 @@
 # Koios Missing Features vs OpenClaw and PicoClaw
 
-This file is a merged checklist for the feature gap between Koios and the reference systems. Items marked `✅` or `[x]` are already implemented.
+This file is a merged checklist for the feature gap between Koios and the reference systems. Items marked `[x]` are already implemented.
 
 ## Channels & Messaging
 
@@ -545,6 +545,37 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] EventBus for decoupled cross-agent messaging
 - [x] Long-running task pattern: `spawn` async + poll/await as tool calls
 - [ ] Multi-session fan-out orchestration with reply aggregation
+	- Suggested implementation order:
+		1. Add a first-class `internal/orchestrator` package with persisted orchestration runs that reference multiple child subagent runs under one parent run.
+		2. Reuse `subagent.Runtime.Spawn(...)` for child execution rather than teaching the workflow engine parallelism first.
+		3. Add orchestration lifecycle APIs and tools such as `orchestrator.start`, `orchestrator.status`, `orchestrator.wait`, `orchestrator.cancel`, and `orchestrator.runs`.
+		4. Support a `FanOutRequest` shape with `peer_id`, `parent_session_key`, `tasks`, `max_concurrency`, `timeout`, `wait_policy`, and `aggregation` fields.
+		5. Track child metadata explicitly: label, task, run ID, session key, status, final reply, error, started/finished timestamps, steps, and tool-call counts.
+		6. Implement parent cancellation and deadline propagation so unfinished children are cancelled when the orchestration ends early.
+		7. Add deterministic aggregation modes first: `collect` for raw child outputs and `concat` for labeled combined text.
+		8. Add a reducer aggregation mode that performs a final agent pass over labeled child results and stores both raw child outputs and the synthesized reply.
+		9. Publish progress through `EventBus` so parent sessions can receive partial child completions before the final aggregate result.
+		10. Only after the standalone orchestrator stabilizes, add workflow integration through a `fanout` step kind and later a matching `aggregate` or `wait` step.
+	- Richer orchestrator follow-ups in recommended order:
+		1. Barrier and fan-in joins so a parent can wait on all or a named subset of child runs before continuing.
+		2. Multi-stage map/reduce orchestration where one fan-out stage feeds a reducer or verifier stage.
+		3. Partial-result streaming into the parent session as each child completes, followed by a final aggregated reply.
+		4. Structured output contracts so child runs can return typed JSON that the aggregator validates and merges.
+		5. Retry, hedging, and fallback policies such as retry-on-error, parallel prompt variants, or first-success wins.
+		6. Quorum and voting modes for agreement-based decisions, including explicit disagreement reporting.
+		7. Supervisor, verifier, and arbiter roles so one set of children produces work and another reviews or ranks it.
+		8. Dependency-graph execution for DAG-style orchestration instead of a single fan-out followed by one fan-in.
+		9. Budget and deadline controls for wall-clock time, max active children, total steps, and eventual token accounting.
+		10. Rich observability with orchestration timelines, child summaries, per-child durations, tool calls, and aggregation provenance.
+	- Workflow engine upgrades that would make orchestration richer after the standalone orchestrator exists:
+		1. Add a `fanout` workflow step kind that starts multiple child sessions from one workflow node and records the orchestration run ID.
+		2. Add an `aggregate` workflow step kind that joins child outputs and optionally performs a reducer-agent synthesis pass.
+		3. Add a `wait` step kind so workflows can block on a child set, named orchestration group, quorum, or deadline before advancing.
+		4. Add a `foreach` step kind that expands a list of items into repeated child tasks or repeated subgraphs.
+		5. Add a `transform` step kind for template or JSON reshaping between stages so downstream routing does not depend on brittle raw text.
+		6. Add a `switch` step kind with richer routing than the current string predicates, including explicit cases and default branches.
+		7. Add a first-class `retry` step policy so retries are modeled declaratively instead of being hidden inside individual step implementations.
+		8. Add parallel webhook or mixed-tool fan-out support so workflows can orchestrate non-agent external calls and merge them the same way as child agent replies.
 - [x] Subagent concurrency semaphore per parent session
 - [x] Subagent announcement step (ANNOUNCE_SKIP / REPLY_SKIP flags)
 
@@ -787,6 +818,116 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Research notes: IronClaw and OpenClaw are the strongest references here. OpenClaw already tracks provider attribution and run state. IronClaw has the better observability/logging architecture for exposing model timings and behavior over APIs. PicoClaw provides a useful dashboard/logging surface but less explicit performance instrumentation in the current search.
 	- References: OpenClaw `src/agents/provider-attribution.ts`, `src/commands/status.types.ts`; PicoClaw `web/README.md`; IronClaw `docs/drafts/ops/logging.mdx`, `docs/drafts/ops/api.mdx`, `src/config/mod.rs`.
 
+## Personal Agent Features
+
+- [ ] Memory pinning, retention classes, and archive states
+	- Research notes: Koios already has a strong chunk-based memory store with tags and categories, but it still treats most memories as equivalent records. A personal agent benefits from explicit retention semantics such as `pinned`, `working`, `archive`, and optional expiry windows so the runtime can distinguish durable preferences and facts from disposable conversational residue. None of the comparison repos surfaced a clearly stronger personal-memory lifecycle model in the current search, so this is primarily a Koios-native product feature.
+	- Suggested Koios shape: extend memory records with retention metadata and exposure policy so pinned facts are always retrievable, archived items stay searchable but stop auto-injecting, and low-value memory can expire without manual cleanup.
+	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
+- [ ] Memory curation queue with confirm / reject / edit review flow
+	- Research notes: Koios already has insert/search/list primitives, but it lacks a quality-control step between "something might be worth remembering" and "this now shapes future replies." A review queue for candidate memories would let Koios propose extracted facts, preferences, commitments, and notes for explicit confirmation before they become durable context. The closest upstream concepts are operator queues and memory-management surfaces, but none of the current repo searches surfaced an equivalent first-class memory curation inbox.
+	- Suggested Koios shape: add a candidate-memory store plus CLI and chat commands to list pending items, approve them into durable memory, merge them into existing records, or discard them with reasons.
+	- References: OpenClaw `src/agents/pi-embedded-runner/runs.ts`, `src/commands/status.types.ts`; PicoClaw `pkg/agent/turn.go`, `docs/configuration.md`; IronClaw `src/tools/builtin/job.rs`, `src/channels/web/handlers/jobs.rs`.
+- [ ] Entity graph for people, projects, places, and ongoing topics
+	- Research notes: The current memory model is document-like rather than entity-centric. For a personal agent, durable entities are often more useful than isolated chunks because they support continuity such as "who is this person", "what project is blocked", and "what happened last time we discussed this trip." None of the comparison repos surfaced a clearly personal CRM-style entity graph in the current search, so this is another area where Koios can differentiate rather than chase parity.
+	- Suggested Koios shape: add first-class entities with aliases, notes, linked memory chunks, last-seen timestamps, and relationship edges so searches and summaries can pivot around stable objects instead of raw text matches.
+	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
+- [ ] Task extraction with a review inbox and durable task store
+	- Research notes: Koios already has sessions, workflows, cron, and hooks, but it does not yet appear to have a first-class personal task system. A useful personal-agent feature is automatic extraction of action items from chats, emails, and scheduled runs into a review inbox, followed by promotion into tracked tasks with due dates, owners, and status. The comparison repos surface automation and job systems, but the current searches did not show a comparable personal task-capture workflow.
+	- Suggested Koios shape: create a `tasks` subsystem with candidate extraction from conversations and hooks, then expose review, assign, snooze, complete, and reopen actions through chat, CLI, and API surfaces.
+	- References: OpenClaw `docs/automation/cron-jobs.md`, `src/hooks/gmail.ts`; PicoClaw `pkg/agent/hooks.go`, `pkg/gateway/gateway.go`; IronClaw `src/agent/routine_engine.rs`, `src/tools/builtin/job.rs`.
+- [ ] Waiting-on tracker for follow-ups and unanswered commitments
+	- Research notes: Personal assistants become much more useful when they can distinguish "my task" from "something I am waiting on." Koios already has the persistence and scheduling primitives to support this, but there is no visible first-class concept for tracking delegated asks, unanswered messages, or follow-up deadlines. None of the comparison repos surfaced an equally explicit waiting-on subsystem in the current search.
+	- Suggested Koios shape: model waiting-on records separately from normal tasks, with fields for who owns the next action, expected follow-up date, source conversation, and escalation reminders.
+	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
+- [ ] Calendar and ICS ingestion for agenda-aware planning
+	- Research notes: Koios already has cron and workflow infrastructure, and the backlog already covers inbox-trigger automation, but the current issue list does not appear to include first-class calendar ingestion. For a personal agent, local ICS feeds and external calendar sources are high-leverage because they provide durable time context for reminders, daily briefs, and conflict detection. The comparison repos surfaced scheduling and routines more clearly than concrete personal calendar integration in the current search.
+	- Suggested Koios shape: support local `.ics` files and remote ICS URLs first, then expand into provider-backed calendar sync and agenda queries such as `today`, `this week`, and `next conflict`.
+	- References: OpenClaw `docs/automation/cron-jobs.md`; PicoClaw `docs/chat-apps.md`; IronClaw `src/agent/routine_engine.rs`, `src/main.rs`.
+- [ ] Daily brief and weekly review synthesis
+	- Research notes: Koios already has nearly all the plumbing needed for proactive reviews: session history, memory, cron, workflows, and usage/runs. What it lacks is a productized synthesis mode that composes these sources into stable personal rituals like morning briefs, evening shutdowns, and weekly retrospectives. The upstream repos expose status and automation, but the current searches did not surface a similarly opinionated personal review feature.
+	- Suggested Koios shape: add templated briefing workflows that gather upcoming events, stale waiting-ons, new memory candidates, recent commitments, and active projects into one bounded report with follow-up actions.
+	- References: OpenClaw `src/auto-reply/status.ts`, `docs/automation/cron-jobs.md`; PicoClaw `cmd/picoclaw/internal/status/helpers.go`, `pkg/agent/hooks.go`; IronClaw `src/agent/commands.rs`, `src/agent/routine_engine.rs`.
+- [ ] Mode-specific standing orders and persona profiles
+	- Research notes: Koios already has workspace-level and peer-level standing orders, which is a strong foundation, but the model is still too coarse for a personal agent that shifts between contexts such as work, home, travel, and deep-focus modes. A profile system would let the same peer activate different standing instructions, tool allowances, and response styles without forking into unrelated sessions. The comparison repos surfaced status, routing, and config profiles, but not an equally direct personal-mode system in the current search.
+	- Suggested Koios shape: support named profiles that layer on top of existing standing orders and can be activated manually, by schedule, or by workflow context.
+	- References: OpenClaw `src/config/zod-schema.agent-defaults.ts`, `src/commands/status.summary.ts`; PicoClaw `docs/configuration.md`, `pkg/config/defaults.go`; IronClaw `src/config/mod.rs`, `src/agent/commands.rs`.
+- [ ] Preference and decision registry separate from generic memory
+	- Research notes: Not every persistent fact belongs in freeform memory search. A personal agent benefits from a higher-signal registry for stable preferences, defaults, and durable decisions such as writing tone, notification habits, travel preferences, coding conventions, and standing family logistics. The current Koios memory store can hold this content, but it does not distinguish "behavior-shaping preference" from ordinary retrieved context.
+	- Suggested Koios shape: add a structured preference store with scopes, confidence, last-confirmed timestamps, and provenance so the runtime can apply these facts predictably without over-relying on fuzzy memory retrieval.
+	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
+- [ ] Source-backed memory provenance and explainability
+	- Research notes: Koios currently stores the memory content itself, but personal-agent trust improves substantially when the system can answer "where did this come from?" Provenance fields such as source session, message ID, workflow run, external hook, and capture reason make later memory use safer and easier to debug. The comparison repos surfaced trace and job observability, but not a strongly personal provenance model for long-term memory in the current search.
+	- Suggested Koios shape: attach source metadata, confidence, and capture mechanism to every stored memory and expose that provenance through memory search, inspect, and review interfaces.
+	- References: OpenClaw `src/auto-reply/status.ts`, `src/commands/status.types.ts`; PicoClaw `pkg/agent/turn.go`, `pkg/agent/hooks.go`; IronClaw `crates/ironclaw_common/src/event.rs`, `src/channels/channel.rs`.
+- [ ] Conversation bookmarks and save-for-later recall
+	- Research notes: There is a practical middle ground between full long-term memory insertion and leaving everything buried in session history. A bookmark primitive would let users save important messages, decisions, snippets, or plans for later recall without forcing them into the same lifecycle as extracted memory. None of the comparison repos surfaced a distinct bookmark-style feature in the current search.
+	- Suggested Koios shape: support bookmarking a message, thread segment, or workflow result with title, labels, and optional reminder date, then expose bookmarks in chat, CLI, and future dashboard views.
+	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
+- [ ] Personal commitments dashboard instead of runtime-only status
+	- Research notes: Koios already has CLI status, health, usage, and background-run concepts, but those are operator-facing rather than life-facing. A personal agent should also have a commitments view that surfaces open tasks, waiting-ons, upcoming events, recent promises, and stale project threads. The current backlog has web UI and dashboard work, but this specific user-facing dashboard concept does not appear to be listed.
+	- Suggested Koios shape: build a dashboard oriented around commitments and personal context first, then layer runtime diagnostics beneath it rather than leading with infrastructure state.
+	- References: OpenClaw `src/commands/status.summary.ts`, `src/auto-reply/status.ts`; PicoClaw `web/README.md`, `web/frontend/src/routes/models.tsx`; IronClaw `docs/drafts/ops/api.mdx`, `src/agent/commands.rs`.
+
+## Personal Agent Research Backlog
+
+- [ ] Proactive briefing feed instead of only scheduled summaries
+	- Research notes: Current personal assistants are shifting from reactive chat toward proactive briefing surfaces that curate useful updates before the user asks. OpenAI's ChatGPT Pulse is a strong example: it delivers personalized update cards based on chats, feedback, and connected apps such as calendar, and is explicitly framed as a move toward a proactive assistant rather than a question-answering bot. Koios already has cron, workflows, memory, and session history, but it does not yet appear to have a first-class briefing feed that accumulates and ranks proactive work over time.
+	- Suggested Koios shape: add a `briefs` or `inbox` subsystem that stores generated briefing cards, allows save-for-later and dismissal actions, and supports sources such as calendar changes, waiting-on reminders, task deadlines, project drift, and digest-worthy external updates.
+	- References: OpenAI `Introducing ChatGPT Pulse` (published September 17, 2025), https://openai.com/index/introducing-chatgpt-pulse/ ; OpenAI Help `Tasks in ChatGPT`, https://help.openai.com/en/articles/10291617-scheduled-tasks-in-chatgpt
+- [ ] User-facing task center with recurring, pausable, and save-for-later tasks
+	- Research notes: A strong pattern in recent assistant UX is that scheduled automation is exposed as a user-managed task system, not just as an implementation detail like cron. OpenAI's current task model supports one-off and recurring tasks, editing, pausing, deleting, and a central task list. Koios already has scheduler and workflow primitives, but a personal agent benefits from a more approachable layer that tracks the user's requested automations as durable objects with lifecycle controls and delivery preferences.
+	- Suggested Koios shape: build a `tasks` center above cron and workflows with chat-created tasks, active/paused/completed states, notification preferences, and clear links back to the originating conversation or automation recipe.
+	- References: OpenAI Help `Tasks in ChatGPT`, https://help.openai.com/en/articles/10291617-scheduled-tasks-in-chatgpt
+- [ ] Memory import/export and backup portability
+	- Research notes: Personal assistants need portability if they are going to hold meaningful user context over time. Claude's 2025-2026 memory rollout paired memory with import/export support, which is an important trust feature because it gives users a path to audit, back up, migrate, or reset their personal context without vendor lock-in. Koios currently has memory persistence, but memory portability does not appear to be called out as a first-class user feature in the backlog.
+	- Suggested Koios shape: provide export/import for long-term memory, preference stores, and memory summaries in a documented format, with selective export by namespace, category, or time range.
+	- References: Claude release notes, https://support.claude.com/en/articles/12138966-release-notes ; Claude memory announcement, https://claude.com/blog/memory
+- [ ] Incognito or no-memory session mode
+	- Research notes: As assistants get more persistent, privacy controls become more important. Claude explicitly introduced incognito chats so a user can get help without affecting history or memory. For a personal agent, this is useful not just for confidentiality, but also for tasks where the user wants a clean slate or does not want transient brainstorming to pollute the agent's future behavior. Koios has session isolation, but that is different from an intentional "do not learn from this conversation" mode.
+	- Suggested Koios shape: add a session flag or conversation mode that bypasses memory writes, skips standing-order mutation, omits durable session history where configured, and clearly signals this state in the UI and API.
+	- References: Claude memory announcement, https://claude.com/blog/memory ; Claude release notes, https://support.claude.com/en/articles/12138966-release-notes
+- [ ] Layered personalization model: global preferences, project instructions, and styles
+	- Research notes: Claude's current personalization model is useful because it separates account-wide preferences, project-specific instructions, and response styles instead of merging everything into one generic memory surface. That separation reduces prompt clutter and makes it clearer which instructions are behavioral defaults versus task-specific context versus output formatting preferences. Koios already has standing orders, but it would likely benefit from splitting them into similarly distinct layers.
+	- Suggested Koios shape: preserve standing orders as one layer, but add explicit profile preferences, workspace or project instructions, and named output styles that can be combined or overridden independently.
+	- References: Claude personalization features, https://support.claude.com/en/articles/10185728-understanding-claude-s-personalization-features ; Claude memory announcement, https://claude.com/blog/memory
+- [ ] Auto-referenced connectors with visible provenance
+	- Research notes: A notable improvement in ChatGPT's 2025 connector rollout is that connected Gmail, Google Calendar, and Google Contacts data can be referenced automatically in chat when relevant, instead of requiring explicit manual fetch each time. This pattern matters because personal assistants become much more fluid when they can opportunistically ground responses in the user's actual tools. The tradeoff is that automatic connector use must be explainable and scoped carefully.
+	- Suggested Koios shape: support connector auto-reference policies per tool and per session, plus response annotations that show when calendar, contacts, email, or docs were pulled into a reply and why they were considered relevant.
+	- References: OpenAI ChatGPT release notes (August 12-13, 2025 connector updates), https://help.openai.com/en/articles/6825453-chatgpt-release-notes%3F.ejs
+- [ ] Calendar-native habit and focus scheduling
+	- Research notes: Reclaim's strongest product pattern is that it schedules habits, tasks, and focus time directly into the user's calendar, then reschedules them automatically as conflicts appear. That is more useful than a generic todo or reminder system because it respects actual availability and protects time rather than merely naming intentions. Koios already has scheduling automation, but not a calendar-native habit and focus planner in the backlog.
+	- Suggested Koios shape: create smart events for habits, focus blocks, and personal routines that can be assigned priorities, scheduling windows, privacy levels, and auto-rescheduling rules across one or more calendars.
+	- References: Reclaim product page, https://reclaim.ai/ ; Reclaim Habits, https://reclaim.ai/features/habits
+- [ ] Automatic waiting-on detection from outbound email or messages
+	- Research notes: Superhuman's recent auto-reminders feature highlights a strong personal-assistant behavior: detecting when an outbound message likely requires a follow-up and resurfacing it if no reply arrives. This is stronger than a manually created reminder because it is inferred from communication patterns and tied to unresolved threads. Koios already has hooks and planned inbox-triggered automation, so this would fit naturally once message connectors exist.
+	- Suggested Koios shape: infer waiting-on records from outbound communication, allow a configurable default follow-up window, and optionally prepare a draft reply or reminder when the item resurfaces.
+	- References: Superhuman `Reminders on Autopilot` (updated January 28, 2026), https://help.superhuman.com/hc/en-us/articles/45270478397203-Reminders-on-Autopilot
+- [ ] Meeting memory with extracted decisions, action items, and source linkage
+	- Research notes: Meeting assistants such as Notion AI Meeting Notes and Otter emphasize not only transcription, but also durable extraction of summaries, decisions, and action items that remain searchable later. Notion also makes the connection to task systems explicit and highlights searchable access across past meeting content. For a personal agent, the differentiator is less about "can it transcribe" and more about "can it turn meetings into reliable future context."
+	- Suggested Koios shape: support meeting imports or live capture, then store summaries, decisions, assignments, and slide or artifact references as searchable records linked back to the original meeting source.
+	- References: Notion AI Meeting Notes, https://www.notion.com/en-US/product/ai-meeting-notes ; OtterPilot, https://get.otter.ai/ai-meeting-agent/
+- [ ] Meeting consent and privacy workflow
+	- Research notes: If Koios moves into meeting capture, consent cannot be treated as an afterthought. Notion explicitly calls out one-click consent collection before meetings start, which is a useful product benchmark because meeting memory is materially different from normal chat memory. This feature is especially important for a personal agent that may blur work and life contexts.
+	- Suggested Koios shape: add meeting-capture policies, consent prompts, audit fields on captured meeting records, and hard blocks that prevent storage when consent requirements are not satisfied.
+	- References: Notion AI Meeting Notes, https://www.notion.com/en-US/product/ai-meeting-notes
+- [ ] Context-aware mobile and local-device actions
+	- Research notes: Claude's September 3, 2025 release notes explicitly call out location, maps, calendar access, and reminders on mobile platforms. This pattern matters because personal agents are most useful when they can handle small, high-frequency actions in context, not only long-form reasoning. Koios currently has notification and local execution primitives, but a more direct personal-action layer for reminders, maps, and event drafting is not clearly listed.
+	- Suggested Koios shape: add a node-backed or local-device action layer for reminders, draft calendar events, quick location lookups, commute prep, and other high-frequency personal actions with strong permission boundaries.
+	- References: Claude release notes (September 3, 2025), https://support.claude.com/en/articles/12138966-release-notes
+- [ ] Resumable long-running personal workflows with contextual suggestions
+	- Research notes: Claude's Chrome expansion introduced long-running workflows, slash-command reuse, and contextual prompt suggestions tied to the current website. The important product lesson is that assistants are becoming more stateful and situational: they can keep working in the background and offer relevant next actions based on where the user is. Koios already has workflows and subagents, but not an explicitly personal pattern for resumable background help with contextual prompts.
+	- Suggested Koios shape: allow long-running workflows to preserve state across interruptions, surface suggested next actions based on active session context, and support reusable prompt macros for common personal routines.
+	- References: Claude release notes (September 16, 2025), https://support.claude.com/en/articles/12138966-release-notes
+- [ ] Record mode or voice-note capture into editable summaries
+	- Research notes: ChatGPT's record mode, rolled out in 2025, reflects a useful personal-agent pattern: quick capture of live conversations or voice notes into an editable summary artifact. This is different from formal meeting capture because it also supports casual personal note-taking, ad hoc planning, and mobile capture. Koios already has some multimodal groundwork, but I do not see a dedicated backlog item for voice capture into structured notes.
+	- Suggested Koios shape: support short voice-note ingestion and meeting-style recording imports that generate editable summaries, action items, and optional memory candidates rather than only raw transcripts.
+	- References: OpenAI ChatGPT release notes (June 18 and August 13, 2025 record mode entries), https://help.openai.com/en/articles/6825453-chatgpt-release-notes%3F.ejs
+- [ ] Searchable library for generated artifacts and personal outputs
+	- Research notes: Personal assistants increasingly generate reports, summaries, images, slides, and other artifacts that become valuable over time. OpenAI's 2025 image Library is a narrow example, but the broader product pattern is a durable artifact shelf rather than leaving generated work buried inside conversation threads. Koios already has workflows and session persistence, so a searchable library for generated outputs would make personal-agent work much more reusable.
+	- Suggested Koios shape: index generated reports, meeting summaries, exported files, briefs, and bookmarks in a dedicated artifact library with provenance, tags, and links back to the originating session or workflow.
+	- References: OpenAI ChatGPT release notes (April 2025 Library entry), https://help.openai.com/en/articles/6825453-chatgpt-release-notes%3F.ejs ; Claude release notes (file creation/editing updates), https://support.claude.com/en/articles/12138966-release-notes
+
 ## Miscellaneous Platform Gaps
 
 - [ ] X / Twitter search tool
@@ -798,7 +939,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Structured JSON-only LLM task tool
 	- Research notes: OpenClaw and IronClaw are the strongest references because both already model provider capability and typed tool contracts. PicoClaw has provider abstractions, but the current search did not surface a dedicated JSON-only task tool. This likely fits naturally as a Koios builtin once tool-schema normalization is in place.
 	- References: OpenClaw `src/agents/provider-attribution.ts`, `src/plugins/types.ts`; PicoClaw `pkg/providers/types.go`; IronClaw `src/tools/wasm/capabilities_schema.rs`, `src/llm/registry.rs`.
-- [ ] Diff viewer and renderer tool
+- [x] Diff viewer and renderer tool
 	- Research notes: OpenClaw is the clearest reference because its coding tool stack already includes `apply_patch` and patch-oriented workflows. PicoClaw did not surface an equivalent diff-render tool in the current search. IronClaw's file tools are the best secondary reference if Koios wants a typed diff/view surface alongside patching.
 	- References: OpenClaw `src/agents/apply-patch.ts`, `src/agents/tool-catalog.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/tools/builtin/file.rs`, `tests/e2e_tool_coverage.rs`.
 - [ ] Protocol typing and codegen from a single schema source
@@ -807,6 +948,6 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Config env substitution and richer secret handling
 	- Research notes: OpenClaw is the clearest direct reference because secret inputs and config validation are already first-class. PicoClaw is also useful because it splits security config from app config. IronClaw has the strongest typed secrets subsystem and config resolution stack if Koios wants richer secret references and validation.
 	- References: OpenClaw `src/config/types.secrets.ts`, `src/config/zod-schema.ts`; PicoClaw `docs/security_configuration.md`, `docs/configuration.md`; IronClaw `src/config/mod.rs`, `src/secrets/*`.
-- [ ] Idempotency keys for side-effecting RPCs
+- [x] Idempotency keys for side-effecting RPCs
 	- Research notes: This is only weakly represented upstream today. IronClaw's structured web APIs and job/orchestrator flows are the best secondary reference if Koios wants idempotent side-effecting requests. OpenClaw and PicoClaw did not surface a direct first-class idempotency-key feature in the current searches.
 	- References: OpenClaw `src/gateway/server-methods/skills.ts`; PicoClaw `web/backend/api/*`; IronClaw `docs/drafts/ops/api.mdx`, `src/channels/web/CLAUDE.md`, `src/tools/builtin/job.rs`.

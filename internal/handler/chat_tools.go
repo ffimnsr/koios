@@ -308,6 +308,104 @@ var toolDefs = []toolDef{
 		available: func(h *Handler) bool { return h.workspaceStore != nil },
 	},
 	{
+		name:        "workspace.head",
+		description: "Read the first N lines from a text file in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":  map[string]any{"type": "string"},
+				"lines": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","lines":10}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.tail",
+		description: "Read the last N lines from a text file in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":  map[string]any{"type": "string"},
+				"lines": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","lines":10}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.grep",
+		description: "Search text files in the peer workspace and return matching lines.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":           map[string]any{"type": "string"},
+				"pattern":        map[string]any{"type": "string"},
+				"recursive":      map[string]any{"type": "boolean"},
+				"limit":          map[string]any{"type": "integer"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+				"regexp":         map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"pattern"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":".","pattern":"TODO","recursive":true,"limit":50,"case_sensitive":true,"regexp":false}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.sort",
+		description: "Return the file content with lines sorted lexicographically.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":           map[string]any{"type": "string"},
+				"reverse":        map[string]any{"type": "boolean"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/list.txt","reverse":false,"case_sensitive":true}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.uniq",
+		description: "Collapse adjacent duplicate lines from a workspace file.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":           map[string]any{"type": "string"},
+				"count":          map[string]any{"type": "boolean"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/list.txt","count":false,"case_sensitive":true}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "workspace.diff",
+		description: "Render a unified diff between a workspace file and another file or proposed content.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":       map[string]any{"type": "string"},
+				"other_path": map[string]any{"type": "string"},
+				"content":    map[string]any{"type": "string"},
+				"context":    map[string]any{"type": "integer"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","other_path":"notes/todo.new.md","content":"optional proposed text","context":3}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
 		name:        "workspace.write",
 		description: "Create or overwrite a text file in the peer workspace.",
 		parameters: mustJSONSchema(map[string]any{
@@ -383,6 +481,104 @@ var toolDefs = []toolDef{
 			"additionalProperties": false,
 		}),
 		argHint:   `{"path":"notes/todo.md","start_line":10,"end_line":30}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "head",
+		description: "Read the first N lines from a text file in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":  map[string]any{"type": "string"},
+				"lines": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","lines":10}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "tail",
+		description: "Read the last N lines from a text file in the peer workspace.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":  map[string]any{"type": "string"},
+				"lines": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","lines":10}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "grep",
+		description: "Search text files in the peer workspace and return matching lines.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":           map[string]any{"type": "string"},
+				"pattern":        map[string]any{"type": "string"},
+				"recursive":      map[string]any{"type": "boolean"},
+				"limit":          map[string]any{"type": "integer"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+				"regexp":         map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"pattern"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":".","pattern":"TODO","recursive":true,"limit":50,"case_sensitive":true,"regexp":false}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "sort",
+		description: "Return the file content with lines sorted lexicographically.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":           map[string]any{"type": "string"},
+				"reverse":        map[string]any{"type": "boolean"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/list.txt","reverse":false,"case_sensitive":true}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "uniq",
+		description: "Collapse adjacent duplicate lines from a workspace file.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":           map[string]any{"type": "string"},
+				"count":          map[string]any{"type": "boolean"},
+				"case_sensitive": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/list.txt","count":false,"case_sensitive":true}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil },
+	},
+	{
+		name:        "diff",
+		description: "Render a unified diff between a workspace file and another file or proposed content.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":       map[string]any{"type": "string"},
+				"other_path": map[string]any{"type": "string"},
+				"content":    map[string]any{"type": "string"},
+				"context":    map[string]any{"type": "integer"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"notes/todo.md","other_path":"notes/todo.new.md","content":"optional proposed text","context":3}`,
 		available: func(h *Handler) bool { return h.workspaceStore != nil },
 	},
 	{
@@ -941,6 +1137,93 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.workspaceRead(peerID, args.Path, args.StartLine, args.EndLine)
+	case "head", "workspace.head":
+		var args struct {
+			Path  string `json:"path"`
+			Lines int    `json:"lines"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if args.Lines == 0 {
+			args.Lines = 10
+		}
+		return h.workspaceHead(peerID, args.Path, args.Lines)
+	case "tail", "workspace.tail":
+		var args struct {
+			Path  string `json:"path"`
+			Lines int    `json:"lines"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if args.Lines == 0 {
+			args.Lines = 10
+		}
+		return h.workspaceTail(peerID, args.Path, args.Lines)
+	case "grep", "workspace.grep":
+		var args struct {
+			Path          string `json:"path"`
+			Pattern       string `json:"pattern"`
+			Recursive     *bool  `json:"recursive"`
+			Limit         int    `json:"limit"`
+			CaseSensitive *bool  `json:"case_sensitive"`
+			Regexp        bool   `json:"regexp"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		recursive := true
+		if args.Recursive != nil {
+			recursive = *args.Recursive
+		}
+		caseSensitive := true
+		if args.CaseSensitive != nil {
+			caseSensitive = *args.CaseSensitive
+		}
+		return h.workspaceGrep(peerID, args.Path, args.Pattern, recursive, args.Limit, caseSensitive, args.Regexp)
+	case "sort", "workspace.sort":
+		var args struct {
+			Path          string `json:"path"`
+			Reverse       bool   `json:"reverse"`
+			CaseSensitive *bool  `json:"case_sensitive"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		caseSensitive := true
+		if args.CaseSensitive != nil {
+			caseSensitive = *args.CaseSensitive
+		}
+		return h.workspaceSort(peerID, args.Path, args.Reverse, caseSensitive)
+	case "uniq", "workspace.uniq":
+		var args struct {
+			Path          string `json:"path"`
+			Count         bool   `json:"count"`
+			CaseSensitive *bool  `json:"case_sensitive"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		caseSensitive := true
+		if args.CaseSensitive != nil {
+			caseSensitive = *args.CaseSensitive
+		}
+		return h.workspaceUniq(peerID, args.Path, args.Count, caseSensitive)
+	case "diff", "workspace.diff":
+		var args struct {
+			Path      string `json:"path"`
+			OtherPath string `json:"other_path"`
+			Content   string `json:"content"`
+			Context   int    `json:"context"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if args.Context == 0 {
+			args.Context = 3
+		}
+		return h.workspaceDiff(peerID, args.Path, args.OtherPath, args.Content, args.Context)
 	case "session.list":
 		type sessionEntry struct {
 			kind         string
