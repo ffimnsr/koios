@@ -72,6 +72,7 @@ import (
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/types"
+	"github.com/ffimnsr/koios/internal/orchestrator"
 	"github.com/ffimnsr/koios/internal/usage"
 	"github.com/ffimnsr/koios/internal/workflow"
 	"github.com/ffimnsr/koios/internal/workspace"
@@ -234,8 +235,9 @@ type Handler struct {
 	monitor         *monitor.Monitor
 	logLevel        *slog.LevelVar
 	mcpManager      *mcp.Manager
-	workflowRunner  *workflow.Runner
-	idempotency     *idempotencyStore
+	workflowRunner     *workflow.Runner
+	orchestrator       *orchestrator.Orchestrator
+	idempotency        *idempotencyStore
 
 	// fetchClient is the HTTP client used by the web_fetch tool.  When nil,
 	// a client backed by ssrfSafeTransport() is used.  Override in tests only.
@@ -296,6 +298,8 @@ type HandlerOptions struct {
 	MCPManager *mcp.Manager
 	// WorkflowRunner, when non-nil, enables the workflow.* tool family.
 	WorkflowRunner *workflow.Runner
+	// Orchestrator, when non-nil, enables the orchestrator.* tool family.
+	Orchestrator *orchestrator.Orchestrator
 }
 
 // NewHandler creates the WebSocket control-plane handler.
@@ -339,6 +343,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		logLevel:        opts.LogLevel,
 		mcpManager:      opts.MCPManager,
 		workflowRunner:  opts.WorkflowRunner,
+		orchestrator:    opts.Orchestrator,
 		syncRuns:        make(map[string]context.CancelFunc),
 		clients:         make(map[*wsConn]struct{}),
 		execApprovals:   newExecApprovalStore(execCfg.ApprovalTTL),

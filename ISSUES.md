@@ -544,7 +544,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] SubTurn - structured subagent coordination with concurrency control and lifecycle events
 - [x] EventBus for decoupled cross-agent messaging
 - [x] Long-running task pattern: `spawn` async + poll/await as tool calls
-- [ ] Multi-session fan-out orchestration with reply aggregation
+- [x] Multi-session fan-out orchestration with reply aggregation
 	- Suggested implementation order:
 		1. Add a first-class `internal/orchestrator` package with persisted orchestration runs that reference multiple child subagent runs under one parent run.
 		2. Reuse `subagent.Runtime.Spawn(...)` for child execution rather than teaching the workflow engine parallelism first.

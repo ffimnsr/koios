@@ -10,6 +10,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/mcp"
+	"github.com/ffimnsr/koios/internal/orchestrator"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/subagent"
@@ -891,6 +892,94 @@ var toolDefs = []toolDef{
 		argHint:   `{"id":"workflow-id","limit":10}`,
 		available: func(h *Handler) bool { return h.workflowRunner != nil },
 	},
+	// ── orchestrator.* ───────────────────────────────────────────────────────
+	{
+		name:        "orchestrator.start",
+		description: "Start a multi-session fan-out: spawn N child agents in parallel, then aggregate their replies. Returns immediately with an orchestration run ID.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"tasks": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"label":   map[string]any{"type": "string"},
+							"task":    map[string]any{"type": "string"},
+							"model":   map[string]any{"type": "string"},
+							"timeout": map[string]any{"type": "integer", "description": "per-child timeout in seconds"},
+						},
+						"required": []string{"task"},
+					},
+				},
+				"aggregation":     map[string]any{"type": "string", "enum": []string{"collect", "concat", "reducer"}, "description": "How to combine child replies."},
+				"reducer_prompt":  map[string]any{"type": "string", "description": "Prompt for the reducer agent (aggregation=reducer only)."},
+				"wait_policy":     map[string]any{"type": "string", "enum": []string{"all", "first", "quorum"}},
+				"max_concurrency": map[string]any{"type": "integer"},
+				"timeout":         map[string]any{"type": "integer", "description": "wall-clock deadline in seconds for the whole orchestration"},
+				"child_timeout":   map[string]any{"type": "integer", "description": "default per-child timeout in seconds"},
+				"announce_start":  map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"tasks"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"tasks":[{"label":"researcher","task":"Summarise the latest Go release notes"},{"label":"critic","task":"Review the summary for accuracy"}],"aggregation":"concat","wait_policy":"all"}`,
+		available: func(h *Handler) bool { return h.orchestrator != nil },
+	},
+	{
+		name:        "orchestrator.status",
+		description: "Poll the current state of a fan-out orchestration run by ID.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"orchestration-run-id"}`,
+		available: func(h *Handler) bool { return h.orchestrator != nil },
+	},
+	{
+		name:        "orchestrator.wait",
+		description: "Block until an orchestration run finishes, then return the result. Use wait_timeout_seconds to bound the wait.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":                   map[string]any{"type": "string"},
+				"wait_timeout_seconds": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"orchestration-run-id","wait_timeout_seconds":120}`,
+		available: func(h *Handler) bool { return h.orchestrator != nil },
+	},
+	{
+		name:        "orchestrator.cancel",
+		description: "Cancel a running orchestration and kill its active children.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"orchestration-run-id"}`,
+		available: func(h *Handler) bool { return h.orchestrator != nil },
+	},
+	{
+		name:        "orchestrator.runs",
+		description: "List recent orchestration runs for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}),
+		argHint:   `{}`,
+		available: func(h *Handler) bool { return h.orchestrator != nil },
+	},
 }
 
 // activeDefs returns the subset of toolDefs whose backing subsystem is
@@ -1729,6 +1818,35 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.workflowRuns(peerID, args.ID, args.Limit)
+	case "orchestrator.start":
+		return h.orchestratorStart(ctx, peerID, call.Arguments)
+	case "orchestrator.status":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.orchestratorStatus(peerID, args.ID)
+	case "orchestrator.wait":
+		var args struct {
+			ID                 string `json:"id"`
+			WaitTimeoutSeconds int    `json:"wait_timeout_seconds"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.orchestratorWait(ctx, peerID, args.ID, args.WaitTimeoutSeconds)
+	case "orchestrator.cancel":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.orchestratorCancel(peerID, args.ID)
+	case "orchestrator.runs":
+		return h.orchestratorRuns(peerID)
 	default:
 		// Dispatch to MCP manager for mcp__{server}__{tool} style names.
 		if h.mcpManager != nil {
@@ -1896,4 +2014,143 @@ func (h *Handler) ownedJobForPeer(peerID, jobID string) (*scheduler.Job, error) 
 		return nil, fmt.Errorf("job not found")
 	}
 	return job, nil
+}
+
+// ── orchestrator tool helpers ─────────────────────────────────────────────────
+
+func (h *Handler) orchestratorStart(ctx context.Context, peerID string, raw json.RawMessage) (*orchestrator.Run, error) {
+	if h.orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator is not enabled")
+	}
+	var p struct {
+		Tasks []struct {
+			Label   string `json:"label"`
+			Task    string `json:"task"`
+			Model   string `json:"model"`
+			Timeout int    `json:"timeout"`
+		} `json:"tasks"`
+		Aggregation    string `json:"aggregation"`
+		ReducerPrompt  string `json:"reducer_prompt"`
+		WaitPolicy     string `json:"wait_policy"`
+		MaxConcurrency int    `json:"max_concurrency"`
+		Timeout        int    `json:"timeout"`
+		ChildTimeout   int    `json:"child_timeout"`
+		AnnounceStart  bool   `json:"announce_start"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	if len(p.Tasks) == 0 {
+		return nil, fmt.Errorf("tasks must not be empty")
+	}
+	tasks := make([]orchestrator.ChildTask, len(p.Tasks))
+	for i, t := range p.Tasks {
+		if strings.TrimSpace(t.Task) == "" {
+			return nil, fmt.Errorf("task[%d].task must not be empty", i)
+		}
+		var to time.Duration
+		if t.Timeout > 0 {
+			to = time.Duration(t.Timeout) * time.Second
+		}
+		tasks[i] = orchestrator.ChildTask{
+			Label:   t.Label,
+			Task:    t.Task,
+			Model:   t.Model,
+			Timeout: to,
+		}
+	}
+	sessionKey := agent.CurrentSessionKey(ctx)
+	if sessionKey == "" {
+		sessionKey = peerID
+	}
+	req := orchestrator.FanOutRequest{
+		PeerID:           peerID,
+		ParentSessionKey: sessionKey,
+		Tasks:            tasks,
+		MaxConcurrency:   p.MaxConcurrency,
+		WaitPolicy:       orchestrator.WaitPolicy(p.WaitPolicy),
+		Aggregation:      orchestrator.AggregationMode(p.Aggregation),
+		ReducerPrompt:    p.ReducerPrompt,
+		AnnounceStart:    p.AnnounceStart,
+	}
+	if p.Timeout > 0 {
+		req.Timeout = time.Duration(p.Timeout) * time.Second
+	}
+	if p.ChildTimeout > 0 {
+		req.ChildTimeout = time.Duration(p.ChildTimeout) * time.Second
+	}
+	return h.orchestrator.Start(ctx, req)
+}
+
+func (h *Handler) orchestratorStatus(peerID, id string) (*orchestrator.Run, error) {
+	if h.orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator is not enabled")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	run, ok := h.orchestrator.Get(id)
+	if !ok || run.PeerID != peerID {
+		return nil, fmt.Errorf("orchestration %s not found", id)
+	}
+	return run, nil
+}
+
+func (h *Handler) orchestratorWait(ctx context.Context, peerID, id string, timeoutSecs int) (*orchestrator.Run, error) {
+	if h.orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator is not enabled")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	// Ownership check before waiting to fail fast.
+	run, ok := h.orchestrator.Get(id)
+	if !ok || run.PeerID != peerID {
+		return nil, fmt.Errorf("orchestration %s not found", id)
+	}
+	waitCtx := ctx
+	if timeoutSecs > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
+		defer cancel()
+	}
+	return h.orchestrator.Wait(waitCtx, id)
+}
+
+func (h *Handler) orchestratorCancel(peerID, id string) (map[string]string, error) {
+	if h.orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator is not enabled")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	// Ownership check.
+	run, ok := h.orchestrator.Get(id)
+	if !ok || run.PeerID != peerID {
+		return nil, fmt.Errorf("orchestration %s not found", id)
+	}
+	if err := h.orchestrator.Cancel(id); err != nil {
+		return nil, err
+	}
+	return map[string]string{"id": id, "status": "cancelling"}, nil
+}
+
+func (h *Handler) orchestratorRuns(peerID string) (map[string]any, error) {
+	if h.orchestrator == nil {
+		return nil, fmt.Errorf("orchestrator is not enabled")
+	}
+	all := h.orchestrator.List()
+	var own []*orchestrator.Run
+	for _, r := range all {
+		if r.PeerID == peerID {
+			own = append(own, r)
+		}
+	}
+	if own == nil {
+		own = []*orchestrator.Run{}
+	}
+	return map[string]any{"runs": own, "count": len(own)}, nil
 }

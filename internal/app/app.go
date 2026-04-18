@@ -24,6 +24,7 @@ import (
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/memory/milvus"
 	"github.com/ffimnsr/koios/internal/monitor"
+	"github.com/ffimnsr/koios/internal/orchestrator"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/presence"
 	"github.com/ffimnsr/koios/internal/provider"
@@ -274,6 +275,8 @@ func RunGateway(build BuildInfo) error {
 		slog.Info("workflow engine started", "dir", cfg.WorkflowDir())
 	}
 
+	orchRuntime := orchestrator.New(subRuntime, agentRuntime, bus)
+
 	wsHandler := handler.NewHandler(store, prov, handler.HandlerOptions{
 		Model:           cfg.Model,
 		Timeout:         cfg.RequestTimeout,
@@ -317,6 +320,7 @@ func RunGateway(build BuildInfo) error {
 		LogLevel:       logLevel,
 		MCPManager:     mcpMgr,
 		WorkflowRunner: workflowRunner,
+		Orchestrator:   orchRuntime,
 	})
 
 	// Wire the full agent loop into heartbeat, cron, and workflows so the LLM
