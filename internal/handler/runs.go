@@ -38,6 +38,9 @@ func (h *Handler) rpcRunsList(wsc *wsConn, req *rpcRequest) {
 		Limit:  p.Limit,
 	}
 	records := h.runLedger.List(f, 7*24*time.Hour)
+	for i := range records {
+		records[i].Result = nil
+	}
 	wsc.reply(req.ID, map[string]any{"records": records})
 }
 

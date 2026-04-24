@@ -157,6 +157,18 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// ProviderCapabilities describes transport and compatibility traits for a
+// specific provider/model pairing. Providers may expose this via an optional
+// Capabilities(model) method so the runtime can degrade gracefully when a
+// backend does not support native tool calls or streaming.
+type ProviderCapabilities struct {
+	Name                 string `json:"name,omitempty"`
+	SupportsStreaming    bool   `json:"supports_streaming,omitempty"`
+	SupportsNativeTools  bool   `json:"supports_native_tools,omitempty"`
+	RequiresMaxTokens    bool   `json:"requires_max_tokens,omitempty"`
+	OpenAICompatibleWire bool   `json:"openai_compatible_wire,omitempty"`
+}
+
 // ChatResponse is the OpenAI-compatible /v1/chat/completions response body.
 type ChatResponse struct {
 	ID      string       `json:"id"`

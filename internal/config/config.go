@@ -129,19 +129,34 @@ type Config struct {
 	// the listed peer IDs. An empty list grants the commands to all peers.
 	OwnerPeerIDs []string
 
-	ToolProfile             string
-	ToolsAllow              []string
-	ToolsDeny               []string
-	ExecEnabled             bool
-	ExecEnableDenyPatterns  bool
-	ExecCustomDenyPatterns  []string
-	ExecCustomAllowPatterns []string
-	ExecDefaultTimeout      time.Duration
-	ExecMaxTimeout          time.Duration
-	ExecApprovalMode        string
-	ExecApprovalTTL         time.Duration
-	ExecIsolationEnabled    bool
-	ExecIsolationPaths      []ExecIsolationPath
+	ToolProfile                   string
+	ToolsAllow                    []string
+	ToolsDeny                     []string
+	ExecEnabled                   bool
+	ExecEnableDenyPatterns        bool
+	ExecCustomDenyPatterns        []string
+	ExecCustomAllowPatterns       []string
+	ExecDefaultTimeout            time.Duration
+	ExecMaxTimeout                time.Duration
+	ExecApprovalMode              string
+	ExecApprovalTTL               time.Duration
+	ExecIsolationEnabled          bool
+	ExecIsolationPaths            []ExecIsolationPath
+	CodeExecutionEnabled          bool
+	CodeExecutionNetworkEnabled   bool
+	CodeExecutionDefaultTimeout   time.Duration
+	CodeExecutionMaxTimeout       time.Duration
+	CodeExecutionMaxStdoutBytes   int
+	CodeExecutionMaxStderrBytes   int
+	CodeExecutionMaxArtifactBytes int64
+	CodeExecutionMaxOpenFiles     int
+	CodeExecutionMaxProcesses     int
+	CodeExecutionCPUSeconds       int
+	CodeExecutionMemoryBytes      int64
+	ProcessEnabled                bool
+	ProcessStopTimeout            time.Duration
+	ProcessLogTailBytes           int
+	ProcessMaxProcessesPerPeer    int
 
 	WorkspaceRoot     string
 	WorkspacePerAgent bool
@@ -267,6 +282,25 @@ type fileConfig struct {
 				ExposePaths []ExecIsolationPath `toml:"expose_paths"`
 			} `toml:"isolation"`
 		} `toml:"exec"`
+		CodeExecution struct {
+			Enabled          *bool  `toml:"enabled"`
+			NetworkEnabled   *bool  `toml:"network_enabled"`
+			DefaultTimeout   string `toml:"default_timeout"`
+			MaxTimeout       string `toml:"max_timeout"`
+			MaxStdoutBytes   *int   `toml:"max_stdout_bytes"`
+			MaxStderrBytes   *int   `toml:"max_stderr_bytes"`
+			MaxArtifactBytes *int64 `toml:"max_artifact_bytes"`
+			MaxOpenFiles     *int   `toml:"max_open_files"`
+			MaxProcesses     *int   `toml:"max_processes"`
+			CPUSeconds       *int   `toml:"cpu_seconds"`
+			MemoryBytes      *int64 `toml:"memory_bytes"`
+		} `toml:"code_execution"`
+		Process struct {
+			Enabled             *bool  `toml:"enabled"`
+			StopTimeout         string `toml:"stop_timeout"`
+			LogTailBytes        *int   `toml:"log_tail_bytes"`
+			MaxProcessesPerPeer *int   `toml:"max_processes_per_peer"`
+		} `toml:"process"`
 	} `toml:"tools"`
 	Workspace struct {
 		Root     string `toml:"root"`
@@ -301,55 +335,70 @@ type fileConfig struct {
 // Default returns sane defaults for a local-first Koios setup.
 func Default() *Config {
 	return &Config{
-		ListenAddr:                   ":8080",
-		Provider:                     "openai",
-		Model:                        "gpt-4o",
-		MaxSessionMessages:           100,
-		RequestTimeout:               2 * time.Minute,
-		SessionRetention:             0,
-		SessionMaxEntries:            0,
-		SessionIdleResetAfter:        0,
-		SessionIdlePruneAfter:        0,
-		SessionIdlePruneKeep:         0,
-		SessionDailyResetTime:        "",
-		CompactThreshold:             0,
-		CompactReserve:               20,
-		EmbedModel:                   "text-embedding-3-small",
-		MemoryInject:                 false,
-		MemoryTopK:                   3,
-		MemoryLCMWindow:              0,
-		MilvusURL:                    "localhost:19530",
-		MilvusCollection:             "koios_memory",
-		MilvusEnabled:                false,
-		SessionPruneKeepToolMessages: 8,
-		CronMaxConcurrentRuns:        1,
-		HeartbeatEvery:               30 * time.Minute,
-		HeartbeatEnabled:             true,
-		AgentMaxChildren:             4,
-		AgentRetryAttempts:           3,
-		AgentRetryInitialBackoff:     500 * time.Millisecond,
-		AgentRetryMaxBackoff:         5 * time.Second,
-		AgentRetryStatusCodes:        []int{429, 500, 502, 503, 504},
-		ToolProfile:                  "full",
-		ExecEnabled:                  true,
-		ExecEnableDenyPatterns:       true,
-		ExecDefaultTimeout:           30 * time.Second,
-		ExecMaxTimeout:               5 * time.Minute,
-		ExecApprovalMode:             "dangerous",
-		ExecApprovalTTL:              15 * time.Minute,
-		WorkspaceRoot:                "./workspace",
-		WorkspacePerAgent:            true,
-		WorkspaceMaxBytes:            1 << 20,
-		LogLevel:                     "info",
-		LogMaxSizeMB:                 20,
-		LogMaxBackups:                5,
-		LogMaxAgeDays:                14,
-		LogCompress:                  true,
-		HookTimeout:                  2 * time.Second,
-		HookFailClosed:               false,
-		PresenceTypingTTL:            8 * time.Second,
-		MonitorStaleThreshold:        0,
-		MonitorMaxRestarts:           5,
+		ListenAddr:                    ":8080",
+		Provider:                      "openai",
+		Model:                         "gpt-4o",
+		MaxSessionMessages:            100,
+		RequestTimeout:                2 * time.Minute,
+		SessionRetention:              0,
+		SessionMaxEntries:             0,
+		SessionIdleResetAfter:         0,
+		SessionIdlePruneAfter:         0,
+		SessionIdlePruneKeep:          0,
+		SessionDailyResetTime:         "",
+		CompactThreshold:              0,
+		CompactReserve:                20,
+		EmbedModel:                    "text-embedding-3-small",
+		MemoryInject:                  false,
+		MemoryTopK:                    3,
+		MemoryLCMWindow:               0,
+		MilvusURL:                     "localhost:19530",
+		MilvusCollection:              "koios_memory",
+		MilvusEnabled:                 false,
+		SessionPruneKeepToolMessages:  8,
+		CronMaxConcurrentRuns:         1,
+		HeartbeatEvery:                30 * time.Minute,
+		HeartbeatEnabled:              true,
+		AgentMaxChildren:              4,
+		AgentRetryAttempts:            3,
+		AgentRetryInitialBackoff:      500 * time.Millisecond,
+		AgentRetryMaxBackoff:          5 * time.Second,
+		AgentRetryStatusCodes:         []int{429, 500, 502, 503, 504},
+		ToolProfile:                   "full",
+		ExecEnabled:                   true,
+		ExecEnableDenyPatterns:        true,
+		ExecDefaultTimeout:            30 * time.Second,
+		ExecMaxTimeout:                5 * time.Minute,
+		ExecApprovalMode:              "dangerous",
+		ExecApprovalTTL:               15 * time.Minute,
+		CodeExecutionEnabled:          false,
+		CodeExecutionNetworkEnabled:   false,
+		CodeExecutionDefaultTimeout:   10 * time.Second,
+		CodeExecutionMaxTimeout:       30 * time.Second,
+		CodeExecutionMaxStdoutBytes:   64 * 1024,
+		CodeExecutionMaxStderrBytes:   64 * 1024,
+		CodeExecutionMaxArtifactBytes: 1 << 20,
+		CodeExecutionMaxOpenFiles:     64,
+		CodeExecutionMaxProcesses:     32,
+		CodeExecutionCPUSeconds:       10,
+		CodeExecutionMemoryBytes:      256 << 20,
+		ProcessEnabled:                false,
+		ProcessStopTimeout:            5 * time.Second,
+		ProcessLogTailBytes:           64 * 1024,
+		ProcessMaxProcessesPerPeer:    8,
+		WorkspaceRoot:                 "./workspace",
+		WorkspacePerAgent:             true,
+		WorkspaceMaxBytes:             1 << 20,
+		LogLevel:                      "info",
+		LogMaxSizeMB:                  20,
+		LogMaxBackups:                 5,
+		LogMaxAgeDays:                 14,
+		LogCompress:                   true,
+		HookTimeout:                   2 * time.Second,
+		HookFailClosed:                false,
+		PresenceTypingTTL:             8 * time.Second,
+		MonitorStaleThreshold:         0,
+		MonitorMaxRestarts:            5,
 	}
 }
 
@@ -451,6 +500,23 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		strconv.Quote(cfg.ToolProfile),
 		quoteStringSlice(cfg.ToolsAllow),
 		quoteStringSlice(cfg.ToolsDeny),
+		cfg.CodeExecutionEnabled,
+		cfg.CodeExecutionNetworkEnabled,
+		strconv.Quote(cfg.CodeExecutionDefaultTimeout.String()),
+		strconv.Quote(cfg.CodeExecutionMaxTimeout.String()),
+		cfg.CodeExecutionMaxStdoutBytes,
+		cfg.CodeExecutionMaxStderrBytes,
+		cfg.CodeExecutionMaxArtifactBytes,
+		cfg.CodeExecutionMaxOpenFiles,
+		cfg.CodeExecutionMaxProcesses,
+		cfg.CodeExecutionCPUSeconds,
+		cfg.CodeExecutionMemoryBytes,
+		cfg.ProcessEnabled,
+		strconv.Quote(cfg.ProcessStopTimeout.String()),
+		cfg.ProcessLogTailBytes,
+		cfg.ProcessMaxProcessesPerPeer,
+		cfg.ExecEnabled,
+		cfg.ExecEnableDenyPatterns,
 		strconv.Quote(cfg.ExecDefaultTimeout.String()),
 		strconv.Quote(cfg.ExecMaxTimeout.String()),
 		strconv.Quote(cfg.ExecApprovalMode),
@@ -751,6 +817,57 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	if len(src.Tools.Exec.Isolation.ExposePaths) > 0 {
 		dst.ExecIsolationPaths = src.Tools.Exec.Isolation.ExposePaths
 	}
+	if src.Tools.CodeExecution.Enabled != nil {
+		dst.CodeExecutionEnabled = *src.Tools.CodeExecution.Enabled
+	}
+	if src.Tools.CodeExecution.NetworkEnabled != nil {
+		dst.CodeExecutionNetworkEnabled = *src.Tools.CodeExecution.NetworkEnabled
+	}
+	if src.Tools.CodeExecution.DefaultTimeout != "" {
+		if d, err := time.ParseDuration(src.Tools.CodeExecution.DefaultTimeout); err == nil {
+			dst.CodeExecutionDefaultTimeout = d
+		}
+	}
+	if src.Tools.CodeExecution.MaxTimeout != "" {
+		if d, err := time.ParseDuration(src.Tools.CodeExecution.MaxTimeout); err == nil {
+			dst.CodeExecutionMaxTimeout = d
+		}
+	}
+	if src.Tools.CodeExecution.MaxStdoutBytes != nil && *src.Tools.CodeExecution.MaxStdoutBytes > 0 {
+		dst.CodeExecutionMaxStdoutBytes = *src.Tools.CodeExecution.MaxStdoutBytes
+	}
+	if src.Tools.CodeExecution.MaxStderrBytes != nil && *src.Tools.CodeExecution.MaxStderrBytes > 0 {
+		dst.CodeExecutionMaxStderrBytes = *src.Tools.CodeExecution.MaxStderrBytes
+	}
+	if src.Tools.CodeExecution.MaxArtifactBytes != nil && *src.Tools.CodeExecution.MaxArtifactBytes > 0 {
+		dst.CodeExecutionMaxArtifactBytes = *src.Tools.CodeExecution.MaxArtifactBytes
+	}
+	if src.Tools.CodeExecution.MaxOpenFiles != nil && *src.Tools.CodeExecution.MaxOpenFiles > 0 {
+		dst.CodeExecutionMaxOpenFiles = *src.Tools.CodeExecution.MaxOpenFiles
+	}
+	if src.Tools.CodeExecution.MaxProcesses != nil && *src.Tools.CodeExecution.MaxProcesses > 0 {
+		dst.CodeExecutionMaxProcesses = *src.Tools.CodeExecution.MaxProcesses
+	}
+	if src.Tools.CodeExecution.CPUSeconds != nil && *src.Tools.CodeExecution.CPUSeconds > 0 {
+		dst.CodeExecutionCPUSeconds = *src.Tools.CodeExecution.CPUSeconds
+	}
+	if src.Tools.CodeExecution.MemoryBytes != nil && *src.Tools.CodeExecution.MemoryBytes > 0 {
+		dst.CodeExecutionMemoryBytes = *src.Tools.CodeExecution.MemoryBytes
+	}
+	if src.Tools.Process.Enabled != nil {
+		dst.ProcessEnabled = *src.Tools.Process.Enabled
+	}
+	if src.Tools.Process.StopTimeout != "" {
+		if d, err := time.ParseDuration(src.Tools.Process.StopTimeout); err == nil {
+			dst.ProcessStopTimeout = d
+		}
+	}
+	if src.Tools.Process.LogTailBytes != nil && *src.Tools.Process.LogTailBytes > 0 {
+		dst.ProcessLogTailBytes = *src.Tools.Process.LogTailBytes
+	}
+	if src.Tools.Process.MaxProcessesPerPeer != nil && *src.Tools.Process.MaxProcessesPerPeer > 0 {
+		dst.ProcessMaxProcessesPerPeer = *src.Tools.Process.MaxProcessesPerPeer
+	}
 	if src.Workspace.Root != "" {
 		dst.WorkspaceRoot = src.Workspace.Root
 	}
@@ -933,6 +1050,42 @@ func validate(cfg *Config) error {
 	}
 	if cfg.ExecApprovalTTL <= 0 {
 		return fmt.Errorf("tools.exec.approval_ttl must be > 0")
+	}
+	if cfg.CodeExecutionDefaultTimeout <= 0 {
+		return fmt.Errorf("tools.code_execution.default_timeout must be > 0")
+	}
+	if cfg.CodeExecutionMaxTimeout < cfg.CodeExecutionDefaultTimeout {
+		return fmt.Errorf("tools.code_execution.max_timeout must be >= tools.code_execution.default_timeout")
+	}
+	if cfg.CodeExecutionMaxStdoutBytes < 1 {
+		return fmt.Errorf("tools.code_execution.max_stdout_bytes must be >= 1")
+	}
+	if cfg.CodeExecutionMaxStderrBytes < 1 {
+		return fmt.Errorf("tools.code_execution.max_stderr_bytes must be >= 1")
+	}
+	if cfg.CodeExecutionMaxArtifactBytes < 1 {
+		return fmt.Errorf("tools.code_execution.max_artifact_bytes must be >= 1")
+	}
+	if cfg.CodeExecutionMaxOpenFiles < 1 {
+		return fmt.Errorf("tools.code_execution.max_open_files must be >= 1")
+	}
+	if cfg.CodeExecutionMaxProcesses < 1 {
+		return fmt.Errorf("tools.code_execution.max_processes must be >= 1")
+	}
+	if cfg.CodeExecutionCPUSeconds < 1 {
+		return fmt.Errorf("tools.code_execution.cpu_seconds must be >= 1")
+	}
+	if cfg.CodeExecutionMemoryBytes < 1 {
+		return fmt.Errorf("tools.code_execution.memory_bytes must be >= 1")
+	}
+	if cfg.ProcessStopTimeout <= 0 {
+		return fmt.Errorf("tools.process.stop_timeout must be > 0")
+	}
+	if cfg.ProcessLogTailBytes < 1 {
+		return fmt.Errorf("tools.process.log_tail_bytes must be >= 1")
+	}
+	if cfg.ProcessMaxProcessesPerPeer < 1 {
+		return fmt.Errorf("tools.process.max_processes_per_peer must be >= 1")
 	}
 	if cfg.WorkspaceRoot == "" {
 		return fmt.Errorf("workspace.root must not be empty")

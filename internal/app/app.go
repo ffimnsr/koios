@@ -52,16 +52,34 @@ type compactionMemoryFlusher struct {
 	store *memory.Store
 }
 
-func (f *compactionMemoryFlusher) FlushCompaction(ctx context.Context, peerID string, _ []types.Message, summary string) error {
+func (f *compactionMemoryFlusher) FlushCompaction(ctx context.Context, peerID string, messages []types.Message) error {
 	if f == nil || f.store == nil {
 		return nil
 	}
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
+	checkpoint := buildCompactionMemoryCheckpoint(messages)
+	if checkpoint == "" {
 		return nil
 	}
-	_, err := f.store.InsertChunk(ctx, peerID, "Session checkpoint before compaction:\n\n"+redact.String(summary))
+	_, err := f.store.InsertChunk(ctx, peerID, checkpoint)
 	return err
+}
+
+func buildCompactionMemoryCheckpoint(messages []types.Message) string {
+	var sb strings.Builder
+	sb.WriteString("Session history before compaction:\n\n")
+	keptAny := false
+	for _, msg := range messages {
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+		keptAny = true
+		fmt.Fprintf(&sb, "%s: %s\n\n", strings.ToUpper(msg.Role), redact.String(content))
+	}
+	if !keptAny {
+		return ""
+	}
+	return strings.TrimSpace(sb.String())
 }
 
 // RunGateway loads configuration, starts the Koios gateway, and blocks until shutdown.
@@ -321,6 +339,25 @@ func RunGateway(build BuildInfo) error {
 			ApprovalTTL:         cfg.ExecApprovalTTL,
 			IsolationEnabled:    cfg.ExecIsolationEnabled,
 			IsolationPaths:      isolationPaths(cfg.ExecIsolationPaths),
+		},
+		CodeExecutionConfig: handler.CodeExecutionConfig{
+			Enabled:          cfg.CodeExecutionEnabled,
+			NetworkEnabled:   cfg.CodeExecutionNetworkEnabled,
+			DefaultTimeout:   cfg.CodeExecutionDefaultTimeout,
+			MaxTimeout:       cfg.CodeExecutionMaxTimeout,
+			MaxStdoutBytes:   cfg.CodeExecutionMaxStdoutBytes,
+			MaxStderrBytes:   cfg.CodeExecutionMaxStderrBytes,
+			MaxArtifactBytes: cfg.CodeExecutionMaxArtifactBytes,
+			MaxOpenFiles:     cfg.CodeExecutionMaxOpenFiles,
+			MaxProcesses:     cfg.CodeExecutionMaxProcesses,
+			CPUSeconds:       cfg.CodeExecutionCPUSeconds,
+			MemoryBytes:      cfg.CodeExecutionMemoryBytes,
+		},
+		BackgroundProcessConfig: handler.BackgroundProcessConfig{
+			Enabled:             cfg.ProcessEnabled,
+			StopTimeout:         cfg.ProcessStopTimeout,
+			LogTailBytes:        cfg.ProcessLogTailBytes,
+			MaxProcessesPerPeer: cfg.ProcessMaxProcessesPerPeer,
 		},
 		WorkspaceStore: wsStore,
 		Hooks:          hooks,

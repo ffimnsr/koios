@@ -40,3 +40,9 @@ Thumbs.db
 
 koios.config.toml
 /workspace/
+
+# Atlas Context
+.atlas/
+.github/hooks/atlas-copilot.json
+
+.tmp_*

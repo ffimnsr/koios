@@ -114,12 +114,12 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		sysMessages = append(append([]types.Message(nil), opts.ExtraSystem...), sysMessages...)
 	}
 	result := &BuildResult{}
-	sysMessages = append([]types.Message{{Role: "system", Content: trustBoundaryInstruction}}, sysMessages...)
 	prunedHistory, prunedCount := pruneHistory(opts.History, opts.PruneToolMessages)
 	result.PrunedMessages = prunedCount
 	if len(prunedHistory) > 0 {
-		sysMessages = append([]types.Message{{Role: "system", Content: continuityInstruction}}, sysMessages...)
+		sysMessages = append(sysMessages, types.Message{Role: "system", Content: continuityInstruction})
 	}
+	sysMessages = append([]types.Message{{Role: "system", Content: trustBoundaryInstruction}}, sysMessages...)
 	if opts.MemoryStore != nil && len(turnMessages) > 0 {
 		var injected string
 		var hits int

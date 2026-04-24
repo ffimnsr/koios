@@ -3,6 +3,7 @@ package handler_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/memory"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/subagent"
@@ -29,6 +31,7 @@ type stubProvider struct {
 	seenReqs []*types.ChatRequest
 	complete func(context.Context, *types.ChatRequest) (*types.ChatResponse, error)
 	stream   func(context.Context, *types.ChatRequest, http.ResponseWriter) (string, error)
+	caps     types.ProviderCapabilities
 }
 
 func (s *stubProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
@@ -47,6 +50,14 @@ func (s *stubProvider) CompleteStream(ctx context.Context, req *types.ChatReques
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	return "streamed reply", s.err
+}
+
+func (s *stubProvider) Capabilities(string) types.ProviderCapabilities {
+	return s.caps
+}
+
+func sseChunk(content string) string {
+	return fmt.Sprintf("data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":%q}}]}\n\n", content)
 }
 
 // ── test helpers ──────────────────────────────────────────────────────────────
@@ -157,6 +168,18 @@ func readFramesUntilID(t *testing.T, conn *websocket.Conn, id string) []rpcMsg {
 	}
 	t.Fatalf("did not receive response for id %q", id)
 	return nil
+}
+
+func readResultFromFrames(t *testing.T, frames []rpcMsg, id string) rpcMsg {
+	t.Helper()
+	wantID, _ := json.Marshal(id)
+	for _, msg := range frames {
+		if string(msg.ID) == string(wantID) {
+			return msg
+		}
+	}
+	t.Fatalf("did not receive response for id %q", id)
+	return rpcMsg{}
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -819,6 +842,68 @@ func TestToolDefinitionsHonorPolicy(t *testing.T) {
 	}
 	if containsString(names, "exec") {
 		t.Fatalf("expected exec to be excluded by allow list, got %#v", names)
+	}
+}
+
+func TestToolDefinitionsHonorCodeExecutionPolicy(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		CodeExecutionConfig: handler.CodeExecutionConfig{
+			Enabled: true,
+		},
+		ToolPolicy: handler.ToolPolicy{
+			Allow: []string{"code_execution", "read"},
+			Deny:  []string{"exec"},
+		},
+	})
+	names := []string{}
+	for _, tool := range h.ToolDefinitions("alice") {
+		names = append(names, tool.Function.Name)
+	}
+	if !containsString(names, "code_execution") {
+		t.Fatalf("expected code_execution to be exposed, got %#v", names)
+	}
+	if containsString(names, "exec") {
+		t.Fatalf("expected exec to remain denied, got %#v", names)
+	}
+}
+
+func TestToolDefinitionsRuntimeProfileIncludesCodeExecutionHelpers(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	ledger, err := runledger.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("runledger.New: %v", err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		RunLedger:      ledger,
+		CodeExecutionConfig: handler.CodeExecutionConfig{
+			Enabled: true,
+		},
+		ToolPolicy: handler.ToolPolicy{Profile: "coding"},
+	})
+	names := []string{}
+	for _, tool := range h.ToolDefinitions("alice") {
+		names = append(names, tool.Function.Name)
+	}
+	if !containsString(names, "code_execution.status") || !containsString(names, "code_execution.cancel") {
+		t.Fatalf("expected code_execution helper tools, got %#v", names)
 	}
 }
 
@@ -1968,6 +2053,194 @@ func TestWS_Chat_StreamEmitsToolEvents(t *testing.T) {
 	}
 	if !sawDelta {
 		t.Fatal("expected final stream.delta notification")
+	}
+}
+
+func TestWS_Chat_SilentReplySuppressesOutputAndHistory(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{
+		stream: func(_ context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
+			if _, err := w.Write([]byte(sseChunk(agent.SilentReplyToken))); err != nil {
+				return "", err
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
+				return "", err
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return agent.SilentReplyToken, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "silent-peer")
+	sendRPC(t, conn, "silent1", "chat", map[string]any{
+		"messages": []types.Message{{Role: "user", Content: "stay quiet"}},
+		"stream":   true,
+	})
+	frames := readFramesUntilID(t, conn, "silent1")
+	for _, frame := range frames {
+		if frame.Method != "stream.delta" {
+			continue
+		}
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(frame.Params, &payload); err != nil {
+			t.Fatalf("unmarshal delta: %v", err)
+		}
+		if payload.Content != "" {
+			t.Fatalf("expected no streamed content, got %q", payload.Content)
+		}
+	}
+	msg := readResultFromFrames(t, frames, "silent1")
+	var result struct {
+		AssistantText   string `json:"assistant_text"`
+		SuppressedReply bool   `json:"suppressed_reply"`
+	}
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.AssistantText != "" || !result.SuppressedReply {
+		t.Fatalf("unexpected silent result: %#v", result)
+	}
+	history := store.Get("silent-peer").History()
+	if len(history) != 1 || history[0].Role != "user" {
+		t.Fatalf("expected only the user message in history, got %#v", history)
+	}
+}
+
+func TestWS_Chat_VerboseModeIncludesInlineToolSummary(t *testing.T) {
+	store := session.New(10)
+	if err := store.SetPolicy("verbose-peer", session.SessionPolicy{VerboseMode: true}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{
+					Choices: []types.ChatChoice{{
+						Message: types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+							ID:       "tool-1",
+							Type:     "function",
+							Function: types.ToolCallFunctionRef{Name: "time.now", Arguments: `{}`},
+						}}},
+					}},
+				}, nil
+			}
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "It is done."}}},
+			}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "verbose-peer")
+	sendRPC(t, conn, "verbose1", "chat", map[string]any{
+		"messages": []types.Message{{Role: "user", Content: "What time is it?"}},
+	})
+	msg := readUntilID(t, conn, "verbose1")
+	if msg.Error != nil {
+		t.Fatalf("unexpected error: %v", msg.Error)
+	}
+	var resp types.ChatResponse
+	if err := json.Unmarshal(msg.Result, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	text := resp.Choices[0].Message.Content
+	if !strings.Contains(text, "Tool summary:") || !strings.Contains(text, "time.now") || !strings.Contains(text, "Arguments: {}") || !strings.Contains(text, "Reply:\nIt is done.") {
+		t.Fatalf("expected inline verbose tool summary, got %q", text)
+	}
+	history := store.Get("verbose-peer").History()
+	if len(history) != 2 || history[1].Content != "It is done." {
+		t.Fatalf("expected persisted history to keep the plain assistant reply, got %#v", history)
+	}
+}
+
+func TestWS_Chat_BlockStreamingCoalescesChunks(t *testing.T) {
+	store := session.New(10)
+	if err := store.SetPolicy("block-peer", session.SessionPolicy{BlockStream: true, StreamChunkChars: 5}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	prov := &stubProvider{
+		stream: func(_ context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
+			for _, part := range []string{"H", "e", "l", "l", "o", " ", "w", "o", "r", "l", "d"} {
+				if _, err := w.Write([]byte(sseChunk(part))); err != nil {
+					return "", err
+				}
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+			}
+			if _, err := w.Write([]byte("data: [DONE]\n\n")); err != nil {
+				return "", err
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return "Hello world", nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "block-peer")
+	sendRPC(t, conn, "block1", "chat", map[string]any{
+		"messages": []types.Message{{Role: "user", Content: "hello"}},
+		"stream":   true,
+	})
+	frames := readFramesUntilID(t, conn, "block1")
+	var deltas []string
+	for _, frame := range frames {
+		if frame.Method != "stream.delta" {
+			continue
+		}
+		var payload struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(frame.Params, &payload); err != nil {
+			t.Fatalf("unmarshal delta: %v", err)
+		}
+		deltas = append(deltas, payload.Content)
+	}
+	joined := strings.Join(deltas, "")
+	if joined != "Hello world" {
+		t.Fatalf("joined deltas = %q", joined)
+	}
+	if len(deltas) >= 11 {
+		t.Fatalf("expected coalesced block streaming, got %d deltas", len(deltas))
 	}
 }
 

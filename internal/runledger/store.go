@@ -21,10 +21,12 @@ import (
 type RunKind string
 
 const (
-	KindAgent        RunKind = "agent"
-	KindSubagent     RunKind = "subagent"
-	KindOrchestrator RunKind = "orchestrator"
-	KindCron         RunKind = "cron"
+	KindAgent         RunKind = "agent"
+	KindSubagent      RunKind = "subagent"
+	KindOrchestrator  RunKind = "orchestrator"
+	KindCron          RunKind = "cron"
+	KindCodeExecution RunKind = "code_execution"
+	KindProcess       RunKind = "background_process"
 )
 
 // RunStatus mirrors the status values used across the various runtime layers.
@@ -52,12 +54,14 @@ type Record struct {
 	Steps      int       `json:"steps,omitempty"`
 	ToolCalls  int       `json:"tool_calls,omitempty"`
 	// ParentID links subagent/orchestrator children to their parent run.
-	ParentID         string     `json:"parent_id,omitempty"`
-	PromptTokens     int        `json:"prompt_tokens,omitempty"`
-	CompletionTokens int        `json:"completion_tokens,omitempty"`
-	QueuedAt         time.Time  `json:"queued_at"`
-	StartedAt        *time.Time `json:"started_at,omitempty"`
-	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	ParentID         string          `json:"parent_id,omitempty"`
+	PromptTokens     int             `json:"prompt_tokens,omitempty"`
+	CompletionTokens int             `json:"completion_tokens,omitempty"`
+	Request          json.RawMessage `json:"request,omitempty"`
+	Result           json.RawMessage `json:"result,omitempty"`
+	QueuedAt         time.Time       `json:"queued_at"`
+	StartedAt        *time.Time      `json:"started_at,omitempty"`
+	FinishedAt       *time.Time      `json:"finished_at,omitempty"`
 }
 
 // Filter restricts which records are returned by List.

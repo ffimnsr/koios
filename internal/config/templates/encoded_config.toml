@@ -51,6 +51,25 @@ profile = %s
 allow = [%s]
 deny = [%s]
 
+[tools.code_execution]
+enabled = %t
+network_enabled = %t
+default_timeout = %s
+max_timeout = %s
+max_stdout_bytes = %d
+max_stderr_bytes = %d
+max_artifact_bytes = %d
+max_open_files = %d
+max_processes = %d
+cpu_seconds = %d
+memory_bytes = %d
+
+[tools.process]
+enabled = %t
+stop_timeout = %s
+log_tail_bytes = %d
+max_processes_per_peer = %d
+
 [tools.exec]
 enabled = %t
 enable_deny_patterns = %t

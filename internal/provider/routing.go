@@ -10,6 +10,10 @@ import (
 	"github.com/ffimnsr/koios/internal/types"
 )
 
+type capabilityProvider interface {
+	Capabilities(model string) types.ProviderCapabilities
+}
+
 // modelEntry is one entry in the routing provider's registry.
 type modelEntry struct {
 	model string
@@ -82,6 +86,14 @@ func (rp *RoutingProvider) ForModel(name string) (Provider, string) {
 // PrimaryModel returns the primary model name.
 func (rp *RoutingProvider) PrimaryModel() string { return rp.primary.model }
 
+func (rp *RoutingProvider) Capabilities(model string) types.ProviderCapabilities {
+	prov, resolvedModel := rp.ForModel(model)
+	if caps, ok := prov.(capabilityProvider); ok {
+		return caps.Capabilities(resolvedModel)
+	}
+	return types.ProviderCapabilities{}
+}
+
 // ProfileNames returns the list of registered profile names.
 func (rp *RoutingProvider) ProfileNames() []string {
 	names := make([]string, 0, len(rp.profiles))
@@ -121,6 +133,23 @@ func (rp *RoutingProvider) CompleteStream(ctx context.Context, req *types.ChatRe
 
 	// First attempt: stream with the chosen model.
 	first := chain[0]
+	if !providerSupportsStreaming(first.prov, first.model) {
+		resp, err := first.prov.Complete(ctx, cloneRequestWithModel(req, first.model))
+		if err != nil {
+			return "", err
+		}
+		if len(resp.Choices) == 0 {
+			return "", fmt.Errorf("empty response from provider")
+		}
+		text := resp.Choices[0].Message.Content
+		setSSEHeaders(w)
+		flusher, _ := w.(http.Flusher)
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return text, nil
+	}
 	r := cloneRequest(req)
 	r.Model = first.model
 	text, err := first.prov.CompleteStream(ctx, r, w)
@@ -217,6 +246,25 @@ func isRetryableProviderErr(err error) bool {
 func cloneRequest(req *types.ChatRequest) *types.ChatRequest {
 	cp := *req
 	return &cp
+}
+
+func cloneRequestWithModel(req *types.ChatRequest, model string) *types.ChatRequest {
+	cp := cloneRequest(req)
+	cp.Model = model
+	return cp
+}
+
+func providerSupportsStreaming(prov Provider, model string) bool {
+	if caps, ok := prov.(capabilityProvider); ok {
+		pc := caps.Capabilities(model)
+		if pc.SupportsStreaming {
+			return true
+		}
+		if pc.Name != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // BuildRoutingProvider constructs a RoutingProvider from application config.

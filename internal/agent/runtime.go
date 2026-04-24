@@ -37,7 +37,15 @@ const (
 	ScopeDirect   SessionScope = "direct"
 	ScopeIsolated SessionScope = "isolated"
 	ScopeGlobal   SessionScope = "global"
+
+	QueueModeSteer    = "steer"
+	QueueModeFollowup = "followup"
+	QueueModeCollect  = "collect"
+
+	SilentReplyToken = "NO_REPLY"
 )
+
+var silentReplyTokens = []string{SilentReplyToken, "SILENT_REPLY", "SILENT_REPLY_TOKEN"}
 
 // RetryPolicy controls retry behavior for provider failures.
 type RetryPolicy struct {
@@ -93,17 +101,49 @@ type Event struct {
 	Step       int       `json:"step,omitempty"`
 	Count      int       `json:"count,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	ToolName   string    `json:"tool_name,omitempty"`
+	Summary    string    `json:"summary,omitempty"`
+	OK         *bool     `json:"ok,omitempty"`
 }
 
 // Result contains the outcome of a run.
 type Result struct {
-	SessionKey    string              `json:"session_key"`
-	Attempts      int                 `json:"attempts"`
-	AssistantText string              `json:"assistant_text,omitempty"`
-	Response      *types.ChatResponse `json:"response,omitempty"`
-	Usage         types.Usage         `json:"usage,omitempty"`
-	Steps         int                 `json:"steps"`
-	Events        []Event             `json:"events,omitempty"`
+	SessionKey       string              `json:"session_key"`
+	Attempts         int                 `json:"attempts"`
+	AssistantText    string              `json:"assistant_text,omitempty"`
+	Response         *types.ChatResponse `json:"response,omitempty"`
+	Usage            types.Usage         `json:"usage,omitempty"`
+	Steps            int                 `json:"steps"`
+	Events           []Event             `json:"events,omitempty"`
+	SuppressedReply  bool                `json:"suppressed_reply,omitempty"`
+	SuppressionToken string              `json:"suppression_token,omitempty"`
+}
+
+type providerCapabilities interface {
+	Capabilities(model string) types.ProviderCapabilities
+}
+
+func DetectSilentReply(text string) (bool, string) {
+	trimmed := strings.TrimSpace(text)
+	for _, token := range silentReplyTokens {
+		if trimmed == token {
+			return true, token
+		}
+	}
+	return false, ""
+}
+
+func SilentReplyMayContinue(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return true
+	}
+	for _, token := range silentReplyTokens {
+		if trimmed == token || strings.HasPrefix(token, trimmed) {
+			return true
+		}
+	}
+	return false
 }
 
 // ToolCall is a structured request emitted by the model when it wants the
@@ -146,6 +186,25 @@ type Runtime struct {
 
 	steeringMu     sync.Mutex
 	steeringQueues map[string][]string // sessionKey → pending user messages
+	activeStreams  map[string]*activeStreamState
+}
+
+type activeStreamState struct {
+	cancel      context.CancelFunc
+	interrupted bool
+}
+
+func NormalizeQueueMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case QueueModeSteer:
+		return QueueModeSteer
+	case QueueModeCollect:
+		return QueueModeCollect
+	case "", QueueModeFollowup:
+		return QueueModeFollowup
+	default:
+		return QueueModeFollowup
+	}
 }
 
 type contextSessionKey struct{}
@@ -210,12 +269,13 @@ func (rt *Runtime) SetIdentityDir(dir string) {
 // Steer enqueues a user message to be injected into the next loop iteration
 // for the given session. A maximum of 10 messages may be queued at once.
 func (rt *Runtime) Steer(sessionKey, message string) error {
-	if sessionKey == "" {
+	if strings.TrimSpace(sessionKey) == "" {
 		return fmt.Errorf("session_key is required")
 	}
-	if message == "" {
+	if strings.TrimSpace(message) == "" {
 		return fmt.Errorf("message is required")
 	}
+	sessionKey = rt.normalizeSessionKey(sessionKey)
 	rt.steeringMu.Lock()
 	defer rt.steeringMu.Unlock()
 	if rt.steeringQueues == nil {
@@ -226,11 +286,18 @@ func (rt *Runtime) Steer(sessionKey, message string) error {
 		return fmt.Errorf("steering queue full for session %s", sessionKey)
 	}
 	rt.steeringQueues[sessionKey] = append(q, message)
+	if NormalizeQueueMode(rt.sessionPolicy(sessionKey).QueueMode) == QueueModeSteer {
+		if active := rt.activeStreams[sessionKey]; active != nil && active.cancel != nil {
+			active.interrupted = true
+			active.cancel()
+		}
+	}
 	return nil
 }
 
 // drainSteering returns and removes any queued steering messages for sessionKey.
 func (rt *Runtime) drainSteering(sessionKey string) []string {
+	sessionKey = rt.normalizeSessionKey(sessionKey)
 	rt.steeringMu.Lock()
 	defer rt.steeringMu.Unlock()
 	msgs := rt.steeringQueues[sessionKey]
@@ -238,7 +305,52 @@ func (rt *Runtime) drainSteering(sessionKey string) []string {
 		return nil
 	}
 	delete(rt.steeringQueues, sessionKey)
+	if NormalizeQueueMode(rt.sessionPolicy(sessionKey).QueueMode) == QueueModeCollect && len(msgs) > 1 {
+		return []string{formatCollectedSteering(msgs)}
+	}
 	return msgs
+}
+
+func formatCollectedSteering(msgs []string) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+	if len(msgs) == 1 {
+		return msgs[0]
+	}
+	var sb strings.Builder
+	sb.WriteString("Collected steering updates:\n")
+	for _, msg := range msgs {
+		trimmed := strings.TrimSpace(msg)
+		if trimmed == "" {
+			continue
+		}
+		sb.WriteString("- ")
+		sb.WriteString(trimmed)
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func (rt *Runtime) registerActiveStream(sessionKey string, cancel context.CancelFunc) *activeStreamState {
+	sessionKey = rt.normalizeSessionKey(sessionKey)
+	rt.steeringMu.Lock()
+	defer rt.steeringMu.Unlock()
+	if rt.activeStreams == nil {
+		rt.activeStreams = make(map[string]*activeStreamState)
+	}
+	state := &activeStreamState{cancel: cancel}
+	rt.activeStreams[sessionKey] = state
+	return state
+}
+
+func (rt *Runtime) unregisterActiveStream(sessionKey string, state *activeStreamState) {
+	sessionKey = rt.normalizeSessionKey(sessionKey)
+	rt.steeringMu.Lock()
+	defer rt.steeringMu.Unlock()
+	if rt.activeStreams[sessionKey] == state {
+		delete(rt.activeStreams, sessionKey)
+	}
 }
 
 // NewRuntime creates a runtime.
@@ -275,13 +387,8 @@ func (rt *Runtime) Run(ctx context.Context, req RunRequest) (*Result, error) {
 
 // RunStream executes the request and streams the provider's SSE output to w.
 func (rt *Runtime) RunStream(ctx context.Context, req RunRequest, w http.ResponseWriter) (*Result, error) {
-	buf := &captureResponseWriter{header: make(http.Header)}
-	res, err := rt.run(ctx, req, buf)
-	if err != nil {
-		return res, err
-	}
-	buf.replayTo(w)
-	return res, nil
+	buf := &captureResponseWriter{header: make(http.Header), downstream: w}
+	return rt.run(ctx, req, buf)
 }
 
 func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureResponseWriter) (*Result, error) {
@@ -299,7 +406,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	// Apply session-persisted model override; it takes precedence over the
 	// runtime default but yields to an explicit per-request Model value.
 	if req.Model == rt.model {
-		if policy := rt.store.Policy(sessionKey); policy.ModelOverride != "" {
+		if policy := rt.sessionPolicy(sessionKey); policy.ModelOverride != "" {
 			req.Model = policy.ModelOverride
 		}
 	}
@@ -314,7 +421,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		reqCopy.Timeout = rt.defaultTimeout
 	}
 	if reqCopy.MaxSteps <= 0 {
-		if reqCopy.ToolExecutor != nil {
+		if reqCopy.ToolExecutor != nil || reqCopy.Stream {
 			reqCopy.MaxSteps = 4
 		} else {
 			reqCopy.MaxSteps = 1
@@ -323,6 +430,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	callCtx, cancel := context.WithTimeout(ctx, reqCopy.Timeout)
 	defer cancel()
 	workingMessages := append([]types.Message(nil), reqCopy.Messages...)
+	persistedMessages := append([]types.Message(nil), reqCopy.Messages...)
 
 	var lastErr error
 	for step := 1; step <= reqCopy.MaxSteps; step++ {
@@ -390,12 +498,18 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			})
 		}
 		if reqCopy.ToolExecutor != nil {
-			built.Request.Tools = reqCopy.ToolExecutor.ToolDefinitions(reqCopy.PeerID)
+			caps := providerCapabilitiesFor(rt.prov, built.Request.Model)
+			if caps.SupportsNativeTools || caps.Name == "" {
+				built.Request.Tools = reqCopy.ToolExecutor.ToolDefinitions(reqCopy.PeerID)
+			}
 			if len(built.Request.Tools) > 0 {
 				built.Request.ToolChoice = "auto"
 			}
-			// Tool-driven runs use non-streaming model calls for intermediate steps.
-			built.Request.Stream = false
+			// Only force non-streaming for non-stream requests. Streamed websocket
+			// turns still need the provider's streaming path when no tool call is made.
+			if !reqCopy.Stream {
+				built.Request.Stream = false
+			}
 		}
 		built.Request.MaxTokens = reqCopy.MaxTokens
 		built.Request.Temperature = reqCopy.Temperature
@@ -404,13 +518,54 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		for attempt := 1; attempt <= rt.retry.MaxAttempts; attempt++ {
 			result.Attempts = attempt
 			attemptCtx, attemptCancel := context.WithCancel(callCtx)
+			invokeReq := *built.Request
+			invokeStream := invokeReq.Stream
+			invokeSink := sink
+			toolProbe := reqCopy.Stream && reqCopy.ToolExecutor != nil && len(invokeReq.Tools) > 0
+			if toolProbe {
+				invokeReq.Stream = false
+				invokeStream = false
+				invokeSink = nil
+			}
+			var activeStream *activeStreamState
+			if invokeStream {
+				activeStream = rt.registerActiveStream(sessionKey, attemptCancel)
+			}
 			if sink != nil {
 				sink.reset()
 			}
 			attemptCtx = context.WithValue(attemptCtx, contextSessionKey{}, sessionKey)
-			assistantText, resp, err := rt.invoke(attemptCtx, built.Request, built.Request.Stream, sink)
+			assistantText, resp, err := rt.invoke(attemptCtx, &invokeReq, invokeStream, invokeSink)
+			if err != nil && toolProbe && err.Error() == "nil response from provider" {
+				invokeReq.Stream = built.Request.Stream
+				invokeStream = invokeReq.Stream
+				invokeSink = sink
+				if invokeStream {
+					activeStream = rt.registerActiveStream(sessionKey, attemptCancel)
+				}
+				assistantText, resp, err = rt.invoke(attemptCtx, &invokeReq, invokeStream, invokeSink)
+			}
+			if activeStream != nil {
+				rt.unregisterActiveStream(sessionKey, activeStream)
+			}
 			attemptCancel()
+			if err != nil && activeStream != nil && activeStream.interrupted {
+				if steered := rt.drainSteering(sessionKey); len(steered) > 0 {
+					for _, msg := range steered {
+						workingMessages = append(workingMessages, types.Message{Role: "user", Content: msg})
+						persistedMessages = append(persistedMessages, types.Message{Role: "user", Content: msg})
+					}
+					advanceStep = true
+					lastErr = nil
+					break
+				}
+			}
 			if err == nil {
+				assistantText, resp, suppressed, token := suppressSilentReply(assistantText, resp)
+				if suppressed {
+					result.SuppressedReply = true
+					result.SuppressionToken = token
+				}
 				if reqCopy.ToolExecutor != nil && resp != nil {
 					if toolCalls := nativeToolCalls(resp); len(toolCalls) > 0 {
 						toolLoopAborted := false
@@ -430,9 +585,11 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 								toolLoopAborted = true
 								break
 							}
-							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: tc.Name})
+							argsSummary := summarizeToolJSON(tc.Arguments)
+							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: argsSummary})
 							toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(attemptCtx, reqCopy.PeerID, tc)
-							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: tc.Name})
+							ok := execErr == nil
+							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: summarizeToolResult(toolResult, execErr), OK: &ok})
 							if hookErr := rt.emitHook(callCtx, ops.Event{
 								Name:       ops.HookAfterToolCall,
 								PeerID:     reqCopy.PeerID,
@@ -499,9 +656,11 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: err.Error()})
 							break
 						}
-						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: call.Name})
+						argsSummary := summarizeToolJSON(call.Arguments)
+						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: argsSummary})
 						toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(attemptCtx, reqCopy.PeerID, *call)
-						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name})
+						ok := execErr == nil
+						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolResult(toolResult, execErr), OK: &ok})
 						if hookErr := rt.emitHook(callCtx, ops.Event{
 							Name:       ops.HookAfterToolCall,
 							PeerID:     reqCopy.PeerID,
@@ -533,15 +692,33 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				if resp != nil {
 					result.Usage = resp.Usage
 				}
+				if steered := rt.drainSteering(sessionKey); len(steered) > 0 && step < reqCopy.MaxSteps {
+					if assistantMsg, ok := assistantMessage(assistantText, resp); ok {
+						workingMessages = append(workingMessages, assistantMsg)
+						persistedMessages = append(persistedMessages, assistantMsg)
+					}
+					for _, msg := range steered {
+						workingMessages = append(workingMessages, types.Message{Role: "user", Content: msg})
+						persistedMessages = append(persistedMessages, types.Message{Role: "user", Content: msg})
+					}
+					advanceStep = true
+					break
+				}
 				if reqCopy.Stream && sink != nil {
 					rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunBlock, SessionKey: sessionKey, Step: step, Message: assistantText})
 				}
-				rt.persistTurn(reqCopy.PeerID, sessionKey, reqCopy.Messages, workingMessages, assistantText, resp)
+				if assistantMsg, ok := assistantMessage(assistantText, resp); ok {
+					persistedMessages = append(persistedMessages, assistantMsg)
+				}
+				rt.persistTurn(reqCopy.PeerID, sessionKey, persistedMessages, workingMessages, assistantText, result.SuppressedReply)
 				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunFinish, SessionKey: sessionKey, Step: step, Message: assistantText})
 				return result, nil
 			}
 			lastErr = err
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: err.Error()})
+			if invokeStream && sink != nil && sink.liveWritten() {
+				break
+			}
 			if attempt < rt.retry.MaxAttempts && rt.shouldRetry(err) {
 				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRetry, SessionKey: sessionKey, Attempt: attempt + 1, Step: step})
 				select {
@@ -622,7 +799,9 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 	} else {
 		resp, callErr = rt.prov.Complete(ctx, req)
 		if callErr == nil {
-			if len(resp.Choices) == 0 {
+				if resp == nil {
+					callErr = fmt.Errorf("nil response from provider")
+				} else if len(resp.Choices) == 0 {
 				callErr = fmt.Errorf("empty response from provider")
 			} else {
 				text = resp.Choices[0].Message.Content
@@ -676,16 +855,26 @@ func eventMessages(data map[string]any, key string) ([]types.Message, bool) {
 	return msgs, true
 }
 
-func (rt *Runtime) persistTurn(peerID, sessionKey string, userMsgs, workingMessages []types.Message, assistantText string, resp *types.ChatResponse) {
-	// Session persistence — unchanged behavior.
-	if len(userMsgs) > 0 {
-		rt.store.AppendCtx(context.Background(), sessionKey, userMsgs...)
+func assistantMessage(assistantText string, resp *types.ChatResponse) (types.Message, bool) {
+	if resp != nil && len(resp.Choices) > 0 {
+		msg := resp.Choices[0].Message
+		if msg.Role == "" {
+			msg.Role = "assistant"
+		}
+		if msg.Content != "" || len(msg.ToolCalls) > 0 {
+			return msg, true
+		}
 	}
-	if assistantText != "" {
-		rt.store.Append(sessionKey, types.Message{Role: "assistant", Content: assistantText})
-	} else if resp != nil && len(resp.Choices) > 0 {
-		rt.store.Append(sessionKey, resp.Choices[0].Message)
-		assistantText = resp.Choices[0].Message.Content
+	if strings.TrimSpace(assistantText) == "" {
+		return types.Message{}, false
+	}
+	return types.Message{Role: "assistant", Content: assistantText}, true
+}
+
+func (rt *Runtime) persistTurn(peerID, sessionKey string, transcript, workingMessages []types.Message, assistantText string, suppressed bool) {
+	// Session persistence — unchanged behavior.
+	if len(transcript) > 0 {
+		rt.store.AppendCtx(context.Background(), sessionKey, transcript...)
 	}
 
 	// Long-term memory persistence — write a compact turn summary on every
@@ -693,16 +882,42 @@ func (rt *Runtime) persistTurn(peerID, sessionKey string, userMsgs, workingMessa
 	// search without waiting for a compaction event.
 	// Tool result payloads are intentionally excluded; only tool names are
 	// recorded so that entries stay small and signal-rich.
-	if rt.memStore == nil || peerID == "" {
+	if suppressed || rt.memStore == nil || peerID == "" {
 		return
 	}
-	chunk := buildTurnMemoryChunk(userMsgs, workingMessages, assistantText)
+	chunk := buildTurnMemoryChunk(transcript, workingMessages, assistantText)
 	if chunk == "" {
 		return
 	}
 	if err := rt.memStore.Insert(context.Background(), peerID, redact.String(chunk)); err != nil {
 		slog.Warn("agent: long-term memory insert failed", "peer", peerID, "err", err)
 	}
+}
+
+func (rt *Runtime) normalizeSessionKey(sessionKey string) string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return ""
+	}
+	if strings.Contains(sessionKey, "::") {
+		return sessionKey
+	}
+	return sessionKey + "::main"
+}
+
+func (rt *Runtime) sessionPolicy(sessionKey string) session.SessionPolicy {
+	policy := rt.store.Policy(sessionKey)
+	if policy != (session.SessionPolicy{}) {
+		return policy
+	}
+	normalized := rt.normalizeSessionKey(sessionKey)
+	if normalized != sessionKey {
+		return rt.store.Policy(normalized)
+	}
+	if idx := strings.Index(sessionKey, "::"); idx > 0 {
+		return rt.store.Policy(sessionKey[:idx])
+	}
+	return policy
 }
 
 // buildTurnMemoryChunk formats a completed agent turn as a compact memory
@@ -836,6 +1051,11 @@ func parseToolCall(text string) (*ToolCall, bool, error) {
 }
 
 func formatToolResult(name string, result any, err error) string {
+	encoded := formatToolResultBody(result, err)
+	return fmt.Sprintf("[tool_result %s]\n%s", name, encoded)
+}
+
+func formatToolResultBody(result any, err error) string {
 	body := map[string]any{"ok": err == nil}
 	if err != nil {
 		body["error"] = map[string]any{"message": redact.Error(err)}
@@ -844,9 +1064,9 @@ func formatToolResult(name string, result any, err error) string {
 	}
 	encoded, marshalErr := json.Marshal(body)
 	if marshalErr != nil {
-		return fmt.Sprintf("[tool_result %s]\n{\"ok\":false,\"error\":{\"message\":%q}}", name, redact.String(marshalErr.Error()))
+		return fmt.Sprintf("{\"ok\":false,\"error\":{\"message\":%q}}", redact.String(marshalErr.Error()))
 	}
-	return fmt.Sprintf("[tool_result %s]\n%s", name, encoded)
+	return string(encoded)
 }
 
 func nativeToolCalls(resp *types.ChatResponse) []ToolCall {
@@ -879,6 +1099,71 @@ func normalizeToolName(exec ToolExecutor, peerID, name string) string {
 	return norm.NormalizeToolName(peerID, name)
 }
 
+func providerCapabilitiesFor(prov Provider, model string) types.ProviderCapabilities {
+	if caps, ok := prov.(providerCapabilities); ok {
+		return caps.Capabilities(model)
+	}
+	return types.ProviderCapabilities{}
+}
+
+func suppressSilentReply(assistantText string, resp *types.ChatResponse) (string, *types.ChatResponse, bool, string) {
+	if resp != nil && len(resp.Choices) > 0 && len(resp.Choices[0].Message.ToolCalls) > 0 {
+		return assistantText, resp, false, ""
+	}
+	suppressed, token := DetectSilentReply(assistantText)
+	if !suppressed {
+		return assistantText, resp, false, ""
+	}
+	assistantText = ""
+	if resp != nil && len(resp.Choices) > 0 {
+		resp = cloneResponse(resp)
+		resp.Choices[0].Message.Content = ""
+	}
+	return assistantText, resp, true, token
+}
+
+func cloneResponse(resp *types.ChatResponse) *types.ChatResponse {
+	if resp == nil {
+		return nil
+	}
+	cp := *resp
+	if len(resp.Choices) > 0 {
+		cp.Choices = append([]types.ChatChoice(nil), resp.Choices...)
+	}
+	return &cp
+}
+
+func summarizeToolJSON(raw json.RawMessage) string {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return "{}"
+	}
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err == nil {
+		switch value := decoded.(type) {
+		case map[string]any:
+			if len(value) == 0 {
+				return "{}"
+			}
+		}
+		if out, err := json.Marshal(redact.Value(decoded)); err == nil {
+			return truncateSummary(string(out), 320)
+		}
+	}
+	return truncateSummary(redact.String(string(raw)), 320)
+}
+
+func summarizeToolResult(result any, err error) string {
+	return truncateSummary(formatToolResultBody(result, err), 480)
+}
+
+func truncateSummary(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit-3] + "..."
+}
+
 func (rt *Runtime) emitEvent(result *Result, sink func(Event), ev Event) {
 	result.Events = append(result.Events, ev)
 	if sink != nil {
@@ -902,10 +1187,13 @@ func errString(err error) string {
 
 // captureResponseWriter buffers SSE output for retryable streaming calls.
 type captureResponseWriter struct {
-	header http.Header
-	status int
-	buf    bytes.Buffer
-	mu     sync.Mutex
+	header      http.Header
+	status      int
+	buf         bytes.Buffer
+	mu          sync.Mutex
+	downstream  http.ResponseWriter
+	headersSent bool
+	liveEmitted bool
 }
 
 func (w *captureResponseWriter) Header() http.Header {
@@ -916,15 +1204,39 @@ func (w *captureResponseWriter) WriteHeader(statusCode int) {
 	if w.status == 0 {
 		w.status = statusCode
 	}
+	if w.downstream != nil && !w.headersSent {
+		copyHeaders(w.downstream.Header(), w.header)
+		w.downstream.WriteHeader(statusCode)
+		w.headersSent = true
+	}
 }
 
 func (w *captureResponseWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.buf.Write(p)
+	if _, err := w.buf.Write(p); err != nil {
+		return 0, err
+	}
+	if w.downstream != nil {
+		if !w.headersSent {
+			copyHeaders(w.downstream.Header(), w.header)
+			w.headersSent = true
+		}
+		if _, err := w.downstream.Write(p); err != nil {
+			return 0, err
+		}
+		if len(p) > 0 {
+			w.liveEmitted = true
+		}
+	}
+	return len(p), nil
 }
 
-func (w *captureResponseWriter) Flush() {}
+func (w *captureResponseWriter) Flush() {
+	if flusher, ok := w.downstream.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
 
 func (w *captureResponseWriter) reset() {
 	w.mu.Lock()
@@ -932,19 +1244,21 @@ func (w *captureResponseWriter) reset() {
 	w.header = make(http.Header)
 	w.status = 0
 	w.buf.Reset()
+	w.headersSent = false
+	w.liveEmitted = false
 }
 
-func (w *captureResponseWriter) replayTo(dst http.ResponseWriter) {
-	for k, values := range w.header {
+func (w *captureResponseWriter) liveWritten() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.liveEmitted
+}
+
+func copyHeaders(dst, src http.Header) {
+	for k, values := range src {
+		dst.Del(k)
 		for _, value := range values {
-			dst.Header().Add(k, value)
+			dst.Add(k, value)
 		}
-	}
-	if w.status != 0 {
-		dst.WriteHeader(w.status)
-	}
-	_, _ = dst.Write(w.buf.Bytes())
-	if flusher, ok := dst.(http.Flusher); ok {
-		flusher.Flush()
 	}
 }

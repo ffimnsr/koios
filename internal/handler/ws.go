@@ -208,39 +208,41 @@ var wsUpgrader = websocket.Upgrader{
 // One instance serves all peers; all peer-scoped state lives in the session
 // store and the individual sub-system registries.
 type Handler struct {
-	store           *session.Store
-	provider        llmProvider
-	timeout         time.Duration
-	model           string
-	memStore        *memory.Store
-	memTopK         int
-	memInject       bool
-	identityDir     string
-	hbRunner        *heartbeat.Runner
-	hbConfigStore   *heartbeat.ConfigStore
-	hbDefaultEvery  time.Duration
-	standingManager *standing.Manager
-	agentRuntime    *agent.Runtime
-	agentCoord      *agent.Coordinator
-	subRuntime      *subagent.Runtime
-	jobStore        *scheduler.JobStore
-	sched           *scheduler.Scheduler
-	workspaceStore  *workspace.Manager
-	toolPolicy      ToolPolicy
-	execConfig      ExecConfig
-	execApprovals   *execApprovalStore
-	allowedOrigins  []string // empty = allow all
-	hooks           *ops.Manager
-	presence        *presence.Manager
-	messageBus      *eventbus.Bus
-	usageStore      *usage.Store
-	monitor         *monitor.Monitor
-	logLevel        *slog.LevelVar
-	mcpManager      *mcp.Manager
-	workflowRunner  *workflow.Runner
-	orchestrator    *orchestrator.Orchestrator
-	idempotency     *idempotencyStore
-	runLedger       *runledger.Store
+	store                   *session.Store
+	provider                llmProvider
+	timeout                 time.Duration
+	model                   string
+	memStore                *memory.Store
+	memTopK                 int
+	memInject               bool
+	identityDir             string
+	hbRunner                *heartbeat.Runner
+	hbConfigStore           *heartbeat.ConfigStore
+	hbDefaultEvery          time.Duration
+	standingManager         *standing.Manager
+	agentRuntime            *agent.Runtime
+	agentCoord              *agent.Coordinator
+	subRuntime              *subagent.Runtime
+	jobStore                *scheduler.JobStore
+	sched                   *scheduler.Scheduler
+	workspaceStore          *workspace.Manager
+	toolPolicy              ToolPolicy
+	execConfig              ExecConfig
+	codeExecutionConfig     CodeExecutionConfig
+	backgroundProcessConfig BackgroundProcessConfig
+	execApprovals           *execApprovalStore
+	allowedOrigins          []string // empty = allow all
+	hooks                   *ops.Manager
+	presence                *presence.Manager
+	messageBus              *eventbus.Bus
+	usageStore              *usage.Store
+	monitor                 *monitor.Monitor
+	logLevel                *slog.LevelVar
+	mcpManager              *mcp.Manager
+	workflowRunner          *workflow.Runner
+	orchestrator            *orchestrator.Orchestrator
+	idempotency             *idempotencyStore
+	runLedger               *runledger.Store
 
 	// fetchClient is the HTTP client used by the web_fetch tool.  When nil,
 	// a client backed by ssrfSafeTransport() is used.  Override in tests only.
@@ -259,32 +261,40 @@ type Handler struct {
 	// the coordinator.
 	syncRunsMu sync.Mutex
 	syncRuns   map[string]context.CancelFunc
-	clientsMu  sync.RWMutex
-	clients    map[*wsConn]struct{}
+	// codeExecutionRunsMu guards codeExecutionRuns, which maps an async
+	// code_execution run ID to its active cancel function.
+	codeExecutionRunsMu   sync.Mutex
+	codeExecutionRuns     map[string]context.CancelFunc
+	backgroundProcessesMu sync.Mutex
+	backgroundProcesses   map[string]*managedBackgroundProcess
+	clientsMu             sync.RWMutex
+	clients               map[*wsConn]struct{}
 }
 
 // HandlerOptions holds all optional subsystem references.
 type HandlerOptions struct {
-	Model           string
-	Timeout         time.Duration
-	MemStore        *memory.Store
-	MemTopK         int
-	MemInject       bool
-	HBRunner        *heartbeat.Runner
-	HBConfigStore   *heartbeat.ConfigStore
-	HBDefaultEvery  time.Duration
-	StandingManager *standing.Manager
-	AgentRuntime    *agent.Runtime
-	AgentCoord      *agent.Coordinator
-	SubRuntime      *subagent.Runtime
-	JobStore        *scheduler.JobStore
-	Sched           *scheduler.Scheduler
-	WorkspaceStore  *workspace.Manager
-	ToolPolicy      ToolPolicy
-	ExecConfig      ExecConfig
-	Hooks           *ops.Manager
-	Presence        *presence.Manager
-	MessageBus      *eventbus.Bus
+	Model                   string
+	Timeout                 time.Duration
+	MemStore                *memory.Store
+	MemTopK                 int
+	MemInject               bool
+	HBRunner                *heartbeat.Runner
+	HBConfigStore           *heartbeat.ConfigStore
+	HBDefaultEvery          time.Duration
+	StandingManager         *standing.Manager
+	AgentRuntime            *agent.Runtime
+	AgentCoord              *agent.Coordinator
+	SubRuntime              *subagent.Runtime
+	JobStore                *scheduler.JobStore
+	Sched                   *scheduler.Scheduler
+	WorkspaceStore          *workspace.Manager
+	ToolPolicy              ToolPolicy
+	ExecConfig              ExecConfig
+	CodeExecutionConfig     CodeExecutionConfig
+	BackgroundProcessConfig BackgroundProcessConfig
+	Hooks                   *ops.Manager
+	Presence                *presence.Manager
+	MessageBus              *eventbus.Bus
 	// AllowedOrigins, when non-empty, restricts WebSocket upgrades to requests
 	// whose Origin header exactly matches one of the listed values
 	// (case-insensitive).  An empty slice permits all origins.
@@ -325,43 +335,49 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		timeout = 2 * time.Minute
 	}
 	execCfg := normalizeExecConfig(opts.ExecConfig)
+	codeExecCfg := normalizeCodeExecutionConfig(opts.CodeExecutionConfig)
+	processCfg := normalizeBackgroundProcessConfig(opts.BackgroundProcessConfig)
 	h := &Handler{
-		store:           store,
-		provider:        prov,
-		timeout:         timeout,
-		model:           opts.Model,
-		memStore:        opts.MemStore,
-		memTopK:         topK,
-		memInject:       opts.MemInject,
-		identityDir:     opts.WorkspaceRoot,
-		hbRunner:        opts.HBRunner,
-		hbConfigStore:   opts.HBConfigStore,
-		hbDefaultEvery:  opts.HBDefaultEvery,
-		standingManager: opts.StandingManager,
-		agentRuntime:    opts.AgentRuntime,
-		agentCoord:      opts.AgentCoord,
-		subRuntime:      opts.SubRuntime,
-		jobStore:        opts.JobStore,
-		sched:           opts.Sched,
-		workspaceStore:  opts.WorkspaceStore,
-		toolPolicy:      opts.ToolPolicy,
-		execConfig:      execCfg,
-		allowedOrigins:  opts.AllowedOrigins,
-		hooks:           opts.Hooks,
-		presence:        opts.Presence,
-		messageBus:      opts.MessageBus,
-		usageStore:      opts.UsageStore,
-		monitor:         opts.Monitor,
-		logLevel:        opts.LogLevel,
-		mcpManager:      opts.MCPManager,
-		workflowRunner:  opts.WorkflowRunner,
-		orchestrator:    opts.Orchestrator,
-		ownerPeerIDs:    opts.OwnerPeerIDs,
-		runLedger:       opts.RunLedger,
-		syncRuns:        make(map[string]context.CancelFunc),
-		clients:         make(map[*wsConn]struct{}),
-		execApprovals:   newExecApprovalStore(execCfg.ApprovalTTL),
-		idempotency:     newIdempotencyStore(idempotencyTTL),
+		store:                   store,
+		provider:                prov,
+		timeout:                 timeout,
+		model:                   opts.Model,
+		memStore:                opts.MemStore,
+		memTopK:                 topK,
+		memInject:               opts.MemInject,
+		identityDir:             opts.WorkspaceRoot,
+		hbRunner:                opts.HBRunner,
+		hbConfigStore:           opts.HBConfigStore,
+		hbDefaultEvery:          opts.HBDefaultEvery,
+		standingManager:         opts.StandingManager,
+		agentRuntime:            opts.AgentRuntime,
+		agentCoord:              opts.AgentCoord,
+		subRuntime:              opts.SubRuntime,
+		jobStore:                opts.JobStore,
+		sched:                   opts.Sched,
+		workspaceStore:          opts.WorkspaceStore,
+		toolPolicy:              opts.ToolPolicy,
+		execConfig:              execCfg,
+		codeExecutionConfig:     codeExecCfg,
+		backgroundProcessConfig: processCfg,
+		allowedOrigins:          opts.AllowedOrigins,
+		hooks:                   opts.Hooks,
+		presence:                opts.Presence,
+		messageBus:              opts.MessageBus,
+		usageStore:              opts.UsageStore,
+		monitor:                 opts.Monitor,
+		logLevel:                opts.LogLevel,
+		mcpManager:              opts.MCPManager,
+		workflowRunner:          opts.WorkflowRunner,
+		orchestrator:            opts.Orchestrator,
+		ownerPeerIDs:            opts.OwnerPeerIDs,
+		runLedger:               opts.RunLedger,
+		syncRuns:                make(map[string]context.CancelFunc),
+		codeExecutionRuns:       make(map[string]context.CancelFunc),
+		backgroundProcesses:     make(map[string]*managedBackgroundProcess),
+		clients:                 make(map[*wsConn]struct{}),
+		execApprovals:           newExecApprovalStore(execCfg.ApprovalTTL),
+		idempotency:             newIdempotencyStore(idempotencyTTL),
 	}
 	if h.presence != nil {
 		h.presence.Subscribe(func(state presence.State) {
@@ -568,6 +584,7 @@ func (h *Handler) readLoop(ctx context.Context, wsc *wsConn) {
 // after the HTTP server has stopped accepting new connections to ensure a
 // clean shutdown without abandoning mid-flight agent runs.
 func (h *Handler) Drain() {
+	h.stopAllBackgroundProcesses()
 	h.dispatchWG.Wait()
 }
 
@@ -1150,12 +1167,63 @@ type FileAttachment struct {
 }
 
 type chatParams struct {
-	Messages    []types.Message  `json:"messages"`
-	Files       []FileAttachment `json:"files,omitempty"` // vision: attach images to the last user message
-	Stream      bool             `json:"stream,omitempty"`
-	MaxTokens   int              `json:"max_tokens,omitempty"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	TopP        *float64         `json:"top_p,omitempty"`
+	Messages         []types.Message  `json:"messages"`
+	Files            []FileAttachment `json:"files,omitempty"` // vision: attach images to the last user message
+	Stream           bool             `json:"stream,omitempty"`
+	BlockStream      *bool            `json:"block_stream,omitempty"`
+	StreamChunkChars int              `json:"stream_chunk_chars,omitempty"`
+	StreamCoalesceMS int              `json:"stream_coalesce_ms,omitempty"`
+	MaxTokens        int              `json:"max_tokens,omitempty"`
+	Temperature      *float64         `json:"temperature,omitempty"`
+	TopP             *float64         `json:"top_p,omitempty"`
+}
+
+type wsStreamConfig struct {
+	BlockMode      bool
+	ChunkChars     int
+	CoalesceWindow time.Duration
+}
+
+func normalizeWSStreamConfig(cfg wsStreamConfig) wsStreamConfig {
+	if cfg.BlockMode {
+		if cfg.ChunkChars <= 0 {
+			cfg.ChunkChars = 160
+		}
+		if cfg.CoalesceWindow <= 0 {
+			cfg.CoalesceWindow = 75 * time.Millisecond
+		}
+	}
+	if cfg.ChunkChars < 0 {
+		cfg.ChunkChars = 0
+	}
+	if cfg.CoalesceWindow < 0 {
+		cfg.CoalesceWindow = 0
+	}
+	return cfg
+}
+
+func resolveWSStreamConfig(policy session.SessionPolicy, blockOverride *bool, chunkChars, coalesceMS int) (wsStreamConfig, error) {
+	if chunkChars < 0 {
+		return wsStreamConfig{}, fmt.Errorf("stream_chunk_chars must be >= 0")
+	}
+	if coalesceMS < 0 {
+		return wsStreamConfig{}, fmt.Errorf("stream_coalesce_ms must be >= 0")
+	}
+	cfg := wsStreamConfig{
+		BlockMode:      policy.BlockStream,
+		ChunkChars:     policy.StreamChunkChars,
+		CoalesceWindow: time.Duration(policy.StreamCoalesceMS) * time.Millisecond,
+	}
+	if blockOverride != nil {
+		cfg.BlockMode = *blockOverride
+	}
+	if chunkChars > 0 {
+		cfg.ChunkChars = chunkChars
+	}
+	if coalesceMS > 0 {
+		cfg.CoalesceWindow = time.Duration(coalesceMS) * time.Millisecond
+	}
+	return normalizeWSStreamConfig(cfg), nil
 }
 
 func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
@@ -1184,6 +1252,11 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	if h.presence != nil {
 		h.presence.Set(wsc.peerID, "online", false, "chat")
 	}
+	streamCfg, err := resolveWSStreamConfig(h.store.Policy(wsc.peerID), p.BlockStream, p.StreamChunkChars, p.StreamCoalesceMS)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
 	_, turnMessages := splitByRole(p.Messages)
 	history := h.store.Get(wsc.peerID).History()
 	reqCtx, cancel := context.WithTimeout(ctx, h.timeout)
@@ -1204,6 +1277,7 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 		SessionKey:   wsc.peerID,
 		Messages:     p.Messages,
 		Stream:       p.Stream,
+		BlockStream:  streamCfg.BlockMode,
 		MaxSteps:     toolLoopMaxSteps,
 		MaxTokens:    p.MaxTokens,
 		Temperature:  p.Temperature,
@@ -1214,24 +1288,26 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	}
 
 	if p.Stream {
-		sw := newWSStreamWriter(wsc, req.ID)
+		sw := newWSStreamWriter(wsc, req.ID, streamCfg)
 		result, err := h.agentCoord.RunStream(reqCtx, runReq, sw)
+		sw.Close()
 		if err != nil {
 			slog.Error("ws: chat stream", "peer", wsc.peerID, "error", err)
 			wsc.replyErr(req.ID, errCodeServer, "stream error: "+err.Error())
 			return
 		}
-		if !sw.HasDeltas() && result.AssistantText != "" {
+		visibleText, _ := h.userVisibleReply(wsc.peerID, result)
+		if !sw.HasDeltas() && visibleText != "" {
 			wsc.notify("stream.delta", map[string]any{
 				"req_id":  req.ID,
-				"content": result.AssistantText,
+				"content": visibleText,
 			})
 		}
 		h.indexMemory(ctx, wsc.peerID, append(turnMessages, types.Message{Role: "assistant", Content: result.AssistantText}))
 		if h.usageStore != nil {
 			h.usageStore.Add(wsc.peerID, result.Usage)
 		}
-		wsc.reply(req.ID, map[string]any{"assistant_text": result.AssistantText, "usage": result.Usage, "done": true})
+		wsc.reply(req.ID, map[string]any{"assistant_text": visibleText, "usage": result.Usage, "done": true, "suppressed_reply": result.SuppressedReply})
 		return
 	}
 
@@ -1247,7 +1323,8 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 			h.usageStore.Add(wsc.peerID, result.Response.Usage)
 		}
 	}
-	wsc.reply(req.ID, result.Response)
+	_, visibleResp := h.userVisibleReply(wsc.peerID, result)
+	wsc.reply(req.ID, visibleResp)
 }
 
 // indexMemory inserts new conversation turns into the long-term memory store.
@@ -1411,13 +1488,16 @@ func (h *Handler) rpcStandingClear(_ context.Context, wsc *wsConn, req *rpcReque
 // ── agent.run ─────────────────────────────────────────────────────────────────
 
 type agentRunParams struct {
-	Messages   []types.Message `json:"messages"`
-	Scope      string          `json:"scope,omitempty"`
-	SenderID   string          `json:"sender_id,omitempty"`
-	SessionKey string          `json:"session_key,omitempty"`
-	Stream     bool            `json:"stream,omitempty"`
-	MaxSteps   int             `json:"max_steps,omitempty"`
-	Timeout    string          `json:"timeout,omitempty"` // Go duration string, e.g. "30s"
+	Messages         []types.Message `json:"messages"`
+	Scope            string          `json:"scope,omitempty"`
+	SenderID         string          `json:"sender_id,omitempty"`
+	SessionKey       string          `json:"session_key,omitempty"`
+	Stream           bool            `json:"stream,omitempty"`
+	BlockStream      *bool           `json:"block_stream,omitempty"`
+	StreamChunkChars int             `json:"stream_chunk_chars,omitempty"`
+	StreamCoalesceMS int             `json:"stream_coalesce_ms,omitempty"`
+	MaxSteps         int             `json:"max_steps,omitempty"`
+	Timeout          string          `json:"timeout,omitempty"` // Go duration string, e.g. "30s"
 }
 
 func (h *Handler) rpcAgentRun(ctx context.Context, wsc *wsConn, req *rpcRequest) {
@@ -1434,6 +1514,12 @@ func (h *Handler) rpcAgentRun(ctx context.Context, wsc *wsConn, req *rpcRequest)
 	if err != nil {
 		return
 	}
+	streamCfg, err := resolveWSStreamConfig(h.store.Policy(wsc.peerID), p.BlockStream, p.StreamChunkChars, p.StreamCoalesceMS)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	runReq.BlockStream = streamCfg.BlockMode
 
 	// Register a cancellable context so the caller can interrupt this
 	// synchronous run via agent.cancel using the returned run_id.
@@ -1450,23 +1536,28 @@ func (h *Handler) rpcAgentRun(ctx context.Context, wsc *wsConn, req *rpcRequest)
 	}()
 
 	if p.Stream {
-		sw := newWSStreamWriter(wsc, req.ID)
+		sw := newWSStreamWriter(wsc, req.ID, streamCfg)
 		result, err := h.agentCoord.RunStream(runCtx, runReq, sw)
+		sw.Close()
 		if err != nil {
 			slog.Error("ws: agent run stream", "peer", wsc.peerID, "error", err)
 			wsc.replyErr(req.ID, errCodeServer, "agent run failed: "+err.Error())
 			return
 		}
-		if !sw.HasDeltas() && result.AssistantText != "" {
+		visibleText, visibleResp := h.userVisibleReply(wsc.peerID, result)
+		if !sw.HasDeltas() && visibleText != "" {
 			wsc.notify("stream.delta", map[string]any{
 				"req_id":  req.ID,
-				"content": result.AssistantText,
+				"content": visibleText,
 			})
 		}
 		if h.usageStore != nil {
 			h.usageStore.Add(wsc.peerID, result.Usage)
 		}
-		wsc.reply(req.ID, result)
+		visible := *result
+		visible.AssistantText = visibleText
+		visible.Response = visibleResp
+		wsc.reply(req.ID, visible)
 		return
 	}
 
@@ -1479,10 +1570,14 @@ func (h *Handler) rpcAgentRun(ctx context.Context, wsc *wsConn, req *rpcRequest)
 	if h.usageStore != nil {
 		h.usageStore.Add(wsc.peerID, result.Usage)
 	}
+	visibleText, visibleResp := h.userVisibleReply(wsc.peerID, result)
+	visible := *result
+	visible.AssistantText = visibleText
+	visible.Response = visibleResp
 	// Include run_id so the caller can correlate with agent.cancel if needed.
 	wsc.reply(req.ID, map[string]any{
 		"run_id": runID,
-		"result": result,
+		"result": visible,
 	})
 }
 
@@ -1665,6 +1760,7 @@ func (h *Handler) buildAgentRunRequest(wsc *wsConn, reqID json.RawMessage, p age
 		SessionKey:   p.SessionKey,
 		Messages:     p.Messages,
 		Stream:       p.Stream,
+		BlockStream:  p.BlockStream != nil && *p.BlockStream,
 		MaxSteps:     p.MaxSteps,
 		ToolExecutor: h,
 		EventSink: func() func(agent.Event) {
@@ -2488,17 +2584,23 @@ func (h *Handler) rpcHeartbeatWake(_ context.Context, wsc *wsConn, req *rpcReque
 // provider's CompleteStream can write SSE bytes to it.  Each complete SSE data
 // line is forwarded as a stream.delta WebSocket notification.
 type wsStreamWriter struct {
-	wsc    *wsConn
-	reqID  json.RawMessage
-	mu     sync.Mutex
-	buf    bytes.Buffer
-	full   strings.Builder
-	deltas int
-	hdr    http.Header
+	wsc      *wsConn
+	reqID    json.RawMessage
+	config   wsStreamConfig
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	full     strings.Builder
+	hidden   strings.Builder
+	pending  strings.Builder
+	timer    *time.Timer
+	closed   bool
+	deltas   int
+	hdr      http.Header
+	resolved bool
 }
 
-func newWSStreamWriter(wsc *wsConn, reqID json.RawMessage) *wsStreamWriter {
-	return &wsStreamWriter{wsc: wsc, reqID: reqID, hdr: make(http.Header)}
+func newWSStreamWriter(wsc *wsConn, reqID json.RawMessage, config wsStreamConfig) *wsStreamWriter {
+	return &wsStreamWriter{wsc: wsc, reqID: reqID, hdr: make(http.Header), config: normalizeWSStreamConfig(config)}
 }
 
 func (w *wsStreamWriter) Header() http.Header { return w.hdr }
@@ -2544,12 +2646,81 @@ func (w *wsStreamWriter) processLines() {
 			continue
 		}
 		w.full.WriteString(content)
-		w.deltas++
-		w.wsc.notify("stream.delta", map[string]any{
-			"req_id":  w.reqID,
-			"content": content,
-		})
+		if !w.resolved {
+			w.hidden.WriteString(content)
+			if agent.SilentReplyMayContinue(w.hidden.String()) {
+				continue
+			}
+			w.resolved = true
+			content = w.hidden.String()
+			w.hidden.Reset()
+		}
+		if !w.shouldBufferLocked() {
+			w.emitDeltaLocked(content)
+			continue
+		}
+		w.pending.WriteString(content)
+		if w.config.ChunkChars > 0 && w.pending.Len() >= w.config.ChunkChars {
+			w.flushPendingLocked()
+			continue
+		}
+		w.scheduleFlushLocked()
 	}
+}
+
+func (w *wsStreamWriter) shouldBufferLocked() bool {
+	return w.config.BlockMode || w.config.ChunkChars > 0 || w.config.CoalesceWindow > 0
+}
+
+func (w *wsStreamWriter) scheduleFlushLocked() {
+	if w.closed || w.config.CoalesceWindow <= 0 || w.pending.Len() == 0 || w.timer != nil {
+		return
+	}
+	w.timer = time.AfterFunc(w.config.CoalesceWindow, func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.flushPendingLocked()
+	})
+}
+
+func (w *wsStreamWriter) emitDeltaLocked(content string) {
+	if content == "" {
+		return
+	}
+	w.deltas++
+	w.wsc.notify("stream.delta", map[string]any{
+		"req_id":  w.reqID,
+		"content": content,
+	})
+}
+
+func (w *wsStreamWriter) flushPendingLocked() {
+	if w.timer != nil {
+		w.timer.Stop()
+		w.timer = nil
+	}
+	content := w.pending.String()
+	w.pending.Reset()
+	w.emitDeltaLocked(content)
+}
+
+func (w *wsStreamWriter) Close() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.closed = true
+	if !w.resolved {
+		buffered := w.hidden.String()
+		w.hidden.Reset()
+		w.resolved = true
+		if suppressed, _ := agent.DetectSilentReply(buffered); !suppressed {
+			if !w.shouldBufferLocked() {
+				w.emitDeltaLocked(buffered)
+			} else {
+				w.pending.WriteString(buffered)
+			}
+		}
+	}
+	w.flushPendingLocked()
 }
 
 // AssistantText returns the full assistant text accumulated from stream deltas.
@@ -2563,6 +2734,100 @@ func (w *wsStreamWriter) HasDeltas() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.deltas > 0
+}
+
+func (h *Handler) userVisibleReply(peerID string, result *agent.Result) (string, *types.ChatResponse) {
+	if result == nil {
+		return "", nil
+	}
+	visibleText := result.AssistantText
+	visibleResp := cloneChatResponse(result.Response)
+	if result.SuppressedReply {
+		visibleText = ""
+		if visibleResp != nil && len(visibleResp.Choices) > 0 {
+			visibleResp.Choices[0].Message.Content = ""
+		}
+		return visibleText, visibleResp
+	}
+	policy := h.store.Policy(peerID)
+	if policy.VerboseMode {
+		if summary := h.renderVerboseToolSummary(peerID, result.Events); summary != "" {
+			if strings.TrimSpace(visibleText) == "" {
+				visibleText = summary
+			} else {
+				visibleText = summary + "\n\nReply:\n" + visibleText
+			}
+		}
+	}
+	if visibleResp != nil && len(visibleResp.Choices) > 0 {
+		visibleResp.Choices[0].Message.Content = visibleText
+	}
+	return visibleText, visibleResp
+}
+
+func (h *Handler) renderVerboseToolSummary(peerID string, events []agent.Event) string {
+	if len(events) == 0 {
+		return ""
+	}
+	descriptions := make(map[string]string)
+	for _, tool := range h.ToolDefinitions(peerID) {
+		descriptions[tool.Function.Name] = strings.TrimSpace(tool.Function.Description)
+	}
+	var sb strings.Builder
+	count := 0
+	for i := range events {
+		ev := events[i]
+		if ev.Kind != agent.EventToolCall {
+			continue
+		}
+		count++
+		if count == 1 {
+			sb.WriteString("Tool summary:")
+		}
+		name := ev.ToolName
+		if name == "" {
+			name = ev.Message
+		}
+		fmt.Fprintf(&sb, "\n[%d] %s", count, name)
+		if desc := descriptions[name]; desc != "" {
+			fmt.Fprintf(&sb, "\nDescription: %s", desc)
+		}
+		if strings.TrimSpace(ev.Summary) != "" {
+			fmt.Fprintf(&sb, "\nArguments: %s", ev.Summary)
+		}
+		if result := matchingToolResult(events, i); result != nil && strings.TrimSpace(result.Summary) != "" {
+			fmt.Fprintf(&sb, "\nResult: %s", result.Summary)
+		}
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+func matchingToolResult(events []agent.Event, callIdx int) *agent.Event {
+	call := events[callIdx]
+	for i := callIdx + 1; i < len(events); i++ {
+		ev := events[i]
+		if ev.Step != call.Step {
+			continue
+		}
+		if ev.Kind != agent.EventToolResult {
+			continue
+		}
+		if ev.ToolName == call.ToolName || ev.Message == call.Message {
+			return &events[i]
+		}
+	}
+	return nil
+}
+
+func cloneChatResponse(resp *types.ChatResponse) *types.ChatResponse {
+	if resp == nil {
+		return nil
+	}
+	cp := *resp
+	if len(resp.Choices) > 0 {
+		cp.Choices = append([]types.ChatChoice(nil), resp.Choices...)
+	}
+	return &cp
 }
 
 // ── cron validation helpers ───────────────────────────────────────────────────

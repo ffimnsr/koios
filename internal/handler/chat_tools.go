@@ -695,24 +695,36 @@ var toolDefs = []toolDef{
 	},
 	{
 		name:        "session.patch",
-		description: "Update persisted policy for a session owned by this peer. Supports reply_back and model_override.",
+		description: "Update persisted policy for a session owned by this peer. Supports reply_back, model_override, queue_mode, and streaming controls.",
 		parameters: mustJSONSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"session_key":    map[string]any{"type": "string"},
-				"run_id":         map[string]any{"type": "string"},
-				"reply_back":     map[string]any{"type": "boolean"},
-				"model_override": map[string]any{"type": "string", "description": "Pin this session to a specific model profile name or model ID. Empty string clears the override."},
+				"session_key":        map[string]any{"type": "string"},
+				"run_id":             map[string]any{"type": "string"},
+				"reply_back":         map[string]any{"type": "boolean"},
+				"model_override":     map[string]any{"type": "string", "description": "Pin this session to a specific model profile name or model ID. Empty string clears the override."},
+				"queue_mode":         map[string]any{"type": "string", "enum": []string{"steer", "followup", "collect"}, "description": "How mid-run steering notes are applied."},
+				"block_stream":       map[string]any{"type": "boolean", "description": "When true, streamed output is emitted in larger coalesced blocks."},
+				"stream_chunk_chars": map[string]any{"type": "integer", "minimum": 0, "description": "Preferred streamed chunk size in characters. Zero clears the override."},
+				"stream_coalesce_ms": map[string]any{"type": "integer", "minimum": 0, "description": "How long streamed output may be buffered before a flush. Zero clears the override."},
 			},
 			"anyOf": []map[string]any{
 				{"required": []string{"run_id", "reply_back"}},
 				{"required": []string{"session_key", "reply_back"}},
 				{"required": []string{"run_id", "model_override"}},
 				{"required": []string{"session_key", "model_override"}},
+				{"required": []string{"run_id", "queue_mode"}},
+				{"required": []string{"session_key", "queue_mode"}},
+				{"required": []string{"run_id", "block_stream"}},
+				{"required": []string{"session_key", "block_stream"}},
+				{"required": []string{"run_id", "stream_chunk_chars"}},
+				{"required": []string{"session_key", "stream_chunk_chars"}},
+				{"required": []string{"run_id", "stream_coalesce_ms"}},
+				{"required": []string{"session_key", "stream_coalesce_ms"}},
 			},
 			"additionalProperties": false,
 		}),
-		argHint:   `{"session_key":"peer::sender::alice","reply_back":true,"model_override":"gpt4"}`,
+		argHint:   `{"session_key":"peer::sender::alice","reply_back":true,"model_override":"gpt4","queue_mode":"steer","block_stream":true,"stream_chunk_chars":160,"stream_coalesce_ms":75}`,
 		available: func(h *Handler) bool { return h.agentRuntime != nil && h.agentCoord != nil },
 	},
 	{
@@ -760,6 +772,126 @@ var toolDefs = []toolDef{
 		}),
 		argHint:   `{"command":"go test ./...","workdir":".","timeout_seconds":30}`,
 		available: func(h *Handler) bool { return h.workspaceStore != nil && h.execConfig.Enabled },
+	},
+	{
+		name:        "code_execution",
+		description: "Run a bounded analysis command inside a Bubblewrap sandbox mounted to the peer workspace at /workspace with no network by default.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command":         map[string]any{"type": "string"},
+				"workdir":         map[string]any{"type": "string"},
+				"timeout_seconds": map[string]any{"type": "integer"},
+				"async":           map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"command"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"command":"go test ./...","workdir":".","timeout_seconds":10,"async":true}`,
+		available: func(h *Handler) bool { return h.workspaceStore != nil && h.codeExecutionConfig.Enabled },
+	},
+	{
+		name:        "code_execution.status",
+		description: "Fetch status for an async code_execution run, including the persisted request and result payloads when available.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"run_123"}`,
+		available: func(h *Handler) bool { return h.runLedger != nil && h.codeExecutionConfig.Enabled },
+	},
+	{
+		name:        "code_execution.cancel",
+		description: "Request cancellation of an in-flight async code_execution run.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"run_123"}`,
+		available: func(h *Handler) bool { return h.runLedger != nil && h.codeExecutionConfig.Enabled },
+	},
+	{
+		name:        "process.start",
+		description: "Start a long-running shell command in the peer workspace and keep its stdout/stderr logs available for later inspection.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{"type": "string"},
+				"workdir": map[string]any{"type": "string"},
+			},
+			"required":             []string{"command"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"command":"npm run dev","workdir":"."}`,
+		available: func(h *Handler) bool {
+			return h.workspaceStore != nil && h.runLedger != nil && h.backgroundProcessConfig.Enabled
+		},
+	},
+	{
+		name:        "process.status",
+		description: "Fetch status for one background process run, including its persisted request, result, and log file paths.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"run_123"}`,
+		available: func(h *Handler) bool { return h.runLedger != nil && h.backgroundProcessConfig.Enabled },
+	},
+	{
+		name:        "process.stop",
+		description: "Request graceful termination of an in-flight background process.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"run_123"}`,
+		available: func(h *Handler) bool { return h.runLedger != nil && h.backgroundProcessConfig.Enabled },
+	},
+	{
+		name:        "process.list",
+		description: "List recent background process runs for this peer, newest first.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"limit":20}`,
+		available: func(h *Handler) bool { return h.runLedger != nil && h.backgroundProcessConfig.Enabled },
+	},
+	{
+		name:        "process.logs",
+		description: "Read the current stdout/stderr tail for a background process from its persisted log files.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":        map[string]any{"type": "string"},
+				"max_bytes": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"id":"run_123","max_bytes":4096}`,
+		available: func(h *Handler) bool {
+			return h.runLedger != nil && h.workspaceStore != nil && h.backgroundProcessConfig.Enabled
+		},
 	},
 	{
 		name:        "web_search",
@@ -975,8 +1107,8 @@ var toolDefs = []toolDef{
 		parameters: mustJSONSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id":                  map[string]any{"type": "string"},
-				"group":               map[string]any{"type": "string", "description": "Barrier group name from BarrierGroups; omit to wait on all children."},
+				"id":                   map[string]any{"type": "string"},
+				"group":                map[string]any{"type": "string", "description": "Barrier group name from BarrierGroups; omit to wait on all children."},
 				"wait_timeout_seconds": map[string]any{"type": "integer"},
 			},
 			"required":             []string{"id"},
@@ -1575,16 +1707,20 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		}, nil
 	case "session.patch":
 		var args struct {
-			SessionKey    string  `json:"session_key"`
-			RunID         string  `json:"run_id"`
-			ReplyBack     *bool   `json:"reply_back"`
-			ModelOverride *string `json:"model_override"`
+			SessionKey       string  `json:"session_key"`
+			RunID            string  `json:"run_id"`
+			ReplyBack        *bool   `json:"reply_back"`
+			ModelOverride    *string `json:"model_override"`
+			QueueMode        *string `json:"queue_mode"`
+			BlockStream      *bool   `json:"block_stream"`
+			StreamChunkChars *int    `json:"stream_chunk_chars"`
+			StreamCoalesceMS *int    `json:"stream_coalesce_ms"`
 		}
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		if args.ReplyBack == nil && args.ModelOverride == nil {
-			return nil, fmt.Errorf("at least one of reply_back or model_override is required")
+		if args.ReplyBack == nil && args.ModelOverride == nil && args.QueueMode == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
+			return nil, fmt.Errorf("at least one policy field is required")
 		}
 		targetSessionKey := strings.TrimSpace(args.SessionKey)
 		var rec *subagent.RunRecord
@@ -1610,6 +1746,24 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		if args.ModelOverride != nil {
 			policy.ModelOverride = strings.TrimSpace(*args.ModelOverride)
 		}
+		if args.QueueMode != nil {
+			policy.QueueMode = agent.NormalizeQueueMode(*args.QueueMode)
+		}
+		if args.BlockStream != nil {
+			policy.BlockStream = *args.BlockStream
+		}
+		if args.StreamChunkChars != nil {
+			if *args.StreamChunkChars < 0 {
+				return nil, fmt.Errorf("stream_chunk_chars must be >= 0")
+			}
+			policy.StreamChunkChars = *args.StreamChunkChars
+		}
+		if args.StreamCoalesceMS != nil {
+			if *args.StreamCoalesceMS < 0 {
+				return nil, fmt.Errorf("stream_coalesce_ms must be >= 0")
+			}
+			policy.StreamCoalesceMS = *args.StreamCoalesceMS
+		}
 		if err := h.store.SetPolicy(targetSessionKey, policy); err != nil {
 			return nil, err
 		}
@@ -1627,6 +1781,18 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		}
 		if args.ModelOverride != nil {
 			result["model_override"] = policy.ModelOverride
+		}
+		if args.QueueMode != nil {
+			result["queue_mode"] = policy.QueueMode
+		}
+		if args.BlockStream != nil {
+			result["block_stream"] = policy.BlockStream
+		}
+		if args.StreamChunkChars != nil {
+			result["stream_chunk_chars"] = policy.StreamChunkChars
+		}
+		if args.StreamCoalesceMS != nil {
+			result["stream_coalesce_ms"] = policy.StreamCoalesceMS
 		}
 		return result, nil
 	case "system.notify":
@@ -1696,6 +1862,12 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.runExecTool(ctx, peerID, args)
+	case "code_execution":
+		var args codeExecutionParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runCodeExecutionTool(ctx, peerID, args)
 	case "web_search":
 		var args webSearchParams
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
@@ -1873,6 +2045,52 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		return h.orchestratorBarrier(ctx, peerID, args.ID, args.Group, args.WaitTimeoutSeconds)
 	case "orchestrator.runs":
 		return h.orchestratorRuns(peerID)
+	case "code_execution.status":
+		var args codeExecutionRunParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.codeExecutionStatus(peerID, args.ID)
+	case "code_execution.cancel":
+		var args codeExecutionRunParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.codeExecutionCancel(peerID, args.ID)
+	case "process.start":
+		var args backgroundProcessStartParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.startBackgroundProcess(ctx, peerID, args)
+	case "process.status":
+		var args backgroundProcessRunParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.backgroundProcessStatus(peerID, args.ID)
+	case "process.stop":
+		var args backgroundProcessRunParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.stopBackgroundProcess(peerID, args.ID)
+	case "process.list":
+		var args struct {
+			Limit int `json:"limit"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		return h.listBackgroundProcesses(peerID, args.Limit)
+	case "process.logs":
+		var args backgroundProcessLogsParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.backgroundProcessLogs(peerID, args.ID, args.MaxBytes)
 	default:
 		// Dispatch to MCP manager for mcp__{server}__{tool} style names.
 		if h.mcpManager != nil {

@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+# atlas-hook start
+
+# Installed by atlas. Remove these lines to disable atlas graph updates.
+if command -v atlas >/dev/null 2>&1; then
+    atlas update || true
+    atlas detect-changes || true
+fi
+
+echo "[pre-commit] checking gofmt"
+go_files=$(git ls-files '*.go')
+if [ -n "$go_files" ]; then
+    unformatted=$(gofmt -l $go_files)
+    if [ -n "$unformatted" ]; then
+        echo "[pre-commit] gofmt required for:"
+        echo "$unformatted"
+        echo "[pre-commit] run: gofmt -w $unformatted"
+        exit 1
+    fi
+fi
+
+echo "[pre-commit] running go test ./..."
+go test ./...
+
+echo "[pre-commit] complete"
+# atlas-hook end

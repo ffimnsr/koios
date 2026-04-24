@@ -1,4 +1,11 @@
 tasks:
+  install:
+    commands:
+      - command: |
+          test -d ~/.local/bin || mkdir -p ~/.local/bin
+          go build -o ~/.local/bin/koios .
+          echo "Koios installed to ~/.local/bin/koios"
+    description: Install the application in the local bin directory
   dev:
     commands:
       - command: go run .
@@ -8,3 +15,28 @@ tasks:
     commands:
       - command: go fmt ./...
     description: Format the code using go fmt
+  test:
+    commands:
+      - command: go test ./...
+    description: Run all tests
+  install-githooks:
+    commands:
+      - command: |
+          test -d .git/hooks && rm -rf .git/hooks
+          ln -sf .githooks .git/hooks
+          echo "Git hooks installed from .githooks directory"
+    description: Install git hooks from the .githooks directory
+  uninstall-githooks:
+    commands:
+      - command: |
+          rm -rf .git/hooks
+          echo "Git hooks uninstalled by removing the .git/hooks directory"
+    description: Uninstall git hooks by removing the .git/hooks directory
+  lf:
+    commands:
+      - |
+        git ls-files -z --cached --others --exclude-standard \
+        | xargs -0 -I{} sh -c '[ -f "{}" ] && wc -l "{}"' \
+        | awk '$1 > 1000' \
+        | sort -nr
+    description: Check for files with more than 1000 LOC.

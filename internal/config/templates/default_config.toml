@@ -85,6 +85,25 @@ profile = "full"
 allow = []
 deny = []
 
+[tools.code_execution]
+enabled = false
+network_enabled = false
+default_timeout = "10s"
+max_timeout = "30s"
+max_stdout_bytes = 65536
+max_stderr_bytes = 65536
+max_artifact_bytes = 1048576
+max_open_files = 64
+max_processes = 32
+cpu_seconds = 10
+memory_bytes = 268435456
+
+[tools.process]
+enabled = false
+stop_timeout = "5s"
+log_tail_bytes = 65536
+max_processes_per_peer = 8
+
 [tools.exec]
 enabled = true
 enable_deny_patterns = true

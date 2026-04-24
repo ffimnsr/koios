@@ -42,6 +42,9 @@ type SessionPolicy struct {
 	// (profile name or raw model ID). The agent runtime applies it before
 	// each turn.
 	ModelOverride string `json:"model_override,omitempty"`
+	// QueueMode controls how mid-run steering notes are applied.
+	// Valid values: steer | followup | collect
+	QueueMode string `json:"queue_mode,omitempty"`
 	// ThinkLevel controls the reasoning budget sent to the model.
 	// Valid values: off | minimal | low | medium | high | xhigh
 	ThinkLevel string `json:"think_level,omitempty"`
@@ -49,6 +52,15 @@ type SessionPolicy struct {
 	VerboseMode bool `json:"verbose_mode,omitempty"`
 	// TraceMode, when true, emits per-step debug trace events.
 	TraceMode bool `json:"trace_mode,omitempty"`
+	// BlockStream switches streamed delivery from token-like deltas to larger
+	// coalesced blocks.
+	BlockStream bool `json:"block_stream,omitempty"`
+	// StreamChunkChars controls the preferred emitted chunk size for streamed
+	// output. Zero selects the transport default.
+	StreamChunkChars int `json:"stream_chunk_chars,omitempty"`
+	// StreamCoalesceMS controls how long streamed output may be buffered before
+	// it is flushed to the client as a coalesced chunk.
+	StreamCoalesceMS int `json:"stream_coalesce_ms,omitempty"`
 }
 
 // Session holds the conversation history for a single peer.
@@ -64,6 +76,29 @@ type AppendEvent struct {
 	PeerID   string          `json:"peer_id"`
 	Source   string          `json:"source,omitempty"`
 	Messages []types.Message `json:"messages"`
+}
+
+// CompactionStatus describes whether a session can currently be compacted and
+// how many messages would be summarized vs retained.
+type CompactionStatus struct {
+	Enabled            bool   `json:"enabled"`
+	MemoryFlushEnabled bool   `json:"memory_flush_enabled"`
+	SessionMessages    int    `json:"session_messages"`
+	Reserve            int    `json:"reserve"`
+	CompactedMessages  int    `json:"compacted_messages"`
+	KeptMessages       int    `json:"kept_messages"`
+	Eligible           bool   `json:"eligible"`
+	Reason             string `json:"reason,omitempty"`
+}
+
+// CompactionReport captures the outcome of one compaction attempt.
+type CompactionReport struct {
+	Status           CompactionStatus `json:"status"`
+	Compacted        bool             `json:"compacted"`
+	MemoryFlushed    bool             `json:"memory_flushed"`
+	MemoryFlushError string           `json:"memory_flush_error,omitempty"`
+	SummaryChars     int              `json:"summary_chars"`
+	Error            string           `json:"error,omitempty"`
 }
 
 // History returns a snapshot copy of the session's message slice.
@@ -87,7 +122,7 @@ func (s *Session) appendMsgs(ctx context.Context, peerID string, maxMsgs, compac
 
 	// Compaction path: LLM summarises old turns when threshold is reached.
 	if compactor != nil && compactThreshold > 0 && len(s.Messages) >= compactThreshold {
-		if ok := s.compact(ctx, peerID, compactor, flusher, hooks, compactReserve); ok {
+		if report := s.compact(ctx, peerID, compactor, flusher, hooks, compactReserve); report.Compacted {
 			return // compact called rewriteFile; nothing more to do
 		}
 		// Compaction failed — fall through to naive pruning + file append.
@@ -116,14 +151,16 @@ func (s *Session) appendMsgs(ctx context.Context, peerID string, maxMsgs, compac
 	s.writeEntries(entries)
 }
 
-// compact calls the Compactor to summarise old messages, updates s.Messages,
-// and rewrites the session file. Returns true on success.
+// compact flushes the soon-to-be-compacted transcript to memory, calls the
+// Compactor to summarise old messages, updates s.Messages, and rewrites the
+// session file.
 // Must be called with s.mu held.
-func (s *Session) compact(ctx context.Context, peerID string, compactor Compactor, flusher CompactionMemoryFlusher, hooks *ops.Manager, reserve int) bool {
-	if reserve <= 0 || reserve >= len(s.Messages) {
-		reserve = len(s.Messages) / 2
+func (s *Session) compact(ctx context.Context, peerID string, compactor Compactor, flusher CompactionMemoryFlusher, hooks *ops.Manager, reserve int) CompactionReport {
+	report := CompactionReport{Status: buildCompactionStatus(len(s.Messages), reserve, compactor != nil, flusher != nil)}
+	if !report.Status.Eligible || !report.Status.Enabled {
+		return report
 	}
-	splitIdx := len(s.Messages) - reserve
+	splitIdx := report.Status.CompactedMessages
 	toCompact := make([]types.Message, splitIdx)
 	copy(toCompact, s.Messages[:splitIdx])
 	kept := s.Messages[splitIdx:]
@@ -133,23 +170,28 @@ func (s *Session) compact(ctx context.Context, peerID string, compactor Compacto
 			PeerID: peerID,
 			Data: map[string]any{
 				"messages": len(toCompact),
-				"reserve":  reserve,
+				"reserve":  report.Status.Reserve,
 			},
 		}); err != nil {
 			slog.Warn("session compaction hook rejected", "peer", peerID, "err", err)
-			return false
+			report.Error = err.Error()
+			return report
+		}
+	}
+	if flusher != nil {
+		if err := flusher.FlushCompaction(ctx, peerID, toCompact); err != nil {
+			report.MemoryFlushError = err.Error()
+			slog.Warn("session compaction memory flush failed", "peer", peerID, "err", err)
+		} else {
+			report.MemoryFlushed = true
 		}
 	}
 
 	summary, err := compactor.Compact(ctx, toCompact)
 	if err != nil {
 		slog.Warn("session compaction failed, keeping full history", "err", err)
-		return false
-	}
-	if flusher != nil {
-		if err := flusher.FlushCompaction(ctx, peerID, toCompact, summary); err != nil {
-			slog.Warn("session compaction memory flush failed", "peer", peerID, "err", err)
-		}
+		report.Error = err.Error()
+		return report
 	}
 
 	checkpoint := types.Message{
@@ -158,6 +200,8 @@ func (s *Session) compact(ctx context.Context, peerID string, compactor Compacto
 	}
 	s.Messages = append([]types.Message{checkpoint}, kept...)
 	s.rewriteFile()
+	report.Compacted = true
+	report.SummaryChars = len(summary)
 	if hooks != nil {
 		if err := hooks.Emit(ctx, ops.Event{
 			Name:   ops.HookAfterCompaction,
@@ -170,7 +214,43 @@ func (s *Session) compact(ctx context.Context, peerID string, compactor Compacto
 			slog.Warn("session post-compaction hook failed", "peer", peerID, "err", err)
 		}
 	}
-	return true
+	return report
+}
+
+func buildCompactionStatus(totalMessages, reserve int, enabled, memoryFlushEnabled bool) CompactionStatus {
+	status := CompactionStatus{
+		Enabled:            enabled,
+		MemoryFlushEnabled: memoryFlushEnabled,
+		SessionMessages:    totalMessages,
+	}
+	if reserve <= 0 || reserve >= totalMessages {
+		reserve = totalMessages / 2
+		if totalMessages > 1 && reserve <= 0 {
+			reserve = 1
+		}
+	}
+	if reserve < 0 {
+		reserve = 0
+	}
+	status.Reserve = reserve
+	if !enabled {
+		status.Reason = "no compactor configured"
+		return status
+	}
+	if totalMessages == 0 {
+		status.Reason = "session is empty"
+		return status
+	}
+	status.CompactedMessages = totalMessages - reserve
+	if status.CompactedMessages <= 0 {
+		status.CompactedMessages = totalMessages
+	}
+	status.KeptMessages = totalMessages - status.CompactedMessages
+	status.Eligible = status.CompactedMessages > 0
+	if !status.Eligible {
+		status.Reason = "nothing eligible to compact"
+	}
+	return status
 }
 
 // Reset clears all stored messages and truncates the journal file.
@@ -318,8 +398,8 @@ type Options struct {
 	// CompactReserve is the number of most-recent messages kept verbatim after
 	// compaction. Defaults to 20 when a Compactor is set.
 	CompactReserve int
-	// CompactionMemoryFlusher persists summary checkpoints before old history is
-	// replaced during compaction.
+	// CompactionMemoryFlusher persists the soon-to-be-compacted transcript before
+	// old history is replaced during compaction.
 	CompactionMemoryFlusher CompactionMemoryFlusher
 	// Hooks emits lifecycle events around compaction.
 	Hooks *ops.Manager
@@ -364,10 +444,10 @@ type Store struct {
 	nextSubID        uint64
 }
 
-// CompactionMemoryFlusher persists information from the to-be-compacted turns
-// before they are replaced by a summary checkpoint.
+// CompactionMemoryFlusher persists the to-be-compacted turns before they are
+// replaced by a summary checkpoint.
 type CompactionMemoryFlusher interface {
-	FlushCompaction(ctx context.Context, peerID string, messages []types.Message, summary string) error
+	FlushCompaction(ctx context.Context, peerID string, messages []types.Message) error
 }
 
 // MaintenanceReport summarizes store maintenance work.
@@ -804,21 +884,33 @@ func shouldDailyReset(now, lastActivity time.Time, resetMinutes int) bool {
 	return lastActivity.In(loc).Before(cutover)
 }
 
-// CompactNow forces immediate compaction for peerID if a compactor is
-// configured. Returns true if compaction ran successfully.
-func (st *Store) CompactNow(ctx context.Context, peerID string) bool {
-	if st.compactor == nil {
-		return false
-	}
-	st.mu.Lock()
-	sess := st.peers[peerID]
-	st.mu.Unlock()
-	if sess == nil {
-		return false
-	}
+// CompactionStatus reports whether peerID can currently be compacted and how
+// many messages would be summarized vs retained.
+func (st *Store) CompactionStatus(peerID string) CompactionStatus {
+	st.mu.RLock()
+	compactorEnabled := st.compactor != nil
+	memoryFlushEnabled := st.memoryFlusher != nil
+	reserve := st.compactReserve
+	st.mu.RUnlock()
+	sess := st.Get(peerID)
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	return sess.compact(ctx, peerID, st.compactor, st.memoryFlusher, st.hooks, st.compactReserve)
+	return buildCompactionStatus(len(sess.Messages), reserve, compactorEnabled, memoryFlushEnabled)
+}
+
+// CompactNow forces immediate compaction for peerID if a compactor is
+// configured and the session has something to compact.
+func (st *Store) CompactNow(ctx context.Context, peerID string) CompactionReport {
+	st.mu.RLock()
+	compactor := st.compactor
+	flusher := st.memoryFlusher
+	hooks := st.hooks
+	reserve := st.compactReserve
+	st.mu.RUnlock()
+	sess := st.Get(peerID)
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	return sess.compact(ctx, peerID, compactor, flusher, hooks, reserve)
 }
 
 func (st *Store) deleteSession(peerID string) bool {

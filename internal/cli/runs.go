@@ -63,7 +63,7 @@ func newRunsListCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&peer, "peer", "", "filter to a peer ID")
 	cmd.Flags().StringVar(&conn, "conn-peer", "", "peer ID used to open the ws control connection")
-	cmd.Flags().StringVar(&kind, "kind", "", "filter by kind: agent|subagent|orchestrator|cron")
+	cmd.Flags().StringVar(&kind, "kind", "", "filter by kind: agent|subagent|orchestrator|cron|code_execution|background_process")
 	cmd.Flags().StringVar(&status, "status", "", "filter by status")
 	cmd.Flags().IntVar(&limit, "limit", 100, "maximum records to return")
 	return cmd

@@ -228,9 +228,10 @@ func TestPersistenceReload(t *testing.T) {
 	now := time.Now().UTC()
 	if err := s.Add(runledger.Record{
 		ID:       "persist-1",
-		Kind:     runledger.KindAgent,
+		Kind:     runledger.KindCodeExecution,
 		PeerID:   "alice",
 		Status:   runledger.StatusQueued,
+		Request:  []byte(`{"command":"go test ./...","async":true}`),
 		QueuedAt: now,
 	}); err != nil {
 		t.Fatal(err)
@@ -239,6 +240,7 @@ func TestPersistenceReload(t *testing.T) {
 	if err := s.Update("persist-1", func(r *runledger.Record) {
 		r.Status = runledger.StatusCompleted
 		r.StartedAt = &started
+		r.Result = []byte(`{"status":"completed","exit_code":0}`)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +267,12 @@ func TestPersistenceReload(t *testing.T) {
 	}
 	if got.Status != runledger.StatusCompleted {
 		t.Errorf("reopen: want completed, got %s", got.Status)
+	}
+	if got.Kind != runledger.KindCodeExecution {
+		t.Errorf("reopen: want code_execution kind, got %s", got.Kind)
+	}
+	if string(got.Request) == "" || string(got.Result) == "" {
+		t.Fatalf("reopen: expected request/result payloads, got %#v", got)
 	}
 }
 

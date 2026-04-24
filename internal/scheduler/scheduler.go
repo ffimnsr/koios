@@ -469,6 +469,9 @@ func (s *Scheduler) runAgentTurn(ctx context.Context, job *Job) (string, error) 
 		return "", fmt.Errorf("empty response from provider")
 	}
 	assistantText := resp.Choices[0].Message.Content
+	if suppressed, _ := agent.DetectSilentReply(assistantText); suppressed {
+		return "", nil
+	}
 	s.sessionStore.AppendWithSource(job.PeerID, "cron", types.Message{Role: "assistant", Content: assistantText})
 	return assistantText, nil
 }

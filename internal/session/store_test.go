@@ -176,27 +176,29 @@ func TestStore_PersistenceRedactsSecrets(t *testing.T) {
 
 // stubCompactor is a Compactor that returns a fixed summary for testing.
 type stubCompactor struct {
-	summary string
-	err     error
-	calls   int
+	summary   string
+	err       error
+	calls     int
+	onCompact func()
 }
 
 func (s *stubCompactor) Compact(_ context.Context, _ []types.Message) (string, error) {
 	s.calls++
+	if s.onCompact != nil {
+		s.onCompact()
+	}
 	return s.summary, s.err
 }
 
 type stubMemoryFlusher struct {
 	calls    int
 	peerID   string
-	summary  string
 	messages []types.Message
 }
 
-func (s *stubMemoryFlusher) FlushCompaction(_ context.Context, peerID string, messages []types.Message, summary string) error {
+func (s *stubMemoryFlusher) FlushCompaction(_ context.Context, peerID string, messages []types.Message) error {
 	s.calls++
 	s.peerID = peerID
-	s.summary = summary
 	s.messages = append([]types.Message(nil), messages...)
 	return nil
 }
@@ -271,11 +273,34 @@ func TestStore_CompactionFlushesMemory(t *testing.T) {
 	if flush.calls != 1 {
 		t.Fatalf("expected 1 flush call, got %d", flush.calls)
 	}
-	if flush.peerID != "peer" || flush.summary != "checkpoint" {
+	if flush.peerID != "peer" {
 		t.Fatalf("unexpected flush payload: %#v", flush)
 	}
 	if len(flush.messages) != 3 {
 		t.Fatalf("expected compacted messages to be flushed, got %d", len(flush.messages))
+	}
+}
+
+func TestStore_CompactionFlushesMemoryBeforeCompactor(t *testing.T) {
+	flush := &stubMemoryFlusher{}
+	comp := &stubCompactor{summary: "checkpoint"}
+	comp.onCompact = func() {
+		if flush.calls != 1 {
+			t.Fatalf("expected memory flush before compactor call, got %d flushes", flush.calls)
+		}
+	}
+	st := session.NewWithOptions(session.Options{
+		MaxMessages:             100,
+		CompactThreshold:        4,
+		CompactReserve:          1,
+		Compactor:               comp,
+		CompactionMemoryFlusher: flush,
+	})
+	for i := 0; i < 4; i++ {
+		st.Append("peer", types.Message{Role: "user", Content: fmt.Sprintf("m%d", i)})
+	}
+	if comp.calls != 1 {
+		t.Fatalf("expected 1 compactor call, got %d", comp.calls)
 	}
 }
 

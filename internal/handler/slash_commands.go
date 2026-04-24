@@ -9,7 +9,7 @@ package handler
 //	/trace   [on|off]
 //	/status
 //	/new | /reset
-//	/compact
+//	/compact [status|now]
 //	/restart  (owner-only)
 //
 // When a recognised command is found, handleSlashCommand processes it and
@@ -97,7 +97,7 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 		h.slashReset(wsc, req)
 		return true
 	case "compact":
-		h.slashCompact(ctx, wsc, req)
+		h.slashCompact(ctx, wsc, req, arg)
 		return true
 	case "restart":
 		h.slashRestart(wsc, req)
@@ -214,6 +214,18 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	if policy.TraceMode {
 		sb.WriteString("Trace mode: on\n")
 	}
+	if policy.QueueMode != "" {
+		fmt.Fprintf(&sb, "Queue mode: %s\n", policy.QueueMode)
+	}
+	if policy.BlockStream {
+		sb.WriteString("Block streaming: on\n")
+	}
+	if policy.StreamChunkChars > 0 {
+		fmt.Fprintf(&sb, "Stream chunk chars: %d\n", policy.StreamChunkChars)
+	}
+	if policy.StreamCoalesceMS > 0 {
+		fmt.Fprintf(&sb, "Stream coalesce ms: %d\n", policy.StreamCoalesceMS)
+	}
 
 	if h.usageStore != nil {
 		if u, ok := h.usageStore.Get(wsc.peerID); ok {
@@ -224,11 +236,15 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	}
 
 	b, _ := json.Marshal(map[string]any{
-		"model":             model,
-		"session_messages":  histLen,
-		"think_level":       policy.ThinkLevel,
-		"verbose_mode":      policy.VerboseMode,
-		"trace_mode":        policy.TraceMode,
+		"model":              model,
+		"session_messages":   histLen,
+		"queue_mode":         policy.QueueMode,
+		"think_level":        policy.ThinkLevel,
+		"verbose_mode":       policy.VerboseMode,
+		"trace_mode":         policy.TraceMode,
+		"block_stream":       policy.BlockStream,
+		"stream_chunk_chars": policy.StreamChunkChars,
+		"stream_coalesce_ms": policy.StreamCoalesceMS,
 	})
 	wsc.reply(req.ID, map[string]any{
 		"assistant_text": strings.TrimRight(sb.String(), "\n"),
@@ -246,12 +262,83 @@ func (h *Handler) slashReset(wsc *wsConn, req *rpcRequest) {
 
 // ── /compact ──────────────────────────────────────────────────────────────────
 
-func (h *Handler) slashCompact(ctx context.Context, wsc *wsConn, req *rpcRequest) {
-	if ok := h.store.CompactNow(ctx, wsc.peerID); ok {
-		slashReply(wsc, req, "Session compacted.")
-	} else {
-		slashReply(wsc, req, "Compaction not available (no compactor configured or session is empty).")
+func (h *Handler) slashCompact(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string) {
+	switch arg {
+	case "", "now":
+		report := h.store.CompactNow(ctx, wsc.peerID)
+		wsc.reply(req.ID, map[string]any{
+			"assistant_text": renderCompactionReport(report),
+			"compaction":     report,
+			"done":           true,
+		})
+	case "status":
+		status := h.store.CompactionStatus(wsc.peerID)
+		wsc.reply(req.ID, map[string]any{
+			"assistant_text": renderCompactionStatus(status),
+			"compaction":     status,
+			"done":           true,
+		})
+	default:
+		slashReply(wsc, req, "Usage: /compact [status|now]")
 	}
+}
+
+func renderCompactionStatus(status session.CompactionStatus) string {
+	var sb strings.Builder
+	state := "disabled"
+	if status.Enabled {
+		state = "enabled"
+	}
+	eligible := "no"
+	if status.Eligible {
+		eligible = "yes"
+	}
+	memFlush := "off"
+	if status.MemoryFlushEnabled {
+		memFlush = "on"
+	}
+	fmt.Fprintf(&sb, "Compaction: %s\n", state)
+	fmt.Fprintf(&sb, "Session messages: %d\n", status.SessionMessages)
+	fmt.Fprintf(&sb, "Eligible now: %s\n", eligible)
+	fmt.Fprintf(&sb, "Would compact: %d\n", status.CompactedMessages)
+	fmt.Fprintf(&sb, "Would keep: %d\n", status.KeptMessages)
+	fmt.Fprintf(&sb, "Memory flush before compaction: %s", memFlush)
+	if status.Reason != "" {
+		fmt.Fprintf(&sb, "\nReason: %s", status.Reason)
+	}
+	return sb.String()
+}
+
+func renderCompactionReport(report session.CompactionReport) string {
+	status := report.Status
+	if !status.Enabled || !status.Eligible {
+		return "Compaction not available: " + status.Reason + "."
+	}
+	var lines []string
+	lines = append(lines, "Compaction started.")
+	if status.MemoryFlushEnabled {
+		switch {
+		case report.MemoryFlushed:
+			lines = append(lines, fmt.Sprintf("Memory flush completed for %d messages before compaction.", status.CompactedMessages))
+		case report.MemoryFlushError != "":
+			lines = append(lines, "Memory flush failed: "+report.MemoryFlushError)
+		default:
+			lines = append(lines, "Memory flush skipped.")
+		}
+	} else {
+		lines = append(lines, "Memory flush not configured.")
+	}
+	if report.Compacted {
+		lines = append(lines, fmt.Sprintf("Compaction finished: summarized %d messages and kept %d recent messages.", status.CompactedMessages, status.KeptMessages))
+		if report.SummaryChars > 0 {
+			lines = append(lines, fmt.Sprintf("Summary size: %d chars.", report.SummaryChars))
+		}
+	} else if report.Error != "" {
+		lines = append(lines, "Compaction failed: "+report.Error)
+	} else {
+		lines = append(lines, "Compaction did not run.")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ── /restart ──────────────────────────────────────────────────────────────────

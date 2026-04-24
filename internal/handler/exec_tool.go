@@ -5,14 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/sandbox"
 	"github.com/google/uuid"
 )
 
@@ -106,18 +107,6 @@ func normalizeExecConfig(cfg ExecConfig) ExecConfig {
 		cfg.Enabled = true
 	}
 	return cfg
-}
-
-// bwrapPath is the resolved absolute path to bwrap, or empty if not found.
-// It is resolved once at handler construction time.
-var bwrapPath string
-
-func resolveBwrap() (string, error) {
-	p, err := exec.LookPath("bwrap")
-	if err != nil {
-		return "", fmt.Errorf("bubblewrap (bwrap) is not installed; install it with your package manager (e.g. apt install bubblewrap) and restart koios")
-	}
-	return p, nil
 }
 
 func newExecApprovalStore(ttl time.Duration) *execApprovalStore {
@@ -231,7 +220,7 @@ func (h *Handler) runExecTool(ctx context.Context, peerID string, p execParams) 
 			"approval": approval,
 		}, nil
 	}
-	return h.executeCommand(ctx, command, absWorkdir, timeout)
+	return h.executeCommand(ctx, peerID, command, absWorkdir, timeout)
 }
 
 func (h *Handler) runSystemNotifyTool(ctx context.Context, title, message string) (map[string]any, error) {
@@ -336,7 +325,7 @@ func (h *Handler) executeApprovedExec(ctx context.Context, peerID, approvalID st
 	if err != nil {
 		return nil, err
 	}
-	result, err := h.executeCommand(ctx, item.Command, item.Workdir, time.Duration(item.Timeout)*time.Second)
+	result, err := h.executeCommand(ctx, peerID, item.Command, item.Workdir, time.Duration(item.Timeout)*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -344,14 +333,14 @@ func (h *Handler) executeApprovedExec(ctx context.Context, peerID, approvalID st
 	return result, nil
 }
 
-func (h *Handler) executeCommand(ctx context.Context, command, workdir string, timeout time.Duration) (map[string]any, error) {
+func (h *Handler) executeCommand(ctx context.Context, peerID, command, workdir string, timeout time.Duration) (map[string]any, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var cmd *exec.Cmd
 	if h.execConfig.IsolationEnabled {
 		var err error
-		cmd, err = h.buildIsolatedCommand(runCtx, command, workdir)
+		cmd, err = h.buildIsolatedCommand(runCtx, peerID, command, workdir)
 		if err != nil {
 			return nil, err
 		}
@@ -406,75 +395,43 @@ func (h *Handler) executeCommand(ctx context.Context, command, workdir string, t
 //   - Per-instance temp dir as /tmp
 //
 // Additional paths come from ExecIsolationPaths in the config.
-func (h *Handler) buildIsolatedCommand(ctx context.Context, command, workdir string) (*exec.Cmd, error) {
-	if bwrapPath == "" {
-		var err error
-		bwrapPath, err = resolveBwrap()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Create an isolated temp directory for this execution.
-	tmpDir, err := os.MkdirTemp("", "koios-exec-*")
+func (h *Handler) buildIsolatedCommand(ctx context.Context, peerID, command, workdir string) (*exec.Cmd, error) {
+	workspaceRoot, err := h.workspaceStore.EnsurePeer(peerID)
 	if err != nil {
-		return nil, fmt.Errorf("isolation: creating temp dir: %w", err)
+		return nil, err
 	}
-
-	args := []string{
-		// Unshare IPC namespace.
-		"--unshare-ipc",
-		// New network namespace (no network access by default).
-		"--unshare-net",
-		// Minimal filesystem: proc, tmp, workdir.
-		"--proc", "/proc",
-		"--tmpfs", "/tmp",
-		"--dir", "/workspace",
-		// Bind workdir into /workspace (rw).
-		"--bind", workdir, "/workspace",
-		// Bind temp to a per-run dir so the sandbox can write temp files.
-		"--bind", tmpDir, "/tmp",
+	relWorkdir, err := filepath.Rel(workspaceRoot, workdir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve exec isolation workdir: %w", err)
 	}
-
-	// Standard read-only system paths.
-	for _, dir := range []string{"/usr", "/bin", "/lib", "/lib64", "/sbin"} {
-		if _, err := os.Stat(dir); err == nil {
-			args = append(args, "--ro-bind", dir, dir)
-		}
+	if relWorkdir == "." {
+		relWorkdir = ""
 	}
-	// DNS resolution.
-	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
-		args = append(args, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf")
-	}
-
-	// User-configured expose_paths.
+	mounts := make([]sandbox.BindMount, 0, len(h.execConfig.IsolationPaths))
 	for _, p := range h.execConfig.IsolationPaths {
 		target := p.Target
-		if target == "" {
+		if strings.TrimSpace(target) == "" {
 			target = p.Source
 		}
-		if p.Mode == "rw" {
-			args = append(args, "--bind", p.Source, target)
-		} else {
-			args = append(args, "--ro-bind", p.Source, target)
-		}
+		mounts = append(mounts, sandbox.BindMount{
+			Source:   p.Source,
+			Target:   target,
+			ReadOnly: p.Mode != "rw",
+		})
 	}
-
-	// Set environment variables for the per-instance layout.
-	args = append(args,
-		"--setenv", "HOME", "/tmp",
-		"--setenv", "TMPDIR", "/tmp",
-		"--chdir", "/workspace",
-		// Exec the shell inside the sandbox.
-		"--", "sh", "-lc", command,
-	)
-
-	cmd := exec.CommandContext(ctx, bwrapPath, args...)
-	// Best-effort cleanup of the per-run temp directory once the context ends
-	// (either the command finishes or the timeout fires).
+	cmd, cleanup, err := defaultSandboxRunner.BuildBubblewrapCommand(ctx, sandbox.Request{
+		Command:        command,
+		WorkspaceRoot:  workspaceRoot,
+		Workdir:        relWorkdir,
+		NetworkEnabled: false,
+		ExtraMounts:    mounts,
+	})
+	if err != nil {
+		return nil, err
+	}
 	go func() {
 		<-ctx.Done()
-		_ = os.RemoveAll(tmpDir)
+		cleanup()
 	}()
 	return cmd, nil
 }

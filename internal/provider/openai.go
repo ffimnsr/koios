@@ -18,6 +18,11 @@ type openAIProvider struct {
 	apiKey  string
 	baseURL string
 	model   string
+	hooks   transportHooks
+}
+
+func (p *openAIProvider) Capabilities(string) types.ProviderCapabilities {
+	return p.hooks.capabilities
 }
 
 func (p *openAIProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
@@ -36,8 +41,7 @@ func (p *openAIProvider) Complete(ctx context.Context, req *types.ChatRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	p.hooks.applyHeaders(httpReq, p.apiKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -73,8 +77,7 @@ func (p *openAIProvider) CompleteStream(ctx context.Context, req *types.ChatRequ
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	p.hooks.applyHeaders(httpReq, p.apiKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {

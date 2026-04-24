@@ -14,6 +14,45 @@ import (
 	"github.com/ffimnsr/koios/internal/types"
 )
 
+type transportHooks struct {
+	name         string
+	capabilities types.ProviderCapabilities
+	applyHeaders func(r *http.Request, apiKey string)
+}
+
+func openAICompatibleHooks(name string) transportHooks {
+	return transportHooks{
+		name: name,
+		capabilities: types.ProviderCapabilities{
+			Name:                 name,
+			SupportsStreaming:    true,
+			SupportsNativeTools:  true,
+			OpenAICompatibleWire: true,
+		},
+		applyHeaders: func(r *http.Request, apiKey string) {
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Authorization", "Bearer "+apiKey)
+		},
+	}
+}
+
+func anthropicHooks() transportHooks {
+	return transportHooks{
+		name: "anthropic",
+		capabilities: types.ProviderCapabilities{
+			Name:                "anthropic",
+			SupportsStreaming:   true,
+			SupportsNativeTools: true,
+			RequiresMaxTokens:   true,
+		},
+		applyHeaders: func(r *http.Request, apiKey string) {
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("x-api-key", apiKey)
+			r.Header.Set("anthropic-version", anthropicVersion)
+		},
+	}
+}
+
 // Provider sends chat completion requests to an LLM backend.
 type Provider interface {
 	// Complete sends a non-streaming request and returns the full response.
@@ -40,6 +79,7 @@ func New(cfg *config.Config) (Provider, error) {
 			apiKey:  cfg.APIKey,
 			baseURL: stripV1(base),
 			model:   cfg.Model,
+			hooks:   openAICompatibleHooks("openai"),
 		}, nil
 
 	case "openrouter":
@@ -53,6 +93,7 @@ func New(cfg *config.Config) (Provider, error) {
 			apiKey:  cfg.APIKey,
 			baseURL: stripV1(base),
 			model:   cfg.Model,
+			hooks:   openAICompatibleHooks("openrouter"),
 		}, nil
 
 	case "anthropic":
@@ -65,6 +106,7 @@ func New(cfg *config.Config) (Provider, error) {
 			apiKey:  cfg.APIKey,
 			baseURL: stripV1(base),
 			model:   cfg.Model,
+			hooks:   anthropicHooks(),
 		}, nil
 
 	case "nvidia":
@@ -78,6 +120,7 @@ func New(cfg *config.Config) (Provider, error) {
 			apiKey:  cfg.APIKey,
 			baseURL: stripV1(base),
 			model:   cfg.Model,
+			hooks:   openAICompatibleHooks("nvidia"),
 		}, nil
 
 	default:

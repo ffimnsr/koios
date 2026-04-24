@@ -1,6 +1,7 @@
 package handler_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -31,10 +32,15 @@ func newSlashChatResponse(text string) *types.ChatResponse {
 // callers can inspect or customise behaviour.
 func dialSlashServer(t *testing.T, ownerPeerIDs []string, peerID string) (*websocket.Conn, *session.Store, *stubProvider) {
 	t.Helper()
+	store := session.NewWithOptions(session.Options{MaxMessages: 50})
+	return dialSlashServerWithStore(t, store, ownerPeerIDs, peerID)
+}
+
+func dialSlashServerWithStore(t *testing.T, store *session.Store, ownerPeerIDs []string, peerID string) (*websocket.Conn, *session.Store, *stubProvider) {
+	t.Helper()
 	prov := &stubProvider{
 		response: newSlashChatResponse("LLM reply"),
 	}
-	store := session.NewWithOptions(session.Options{MaxMessages: 50})
 	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
 	coord := agent.NewCoordinator(rt)
 	t.Cleanup(func() { coord.Stop() })
@@ -49,6 +55,23 @@ func dialSlashServer(t *testing.T, ownerPeerIDs []string, peerID string) (*webso
 	t.Cleanup(srv.Close)
 	conn := dialWS(t, srv, peerID)
 	return conn, store, prov
+}
+
+type slashMemoryFlusher struct {
+	calls int
+}
+
+func (f *slashMemoryFlusher) FlushCompaction(_ context.Context, _ string, _ []types.Message) error {
+	f.calls++
+	return nil
+}
+
+type slashStubCompactor struct {
+	summary string
+}
+
+func (c *slashStubCompactor) Compact(_ context.Context, _ []types.Message) (string, error) {
+	return c.summary, nil
 }
 
 // sendSlashChat sends a single-user-message chat RPC and returns the response
@@ -190,6 +213,64 @@ func TestSlashCompact_NoCompactor(t *testing.T) {
 	msg := sendSlashChat(t, conn, "1", "/compact")
 	if !strings.Contains(slashAssistantText(t, msg), "not available") {
 		t.Errorf("expected 'not available', got: %s", slashAssistantText(t, msg))
+	}
+}
+
+func TestSlashCompact_Status(t *testing.T) {
+	comp := &slashStubCompactor{summary: "checkpoint"}
+	flush := &slashMemoryFlusher{}
+	store := session.NewWithOptions(session.Options{
+		MaxMessages:             50,
+		CompactThreshold:        4,
+		CompactReserve:          1,
+		Compactor:               comp,
+		CompactionMemoryFlusher: flush,
+	})
+	store.Append("compact-status", types.Message{Role: "user", Content: "one"})
+	store.Append("compact-status", types.Message{Role: "assistant", Content: "two"})
+	store.Append("compact-status", types.Message{Role: "user", Content: "three"})
+	conn, _, _ := dialSlashServerWithStore(t, store, nil, "compact-status")
+
+	msg := sendSlashChat(t, conn, "1", "/compact status")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(text, "Eligible now: yes") {
+		t.Fatalf("expected eligible compaction status, got: %s", text)
+	}
+	if !strings.Contains(text, "Memory flush before compaction: on") {
+		t.Fatalf("expected memory flush status, got: %s", text)
+	}
+}
+
+func TestSlashCompact_Report(t *testing.T) {
+	comp := &slashStubCompactor{summary: "checkpoint"}
+	flush := &slashMemoryFlusher{}
+	store := session.NewWithOptions(session.Options{
+		MaxMessages:             50,
+		CompactThreshold:        10,
+		CompactReserve:          1,
+		Compactor:               comp,
+		CompactionMemoryFlusher: flush,
+	})
+	store.Append("compact-run",
+		types.Message{Role: "user", Content: "one"},
+		types.Message{Role: "assistant", Content: "two"},
+		types.Message{Role: "user", Content: "three"},
+	)
+	conn, _, _ := dialSlashServerWithStore(t, store, nil, "compact-run")
+
+	msg := sendSlashChat(t, conn, "1", "/compact")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(text, "Compaction started") {
+		t.Fatalf("expected compaction start notice, got: %s", text)
+	}
+	if !strings.Contains(text, "Memory flush completed") {
+		t.Fatalf("expected memory flush notice, got: %s", text)
+	}
+	if !strings.Contains(text, "Compaction finished") {
+		t.Fatalf("expected completion notice, got: %s", text)
+	}
+	if flush.calls != 1 {
+		t.Fatalf("expected one memory flush, got %d", flush.calls)
 	}
 }
 

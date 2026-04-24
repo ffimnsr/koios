@@ -26,6 +26,11 @@ type anthropicProvider struct {
 	apiKey  string
 	baseURL string
 	model   string
+	hooks   transportHooks
+}
+
+func (p *anthropicProvider) Capabilities(string) types.ProviderCapabilities {
+	return p.hooks.capabilities
 }
 
 // — Anthropic request/response types ——————————————————————————————————————————
@@ -374,9 +379,7 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 
 // setHeaders applies the Anthropic-specific authentication and version headers.
 func (p *anthropicProvider) setHeaders(r *http.Request) {
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("x-api-key", p.apiKey)
-	r.Header.Set("anthropic-version", anthropicVersion)
+	p.hooks.applyHeaders(r, p.apiKey)
 }
 
 // isDataURI reports whether s is a base64 data URI (data:<mime>;base64,<data>).

@@ -199,22 +199,22 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Research notes: OpenClaw has the best reference here because queue state, block streaming, and per-channel coalescing are all visible in the runtime and channel layers. PicoClaw exposes some channel-level stream timing and placeholder/typing contracts, but not the same central queue-mode surface. IronClaw has status-stream primitives and queue observability, though less obvious per-channel queue-mode policy.
 	- References: OpenClaw `src/auto-reply/status.ts`, `src/auto-reply/reply/agent-runner-execution.ts`, `extensions/msteams/src/channel.ts`; PicoClaw `docs/channels/wecom/README.md`, `pkg/channels/README.md`; IronClaw `src/channels/channel.rs`, `src/observability/traits.rs`, `src/channels/wasm/wrapper.rs`.
 - [x] Retry policy with configurable count + status code filter
-- [ ] Queue modes such as `steer`, `followup`, and `collect`
+- [x] Queue modes such as `steer`, `followup`, and `collect`
 	- Research notes: OpenClaw already names and ships these queue semantics explicitly, so it should drive Koios terminology unless there is a reason to diverge. PicoClaw has closely related primitives in `Steer`, `InjectFollowUp`, and runtime steering modes, but not the exact same queue taxonomy. IronClaw’s current search results showed message queues and job/status events, not equivalent named interactive queue modes.
 	- References: OpenClaw `src/auto-reply/reply/get-reply-run.ts`, `src/auto-reply/reply/queue/types.ts`, `src/auto-reply/status.test.ts`; PicoClaw `pkg/agent/steering.go`, `docs/steering.md`, `docs/design/steering-spec.md`; IronClaw `tests/e2e_advanced_traces.rs`, `src/observability/traits.rs`.
-- [ ] Mid-run steering while streaming
+- [x] Mid-run steering while streaming
 	- Research notes: OpenClaw already exposes soft steering and redirect flows while a run is active. PicoClaw has a strong underlying steering implementation that distinguishes graceful steering from hard aborts and queued follow-ups. IronClaw did not surface an equivalent mid-stream steering surface in the current search.
 	- References: OpenClaw `ui/src/ui/chat/slash-command-executor.ts`, `src/auto-reply/reply/agent-runner.ts`; PicoClaw `pkg/agent/steering.go`, `docs/steering.md`, `pkg/agent/turn.go`; IronClaw no obvious equivalent found in current repo search.
-- [ ] Block streaming with configurable chunking and coalescing
+- [x] Block streaming with configurable chunking and coalescing
 	- Research notes: OpenClaw has the clearest implementation references for configurable block streaming, break preferences, and per-channel coalescing defaults. PicoClaw has channel-specific streaming constraints and message-length interfaces, but the current search did not surface a unified chunking policy layer. IronClaw has streaming/status events and per-channel wrappers, but not an obvious user-configurable coalescing system.
 	- References: OpenClaw `src/auto-reply/reply/agent-runner-execution.ts`, `extensions/msteams/src/channel.ts`, `src/auto-reply/reply/agent-runner-execution.test.ts`; PicoClaw `pkg/channels/README.md`, `docs/channels/wecom/README.md`; IronClaw `src/channels/repl.rs`, `crates/ironclaw_tui/src/event.rs`.
 - [ ] Session activation modes for group and chat surfaces
 	- Research notes: OpenClaw already separates direct-session behavior from group activation policy, which is the most relevant reference for Koios. PicoClaw has strong route/session concepts in channels, but the current search did not show a comparable named activation policy system. IronClaw also did not surface a direct equivalent in the searched tree.
 	- References: OpenClaw `src/auto-reply/reply/commands-session.ts`, `src/status/status-text.ts`; PicoClaw `pkg/channels/wecom/wecom.go`, `pkg/channels/README.md`; IronClaw no obvious equivalent found in current repo search.
-- [ ] Manual compaction controls from chat
+- [x] Manual compaction controls from chat
 	- Research notes: This is effectively the same parity gap as `/compact`, but worth keeping separately because OpenClaw also exposes compaction status and user notices during the operation. PicoClaw has the engine pieces but not a clearly user-facing chat command in the current search. IronClaw supports explicit compaction on the active thread.
 	- References: OpenClaw `src/auto-reply/reply/commands-compact.ts`, `src/auto-reply/reply/commands-compact.runtime.ts`, `docs/concepts/compaction.md`; PicoClaw `pkg/agent/context_legacy.go`, `pkg/seahorse/short_engine.go`; IronClaw `src/agent/thread_ops.rs`, `src/agent/compaction.rs`.
-- [ ] Memory flush before compaction
+- [x] Memory flush before compaction
 	- Research notes: OpenClaw has an explicit memory-flush-before-compaction concept in config, which is the strongest direct reference. PicoClaw's compaction stack focuses on summarization and threshold management rather than a preflush memory hook. IronClaw leans more toward move-to-workspace or summarize/truncate strategies than a distinct memory-flush phase.
 	- References: OpenClaw `docs/gateway/configuration-reference.md`, `src/config/schema.help.ts`; PicoClaw `pkg/seahorse/short_compaction.go`; IronClaw `src/agent/context_monitor.rs`, `src/agent/CLAUDE.md`.
 - [ ] Server-side compaction strategies where supported by providers
@@ -226,13 +226,13 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Better background task and run ledger
 	- Research notes: OpenClaw already tracks active runs, queue state, and task/status summaries, which is a useful baseline for Koios to exceed. PicoClaw has active turn metadata and heartbeat/subagent patterns, but a weaker user-facing run ledger in the current search. IronClaw has stronger job/status event streams and explicit job lifecycle UI hooks.
 	- References: OpenClaw `src/agents/pi-embedded-runner/runs.ts`, `src/commands/status.types.ts`; PicoClaw `pkg/agent/turn.go`, `docs/vi/configuration.md`; IronClaw `crates/ironclaw_tui/src/event.rs`, `src/channels/channel.rs`, `src/agent/commands.rs`.
-- [ ] `NO_REPLY` and silent token reply suppression semantics
+- [x] `NO_REPLY` and silent token reply suppression semantics
 	- Research notes: OpenClaw uses the exact `NO_REPLY` silent-token pattern in compaction/memory prompts, so it is the direct match for this backlog item. PicoClaw has transport/runtime flags like `SendResponse` and `SuppressToolFeedback`, but the current search did not surface a canonical silent token. IronClaw already exposes `SILENT_REPLY_TOKEN`, making it the strongest secondary reference.
 	- References: OpenClaw `docs/gateway/configuration-reference.md`; PicoClaw `pkg/agent/loop.go`; IronClaw `src/llm/mod.rs`.
-- [ ] Inline verbose tool summaries
+- [x] Inline verbose tool summaries
 	- Research notes: OpenClaw already formats tool descriptions and trace/tool-summary blocks inline in status and reply surfaces. PicoClaw has tool-feedback and internal-only summary patterns, but not the same rich verbose output mode. IronClaw has structured tool start/result/completion and reasoning updates, which is a good event-model reference.
 	- References: OpenClaw `src/auto-reply/status.ts`, `src/auto-reply/reply/agent-runner.ts`, `src/agents/tool-description-summary.js`; PicoClaw `web/backend/api/session.go`, `pkg/agent/loop.go`; IronClaw `src/channels/channel.rs`, `crates/ironclaw_tui/src/event.rs`, `src/channels/repl.rs`.
-- [ ] Better provider-specific transport hooks and runtime compatibility handling
+- [x] Better provider-specific transport hooks and runtime compatibility handling
 	- Research notes: OpenClaw already has a mature provider-compatibility layer around tool schemas, auth modes, model capabilities, and stream resolution, which is the best reference for this item. PicoClaw exposes the same need through provider capability interfaces and OpenAI-compatible normalization. IronClaw’s registry/provider-definition system is the strongest architectural reference if Koios wants a cleaner typed compatibility layer.
 	- References: OpenClaw `src/agents/pi-embedded-runner/compact.ts`, `src/auto-reply/reply/agent-runner.ts`, `src/agents/provider-attribution.ts`; PicoClaw `pkg/providers/types.go`, `pkg/providers/openai_compat/provider.go`; IronClaw `src/llm/registry.rs`, `src/llm/mod.rs`.
 
@@ -257,10 +257,23 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Multi-hunk `apply_patch` tool for agent use
 	- Research notes: OpenClaw has an explicit `apply_patch` tool and sandbox-aware patch file ops, making it the best direct parity reference. PicoClaw does not appear to expose the same multi-hunk patch primitive in the current search. IronClaw also has a dedicated `ApplyPatchTool` with read-before-edit safety checks.
 	- References: OpenClaw `src/agents/apply-patch.ts`, `src/agents/tool-catalog.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/tools/builtin/file.rs`, `tests/e2e_tool_coverage.rs`.
-- [ ] Sandboxed code execution tool for analysis jobs
+- [x] Sandboxed code execution tool for analysis jobs
 	- Research notes: OpenClaw has a dedicated `code_execution` tool plus broader sandboxing docs, which is the strongest reference for analysis-oriented execution. PicoClaw documents workspace sandboxing but not a distinct remote analysis job tool in the current search. IronClaw has the clearest sandbox-job architecture, with Docker-backed jobs and restartable ledgers.
+	- Implementation requirements:
+		- Add a dedicated `code_execution` tool distinct from `exec` and `system.run`; `exec` remains the general shell-command surface, while `code_execution` is for bounded analysis runs.
+		- Create a reusable sandbox/code-execution package instead of keeping Bubblewrap command construction inside `internal/handler/exec_tool.go`.
+		- Run `code_execution` in Bubblewrap by default, with the peer workspace mounted at `/workspace`, an isolated writable `/tmp`, read-only system mounts, and no host home directory.
+		- Harden the Bubblewrap profile with `--die-with-parent`, `--new-session`, explicit namespace isolation, `--clearenv`, and a small explicit environment (`PATH`, `HOME=/tmp`, `TMPDIR=/tmp`).
+		- Keep network disabled by default; expose network access only through explicit config.
+		- Add resource limits: timeout, stdout/stderr byte caps, max artifact/file size, max open files, max process count, CPU seconds, and memory limit.
+		- Add `[tools.code_execution]` config fields in `internal/config/config.go` and config templates; do not use environment variables for runtime config.
+		- Return structured results with status, exit code, stdout, stderr, duration, timeout flag, truncation flags, and generated artifact paths.
+		- For the first implementation, run jobs synchronously with tight limits; add async/restartable ledger-backed jobs only if the feature needs long-running analysis.
+		- If async jobs are added, record them in the unified run ledger with a dedicated run kind such as `code_execution`.
+		- Add tool-policy wiring so `code_execution` can be independently allowed or denied and is included in coding/full profiles only when enabled.
+		- Add tests for workspace confinement, blocked outside reads, writable `/workspace`, network-off behavior, timeout killing, output truncation, missing `bwrap` errors, config validation, and tool exposure policy.
 	- References: OpenClaw `src/agents/tool-catalog.ts`, `docs/gateway/sandboxing.md`; PicoClaw `docs/configuration.md`; IronClaw `src/tools/builtin/job.rs`, `src/channels/web/CLAUDE.md`, `src/sandbox/mod.rs`.
-- [ ] Background process management tool
+- [x] Background process management tool
 	- Research notes: OpenClaw already separates process/runtime tools from filesystem tools. PicoClaw did not surface a comparable dedicated background-process tool in the current search. IronClaw's job subsystem is the strongest comparison point because it handles long-running execution, events, restart, and file inspection.
 	- References: OpenClaw `src/agents/tool-catalog.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/tools/builtin/job.rs`, `src/channels/web/handlers/jobs.rs`.
 - [ ] Rich exec approvals UX and lifecycle
