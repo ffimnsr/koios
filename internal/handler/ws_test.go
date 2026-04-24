@@ -6,18 +6,21 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/subagent"
+	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/workspace"
 	"github.com/gorilla/websocket"
@@ -76,6 +79,51 @@ func newTestServer(t *testing.T, prov *stubProvider) (*httptest.Server, *session
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return srv, store
+}
+
+func newTestServerWithTasks(t *testing.T, prov *stubProvider) (*httptest.Server, *session.Store, *tasks.Store) {
+	t.Helper()
+	store := session.New(10)
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	rt.EnableTasks(taskStore)
+	t.Cleanup(func() { _ = taskStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+		TaskStore:    taskStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv, store, taskStore
+}
+
+func newTestServerWithCalendar(t *testing.T, prov *stubProvider) (*httptest.Server, *session.Store, *calendar.Store) {
+	t.Helper()
+	store := session.New(10)
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	calendarStore, err := calendar.New(filepath.Join(t.TempDir(), "calendar.db"))
+	if err != nil {
+		t.Fatalf("calendar.New: %v", err)
+	}
+	t.Cleanup(func() { _ = calendarStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:         "test-model",
+		Timeout:       5 * time.Second,
+		AgentRuntime:  rt,
+		AgentCoord:    coord,
+		CalendarStore: calendarStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv, store, calendarStore
 }
 
 func dialWS(t *testing.T, srv *httptest.Server, peerID string) *websocket.Conn {
@@ -232,6 +280,155 @@ func TestWS_Ping(t *testing.T) {
 	}
 	if !result["pong"] {
 		t.Fatal("expected pong:true")
+	}
+}
+
+func TestWS_TaskCandidateLifecycle(t *testing.T) {
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	srv, _, taskStore := newTestServerWithTasks(t, prov)
+	conn := dialWS(t, srv, "tasks-quebec")
+
+	sendRPC(t, conn, "1", "task.candidate.extract", map[string]any{
+		"text": "Remember to send the board deck and please book travel.",
+	})
+	msg := readUntilID(t, conn, "1")
+	if msg.Error != nil {
+		t.Fatalf("extract rpc error: %+v", msg.Error)
+	}
+	var extracted struct {
+		Count      int              `json:"count"`
+		Candidates []map[string]any `json:"candidates"`
+	}
+	if err := json.Unmarshal(msg.Result, &extracted); err != nil {
+		t.Fatalf("unmarshal extract result: %v", err)
+	}
+	if extracted.Count != 2 {
+		t.Fatalf("extract count = %d, want 2", extracted.Count)
+	}
+	if len(extracted.Candidates) != 2 {
+		t.Fatalf("extracted candidates = %d, want 2", len(extracted.Candidates))
+	}
+
+	candidates, err := taskStore.ListCandidates(context.Background(), "tasks-quebec", 10, tasks.CandidateStatusPending)
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("stored candidates = %d, want 2", len(candidates))
+	}
+
+	sendRPC(t, conn, "2", "task.candidate.approve", map[string]any{"id": candidates[0].ID})
+	msg = readUntilID(t, conn, "2")
+	if msg.Error != nil {
+		t.Fatalf("approve rpc error: %+v", msg.Error)
+	}
+
+	tasksList, err := taskStore.ListTasks(context.Background(), "tasks-quebec", 10, tasks.TaskStatusOpen)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasksList) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(tasksList))
+	}
+
+	sendRPC(t, conn, "3", "task.complete", map[string]any{"id": tasksList[0].ID})
+	msg = readUntilID(t, conn, "3")
+	if msg.Error != nil {
+		t.Fatalf("complete rpc error: %+v", msg.Error)
+	}
+	loaded, err := taskStore.GetTask(context.Background(), "tasks-quebec", tasksList[0].ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if loaded.Status != tasks.TaskStatusCompleted {
+		t.Fatalf("status = %q, want completed", loaded.Status)
+	}
+}
+
+func TestWS_WaitingLifecycle(t *testing.T) {
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	srv, _, taskStore := newTestServerWithTasks(t, prov)
+	conn := dialWS(t, srv, "waiting-sierra")
+
+	sendRPC(t, conn, "1", "waiting.create", map[string]any{
+		"title":        "Await recruiter confirmation",
+		"waiting_for":  "recruiter",
+		"follow_up_at": time.Now().Add(24 * time.Hour).Unix(),
+	})
+	msg := readUntilID(t, conn, "1")
+	if msg.Error != nil {
+		t.Fatalf("waiting.create error: %+v", msg.Error)
+	}
+
+	items, err := taskStore.ListWaitingOns(context.Background(), "waiting-sierra", 10, tasks.WaitingStatusOpen)
+	if err != nil {
+		t.Fatalf("ListWaitingOns: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("waiting records = %d, want 1", len(items))
+	}
+
+	sendRPC(t, conn, "2", "waiting.resolve", map[string]any{"id": items[0].ID})
+	msg = readUntilID(t, conn, "2")
+	if msg.Error != nil {
+		t.Fatalf("waiting.resolve error: %+v", msg.Error)
+	}
+
+	loaded, err := taskStore.GetWaitingOn(context.Background(), "waiting-sierra", items[0].ID)
+	if err != nil {
+		t.Fatalf("GetWaitingOn: %v", err)
+	}
+	if loaded.Status != tasks.WaitingStatusResolved {
+		t.Fatalf("status = %q, want resolved", loaded.Status)
+	}
+}
+
+func TestWS_CalendarAgendaLifecycle(t *testing.T) {
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	srv, _, calendarStore := newTestServerWithCalendar(t, prov)
+	conn := dialWS(t, srv, "calendar-zulu")
+
+	icsPath := filepath.Join(t.TempDir(), "agenda.ics")
+	ics := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:evt-1\nSUMMARY:Design review\nDTSTART:20260424T090000Z\nDTEND:20260424T100000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+	if err := os.WriteFile(icsPath, []byte(ics), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sendRPC(t, conn, "1", "calendar.source.create", map[string]any{"name": "Work", "path": icsPath})
+	msg := readUntilID(t, conn, "1")
+	if msg.Error != nil {
+		t.Fatalf("calendar.source.create error: %+v", msg.Error)
+	}
+
+	sources, err := calendarStore.ListSources(context.Background(), "calendar-zulu", false)
+	if err != nil {
+		t.Fatalf("ListSources: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("sources = %d, want 1", len(sources))
+	}
+
+	sendRPC(t, conn, "2", "calendar.agenda", map[string]any{"scope": "today", "timezone": "UTC", "now": time.Date(2026, 4, 24, 8, 0, 0, 0, time.UTC).Unix()})
+	msg = readUntilID(t, conn, "2")
+	if msg.Error != nil {
+		t.Fatalf("calendar.agenda error: %+v", msg.Error)
+	}
+	var result struct {
+		Agenda struct {
+			Count  int `json:"count"`
+			Events []struct {
+				Summary string `json:"summary"`
+			} `json:"events"`
+		} `json:"agenda"`
+	}
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
+		t.Fatalf("unmarshal calendar.agenda result: %v", err)
+	}
+	if result.Agenda.Count != 1 {
+		t.Fatalf("agenda count = %d, want 1", result.Agenda.Count)
+	}
+	if len(result.Agenda.Events) != 1 || result.Agenda.Events[0].Summary != "Design review" {
+		t.Fatalf("unexpected agenda events: %#v", result.Agenda.Events)
 	}
 }
 
@@ -618,15 +815,20 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	conn := dialWS(t, srv, "alice")
-	sendRPC(t, conn, "m1", "memory.insert", map[string]any{"content": "remember this"})
+	sendRPC(t, conn, "m1", "memory.insert", map[string]any{
+		"content":         "remember this",
+		"retention_class": "pinned",
+		"exposure_policy": "auto",
+	})
 	msg := readUntilID(t, conn, "m1")
 	if msg.Error != nil {
 		t.Fatalf("memory.insert error: %#v", msg.Error)
 	}
 	var insertRes struct {
 		Chunk struct {
-			ID      string `json:"id"`
-			Content string `json:"content"`
+			ID             string `json:"id"`
+			Content        string `json:"content"`
+			RetentionClass string `json:"retention_class"`
 		} `json:"chunk"`
 	}
 	if err := json.Unmarshal(msg.Result, &insertRes); err != nil {
@@ -634,6 +836,9 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	}
 	if insertRes.Chunk.ID == "" {
 		t.Fatal("expected inserted chunk id")
+	}
+	if insertRes.Chunk.RetentionClass != "pinned" {
+		t.Fatalf("unexpected retention class: %q", insertRes.Chunk.RetentionClass)
 	}
 
 	sendRPC(t, conn, "m2", "memory.get", map[string]any{"id": insertRes.Chunk.ID})
@@ -643,8 +848,9 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	}
 	var getRes struct {
 		Chunk struct {
-			ID      string `json:"id"`
-			Content string `json:"content"`
+			ID             string `json:"id"`
+			Content        string `json:"content"`
+			RetentionClass string `json:"retention_class"`
 		} `json:"chunk"`
 	}
 	if err := json.Unmarshal(msg.Result, &getRes); err != nil {
@@ -652,6 +858,220 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	}
 	if getRes.Chunk.Content != "remember this" {
 		t.Fatalf("unexpected memory chunk content: %q", getRes.Chunk.Content)
+	}
+	if getRes.Chunk.RetentionClass != "pinned" {
+		t.Fatalf("unexpected fetched retention class: %q", getRes.Chunk.RetentionClass)
+	}
+}
+
+func TestWS_MemoryCandidateLifecycleRPC(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:    "test-model",
+		Timeout:  5 * time.Second,
+		MemStore: memStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "c1", "memory.candidate.create", map[string]any{"content": "review this fact"})
+	msg := readUntilID(t, conn, "c1")
+	if msg.Error != nil {
+		t.Fatalf("memory.candidate.create error: %#v", msg.Error)
+	}
+	var createRes struct {
+		Candidate struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"candidate"`
+	}
+	if err := json.Unmarshal(msg.Result, &createRes); err != nil {
+		t.Fatalf("unmarshal memory.candidate.create: %v", err)
+	}
+	if createRes.Candidate.Status != "pending" {
+		t.Fatalf("status = %q, want pending", createRes.Candidate.Status)
+	}
+
+	sendRPC(t, conn, "c2", "memory.candidate.approve", map[string]any{"id": createRes.Candidate.ID})
+	msg = readUntilID(t, conn, "c2")
+	if msg.Error != nil {
+		t.Fatalf("memory.candidate.approve error: %#v", msg.Error)
+	}
+	var approveRes struct {
+		Candidate struct {
+			Status string `json:"status"`
+		} `json:"candidate"`
+		Chunk struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(msg.Result, &approveRes); err != nil {
+		t.Fatalf("unmarshal memory.candidate.approve: %v", err)
+	}
+	if approveRes.Candidate.Status != "approved" {
+		t.Fatalf("candidate status = %q, want approved", approveRes.Candidate.Status)
+	}
+	if approveRes.Chunk.Content != "review this fact" {
+		t.Fatalf("chunk content = %q, want review this fact", approveRes.Chunk.Content)
+	}
+}
+
+func TestWS_MemoryEntityGraphRPC(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:    "test-model",
+		Timeout:  5 * time.Second,
+		MemStore: memStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "e-chunk", "memory.insert", map[string]any{"content": "Borealis trip is blocked on venue approval."})
+	msg := readUntilID(t, conn, "e-chunk")
+	if msg.Error != nil {
+		t.Fatalf("memory.insert error: %#v", msg.Error)
+	}
+	var chunkRes struct {
+		Chunk struct {
+			ID string `json:"id"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(msg.Result, &chunkRes); err != nil {
+		t.Fatalf("unmarshal chunk result: %v", err)
+	}
+
+	sendRPC(t, conn, "e1", "memory.entity.create", map[string]any{"kind": "project", "name": "Borealis Trip", "aliases": []string{"summer trip"}})
+	msg = readUntilID(t, conn, "e1")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.create project error: %#v", msg.Error)
+	}
+	var projectRes struct {
+		Entity struct {
+			ID string `json:"id"`
+		} `json:"entity"`
+	}
+	if err := json.Unmarshal(msg.Result, &projectRes); err != nil {
+		t.Fatalf("unmarshal project entity: %v", err)
+	}
+
+	sendRPC(t, conn, "e2", "memory.entity.create", map[string]any{"kind": "person", "name": "Alice Example"})
+	msg = readUntilID(t, conn, "e2")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.create person error: %#v", msg.Error)
+	}
+	var personRes struct {
+		Entity struct {
+			ID string `json:"id"`
+		} `json:"entity"`
+	}
+	if err := json.Unmarshal(msg.Result, &personRes); err != nil {
+		t.Fatalf("unmarshal person entity: %v", err)
+	}
+
+	sendRPC(t, conn, "e3", "memory.entity.link_chunk", map[string]any{"id": projectRes.Entity.ID, "chunk_id": chunkRes.Chunk.ID})
+	msg = readUntilID(t, conn, "e3")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.link_chunk error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "e4", "memory.entity.relate", map[string]any{"source_id": projectRes.Entity.ID, "target_id": personRes.Entity.ID, "relation": "owned_by", "notes": "Alice is coordinating the trip."})
+	msg = readUntilID(t, conn, "e4")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.relate error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "e5", "memory.entity.get", map[string]any{"id": projectRes.Entity.ID})
+	msg = readUntilID(t, conn, "e5")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.get error: %#v", msg.Error)
+	}
+	var graphRes struct {
+		EntityGraph struct {
+			Entity struct {
+				ID string `json:"id"`
+			} `json:"entity"`
+			LinkedChunks []struct {
+				ID string `json:"id"`
+			} `json:"linked_chunks"`
+			Outgoing []struct {
+				Relation       string `json:"relation"`
+				TargetEntityID string `json:"target_entity_id"`
+			} `json:"outgoing_relationships"`
+		} `json:"entity_graph"`
+	}
+	if err := json.Unmarshal(msg.Result, &graphRes); err != nil {
+		t.Fatalf("unmarshal entity graph result: %v", err)
+	}
+	if graphRes.EntityGraph.Entity.ID != projectRes.Entity.ID {
+		t.Fatalf("unexpected entity id: %#v", graphRes.EntityGraph.Entity)
+	}
+	if len(graphRes.EntityGraph.LinkedChunks) != 1 || graphRes.EntityGraph.LinkedChunks[0].ID != chunkRes.Chunk.ID {
+		t.Fatalf("unexpected linked chunks: %#v", graphRes.EntityGraph.LinkedChunks)
+	}
+	if len(graphRes.EntityGraph.Outgoing) != 1 || graphRes.EntityGraph.Outgoing[0].Relation != "owned_by" || graphRes.EntityGraph.Outgoing[0].TargetEntityID != personRes.Entity.ID {
+		t.Fatalf("unexpected outgoing relationships: %#v", graphRes.EntityGraph.Outgoing)
+	}
+
+	sendRPC(t, conn, "e6", "memory.entity.unlink_chunk", map[string]any{"id": projectRes.Entity.ID, "chunk_id": chunkRes.Chunk.ID})
+	msg = readUntilID(t, conn, "e6")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.unlink_chunk error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "e7", "memory.entity.unrelate", map[string]any{"source_id": projectRes.Entity.ID, "target_id": personRes.Entity.ID, "relation": "owned_by"})
+	msg = readUntilID(t, conn, "e7")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.unrelate error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "e8", "memory.entity.delete", map[string]any{"id": personRes.Entity.ID})
+	msg = readUntilID(t, conn, "e8")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.delete error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "e9", "memory.entity.get", map[string]any{"id": projectRes.Entity.ID})
+	msg = readUntilID(t, conn, "e9")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.get after unlink error: %#v", msg.Error)
+	}
+	var updatedGraphRes struct {
+		EntityGraph struct {
+			Entity struct {
+				ID string `json:"id"`
+			} `json:"entity"`
+			LinkedChunks []struct {
+				ID string `json:"id"`
+			} `json:"linked_chunks"`
+			Outgoing []struct {
+				Relation       string `json:"relation"`
+				TargetEntityID string `json:"target_entity_id"`
+			} `json:"outgoing_relationships"`
+		} `json:"entity_graph"`
+	}
+	if err := json.Unmarshal(msg.Result, &updatedGraphRes); err != nil {
+		t.Fatalf("unmarshal entity graph result after unlink: %v", err)
+	}
+	if len(updatedGraphRes.EntityGraph.LinkedChunks) != 0 {
+		t.Fatalf("unexpected linked chunks after unlink: %#v", updatedGraphRes.EntityGraph.LinkedChunks)
+	}
+	if len(updatedGraphRes.EntityGraph.Outgoing) != 0 {
+		t.Fatalf("unexpected outgoing relationships after unrelate: %#v", updatedGraphRes.EntityGraph.Outgoing)
 	}
 }
 
@@ -937,6 +1357,158 @@ func TestToolDefinitionsIncludeApplyPatch(t *testing.T) {
 	}
 	if !containsString(names, "diff") || !containsString(names, "workspace.diff") {
 		t.Fatalf("expected diff tools, got %#v", names)
+	}
+}
+
+func TestToolDefinitionsMessagingProfileIncludesWaitingTools(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	t.Cleanup(func() { _ = taskStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:     "test-model",
+		Timeout:   5 * time.Second,
+		TaskStore: taskStore,
+		ToolPolicy: handler.ToolPolicy{
+			Profile: "messaging",
+		},
+	})
+	names := []string{}
+	for _, tool := range h.ToolDefinitions("alice") {
+		names = append(names, tool.Function.Name)
+	}
+	if !containsString(names, "waiting.create") || !containsString(names, "waiting.list") || !containsString(names, "waiting.resolve") {
+		t.Fatalf("expected waiting tools in messaging profile, got %#v", names)
+	}
+	if containsString(names, "exec") {
+		t.Fatalf("expected exec to remain excluded from messaging profile, got %#v", names)
+	}
+}
+
+func TestExecuteToolWaitingLifecycle(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	t.Cleanup(func() { _ = taskStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:     "test-model",
+		Timeout:   5 * time.Second,
+		TaskStore: taskStore,
+		ToolPolicy: handler.ToolPolicy{
+			Allow: []string{"waiting.create", "waiting.list", "waiting.resolve"},
+		},
+	})
+
+	createdAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "waiting.create",
+		Arguments: json.RawMessage(`{"title":"Need vendor answer","waiting_for":"vendor","follow_up_at":1735689600}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(waiting.create): %v", err)
+	}
+	raw, _ := json.Marshal(createdAny)
+	var created struct {
+		OK      bool            `json:"ok"`
+		Waiting tasks.WaitingOn `json:"waiting"`
+	}
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatalf("unmarshal waiting.create result: %v", err)
+	}
+	if !created.OK || created.Waiting.ID == "" {
+		t.Fatalf("unexpected waiting.create result: %#v", created)
+	}
+
+	listAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "waiting.list",
+		Arguments: json.RawMessage(`{"status":"open","limit":10}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(waiting.list): %v", err)
+	}
+	raw, _ = json.Marshal(listAny)
+	var listed struct {
+		Count   int               `json:"count"`
+		Waiting []tasks.WaitingOn `json:"waiting"`
+	}
+	if err := json.Unmarshal(raw, &listed); err != nil {
+		t.Fatalf("unmarshal waiting.list result: %v", err)
+	}
+	if listed.Count != 1 || len(listed.Waiting) != 1 {
+		t.Fatalf("unexpected waiting.list result: %#v", listed)
+	}
+
+	resolvedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "waiting.resolve",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"id":%q}`, created.Waiting.ID)),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(waiting.resolve): %v", err)
+	}
+	raw, _ = json.Marshal(resolvedAny)
+	var resolved struct {
+		OK      bool            `json:"ok"`
+		Waiting tasks.WaitingOn `json:"waiting"`
+	}
+	if err := json.Unmarshal(raw, &resolved); err != nil {
+		t.Fatalf("unmarshal waiting.resolve result: %v", err)
+	}
+	if !resolved.OK || resolved.Waiting.Status != tasks.WaitingStatusResolved {
+		t.Fatalf("unexpected waiting.resolve result: %#v", resolved)
+	}
+}
+
+func TestExecuteToolCalendarAgenda(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	calendarStore, err := calendar.New(filepath.Join(t.TempDir(), "calendar.db"))
+	if err != nil {
+		t.Fatalf("calendar.New: %v", err)
+	}
+	t.Cleanup(func() { _ = calendarStore.Close() })
+	icsPath := filepath.Join(t.TempDir(), "calendar.ics")
+	ics := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:evt-1\nSUMMARY:Focus block\nDTSTART:20260424T130000Z\nDTEND:20260424T140000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+	if err := os.WriteFile(icsPath, []byte(ics), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := calendarStore.CreateSource(context.Background(), "alice", calendar.SourceInput{Name: "Work", Path: icsPath}); err != nil {
+		t.Fatalf("CreateSource: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:         "test-model",
+		Timeout:       5 * time.Second,
+		CalendarStore: calendarStore,
+		ToolPolicy: handler.ToolPolicy{
+			Allow: []string{"calendar.agenda"},
+		},
+	})
+
+	resultAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "calendar.agenda",
+		Arguments: json.RawMessage(`{"scope":"today","timezone":"UTC","now":1777017600}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(calendar.agenda): %v", err)
+	}
+	raw, _ := json.Marshal(resultAny)
+	var result struct {
+		Agenda struct {
+			Count  int `json:"count"`
+			Events []struct {
+				Summary string `json:"summary"`
+			} `json:"events"`
+		} `json:"agenda"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal calendar.agenda result: %v", err)
+	}
+	if result.Agenda.Count != 1 || len(result.Agenda.Events) != 1 || result.Agenda.Events[0].Summary != "Focus block" {
+		t.Fatalf("unexpected calendar.agenda result: %#v", result)
 	}
 }
 
@@ -1342,6 +1914,50 @@ func TestExecuteTool_SessionSendCrossSessionReplyBack(t *testing.T) {
 	}
 	if !store.Policy("alice::sender::bob").ReplyBack {
 		t.Fatal("expected reply_back policy to persist on target session")
+	}
+}
+
+func TestExecuteTool_BriefGenerate(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{response: &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	defer memStore.Close()
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	defer taskStore.Close()
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	defer coord.Stop()
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{Model: "test-model", Timeout: 5 * time.Second, AgentRuntime: rt, AgentCoord: coord, MemStore: memStore, TaskStore: taskStore})
+	store.Append("alice", types.Message{Role: "user", Content: "We need to close the loop with finance."})
+	if _, err := memStore.QueueCandidate(context.Background(), "alice", "Remember to keep summaries concise", memory.ChunkOptions{}); err != nil {
+		t.Fatalf("QueueCandidate: %v", err)
+	}
+
+	resultAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{Name: "brief.generate", Arguments: json.RawMessage(`{"kind":"daily","timezone":"UTC"}`)})
+	if err != nil {
+		t.Fatalf("ExecuteTool(brief.generate): %v", err)
+	}
+	raw, _ := json.Marshal(resultAny)
+	var result struct {
+		Text   string `json:"text"`
+		Report struct {
+			Kind string `json:"kind"`
+		} `json:"report"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal brief.generate result: %v", err)
+	}
+	if result.Report.Kind != "daily" {
+		t.Fatalf("unexpected brief kind: %#v", result.Report.Kind)
+	}
+	if !strings.Contains(result.Text, "Daily brief") {
+		t.Fatalf("expected rendered brief text, got: %s", result.Text)
 	}
 }
 
@@ -1751,6 +2367,81 @@ func TestWS_AgentRun_InjectsMemory(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected memory-injected system message, got %#v", last.Messages)
+	}
+}
+
+func TestWS_Chat_AutoQueuesMemoryCandidates(t *testing.T) {
+	store := session.New(10)
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, "reviewed memory candidates") {
+				return &types.ChatResponse{
+					Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: `{"candidates":[{"content":"User prefers concise release summaries.","category":"preferences","tags":["style"],"retention_class":"pinned"}]}`}}},
+				}, nil
+			}
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "Understood."}}},
+			}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.EnableMemory(memStore, false, 3)
+	coord := agent.NewCoordinator(rt)
+
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		MemStore:     memStore,
+		MemTopK:      3,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "memory-chat")
+	sendRPC(t, conn, "mc1", "chat", map[string]any{
+		"messages": []types.Message{{Role: "user", Content: "Remember that I prefer concise release summaries in status updates."}},
+	})
+	msg := readUntilID(t, conn, "mc1")
+	if msg.Error != nil {
+		t.Fatalf("unexpected error: %#v", msg.Error)
+	}
+
+	candidates, err := memStore.ListCandidates(context.Background(), "memory-chat", 10, memory.CandidateStatusPending)
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("pending candidates = %d, want 1", len(candidates))
+	}
+	if candidates[0].Content != "User prefers concise release summaries." {
+		t.Fatalf("candidate content = %q", candidates[0].Content)
+	}
+	if candidates[0].CaptureKind != memory.CandidateCaptureAutoTurnExtract {
+		t.Fatalf("candidate capture kind = %q, want %q", candidates[0].CaptureKind, memory.CandidateCaptureAutoTurnExtract)
+	}
+	if candidates[0].SourceSessionKey != "memory-chat::main" {
+		t.Fatalf("candidate source session = %q, want memory-chat::main", candidates[0].SourceSessionKey)
+	}
+	if !strings.Contains(candidates[0].SourceExcerpt, "concise release summaries") {
+		t.Fatalf("candidate source excerpt = %q, want release summary excerpt", candidates[0].SourceExcerpt)
+	}
+
+	chunks, err := memStore.List(context.Background(), "memory-chat", 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("chunks = %d, want 1 archived summary", len(chunks))
+	}
+	if chunks[0].RetentionClass != memory.RetentionClassArchive {
+		t.Fatalf("summary retention = %q, want archive", chunks[0].RetentionClass)
 	}
 }
 

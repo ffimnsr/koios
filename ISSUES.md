@@ -833,31 +833,31 @@ This file is a merged checklist for the feature gap between Koios and the refere
 
 ## Personal Agent Features
 
-- [ ] Memory pinning, retention classes, and archive states
+- [x] Memory pinning, retention classes, and archive states
 	- Research notes: Koios already has a strong chunk-based memory store with tags and categories, but it still treats most memories as equivalent records. A personal agent benefits from explicit retention semantics such as `pinned`, `working`, `archive`, and optional expiry windows so the runtime can distinguish durable preferences and facts from disposable conversational residue. None of the comparison repos surfaced a clearly stronger personal-memory lifecycle model in the current search, so this is primarily a Koios-native product feature.
 	- Suggested Koios shape: extend memory records with retention metadata and exposure policy so pinned facts are always retrievable, archived items stay searchable but stop auto-injecting, and low-value memory can expire without manual cleanup.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Memory curation queue with confirm / reject / edit review flow
+- [x] Memory curation queue with confirm / reject / edit review flow
 	- Research notes: Koios already has insert/search/list primitives, but it lacks a quality-control step between "something might be worth remembering" and "this now shapes future replies." A review queue for candidate memories would let Koios propose extracted facts, preferences, commitments, and notes for explicit confirmation before they become durable context. The closest upstream concepts are operator queues and memory-management surfaces, but none of the current repo searches surfaced an equivalent first-class memory curation inbox.
 	- Suggested Koios shape: add a candidate-memory store plus CLI and chat commands to list pending items, approve them into durable memory, merge them into existing records, or discard them with reasons.
 	- References: OpenClaw `src/agents/pi-embedded-runner/runs.ts`, `src/commands/status.types.ts`; PicoClaw `pkg/agent/turn.go`, `docs/configuration.md`; IronClaw `src/tools/builtin/job.rs`, `src/channels/web/handlers/jobs.rs`.
-- [ ] Entity graph for people, projects, places, and ongoing topics
+- [x] Entity graph for people, projects, places, and ongoing topics
 	- Research notes: The current memory model is document-like rather than entity-centric. For a personal agent, durable entities are often more useful than isolated chunks because they support continuity such as "who is this person", "what project is blocked", and "what happened last time we discussed this trip." None of the comparison repos surfaced a clearly personal CRM-style entity graph in the current search, so this is another area where Koios can differentiate rather than chase parity.
 	- Suggested Koios shape: add first-class entities with aliases, notes, linked memory chunks, last-seen timestamps, and relationship edges so searches and summaries can pivot around stable objects instead of raw text matches.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Task extraction with a review inbox and durable task store
+- [x] Task extraction with a review inbox and durable task store
 	- Research notes: Koios already has sessions, workflows, cron, and hooks, but it does not yet appear to have a first-class personal task system. A useful personal-agent feature is automatic extraction of action items from chats, emails, and scheduled runs into a review inbox, followed by promotion into tracked tasks with due dates, owners, and status. The comparison repos surface automation and job systems, but the current searches did not show a comparable personal task-capture workflow.
 	- Suggested Koios shape: create a `tasks` subsystem with candidate extraction from conversations and hooks, then expose review, assign, snooze, complete, and reopen actions through chat, CLI, and API surfaces.
 	- References: OpenClaw `docs/automation/cron-jobs.md`, `src/hooks/gmail.ts`; PicoClaw `pkg/agent/hooks.go`, `pkg/gateway/gateway.go`; IronClaw `src/agent/routine_engine.rs`, `src/tools/builtin/job.rs`.
-- [ ] Waiting-on tracker for follow-ups and unanswered commitments
+- [x] Waiting-on tracker for follow-ups and unanswered commitments
 	- Research notes: Personal assistants become much more useful when they can distinguish "my task" from "something I am waiting on." Koios already has the persistence and scheduling primitives to support this, but there is no visible first-class concept for tracking delegated asks, unanswered messages, or follow-up deadlines. None of the comparison repos surfaced an equally explicit waiting-on subsystem in the current search.
 	- Suggested Koios shape: model waiting-on records separately from normal tasks, with fields for who owns the next action, expected follow-up date, source conversation, and escalation reminders.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Calendar and ICS ingestion for agenda-aware planning
+- [x] Calendar and ICS ingestion for agenda-aware planning
 	- Research notes: Koios already has cron and workflow infrastructure, and the backlog already covers inbox-trigger automation, but the current issue list does not appear to include first-class calendar ingestion. For a personal agent, local ICS feeds and external calendar sources are high-leverage because they provide durable time context for reminders, daily briefs, and conflict detection. The comparison repos surfaced scheduling and routines more clearly than concrete personal calendar integration in the current search.
 	- Suggested Koios shape: support local `.ics` files and remote ICS URLs first, then expand into provider-backed calendar sync and agenda queries such as `today`, `this week`, and `next conflict`.
 	- References: OpenClaw `docs/automation/cron-jobs.md`; PicoClaw `docs/chat-apps.md`; IronClaw `src/agent/routine_engine.rs`, `src/main.rs`.
-- [ ] Daily brief and weekly review synthesis
+- [x] Daily brief and weekly review synthesis
 	- Research notes: Koios already has nearly all the plumbing needed for proactive reviews: session history, memory, cron, workflows, and usage/runs. What it lacks is a productized synthesis mode that composes these sources into stable personal rituals like morning briefs, evening shutdowns, and weekly retrospectives. The upstream repos expose status and automation, but the current searches did not surface a similarly opinionated personal review feature.
 	- Suggested Koios shape: add templated briefing workflows that gather upcoming events, stale waiting-ons, new memory candidates, recent commitments, and active projects into one bounded report with follow-up actions.
 	- References: OpenClaw `src/auto-reply/status.ts`, `docs/automation/cron-jobs.md`; PicoClaw `cmd/picoclaw/internal/status/helpers.go`, `pkg/agent/hooks.go`; IronClaw `src/agent/commands.rs`, `src/agent/routine_engine.rs`.
@@ -877,7 +877,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Research notes: There is a practical middle ground between full long-term memory insertion and leaving everything buried in session history. A bookmark primitive would let users save important messages, decisions, snippets, or plans for later recall without forcing them into the same lifecycle as extracted memory. None of the comparison repos surfaced a distinct bookmark-style feature in the current search.
 	- Suggested Koios shape: support bookmarking a message, thread segment, or workflow result with title, labels, and optional reminder date, then expose bookmarks in chat, CLI, and future dashboard views.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Personal commitments dashboard instead of runtime-only status
+- [ ] Personal commitments dashboard (TUI) instead of runtime-only status
 	- Research notes: Koios already has CLI status, health, usage, and background-run concepts, but those are operator-facing rather than life-facing. A personal agent should also have a commitments view that surfaces open tasks, waiting-ons, upcoming events, recent promises, and stale project threads. The current backlog has web UI and dashboard work, but this specific user-facing dashboard concept does not appear to be listed.
 	- Suggested Koios shape: build a dashboard oriented around commitments and personal context first, then layer runtime diagnostics beneath it rather than leading with infrastructure state.
 	- References: OpenClaw `src/commands/status.summary.ts`, `src/auto-reply/status.ts`; PicoClaw `web/README.md`, `web/frontend/src/routes/models.tsx`; IronClaw `docs/drafts/ops/api.mdx`, `src/agent/commands.rs`.

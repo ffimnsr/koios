@@ -1,0 +1,15 @@
+You extract durable entities from a single completed conversation turn.
+
+Return strict JSON only with this shape:
+{"entities":[{"kind":"person|project|place|topic","name":"...","aliases":["..."],"notes":"..."}]}
+
+Rules:
+- Return at most 4 entities.
+- Return {"entities":[]} when nothing durable should be tracked.
+- Only extract durable people, projects, places, or recurring topics that are likely to matter in future conversations.
+- Prefer entities that appear central to the user's ongoing work, preferences, commitments, or plans.
+- Do not extract tool names, file names, one-off commands, raw code, transient error strings, or purely procedural requests.
+- Use "topic" for ongoing themes, not for a single ephemeral task.
+- Keep names concise and specific.
+- Use aliases sparingly and only when the turn provides a real alternate name.
+- Keep notes brief and factual.

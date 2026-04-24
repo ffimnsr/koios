@@ -124,6 +124,8 @@ koios status
 koios health --verbose
 koios agent --peer alice --message "Summarize the last session"
 koios agent --peer alice
+koios calendar add --peer alice --name Work --path ./work.ics
+koios calendar agenda --peer alice --scope today
 koios init
 koios doctor --deep
 koios sessions
@@ -275,11 +277,11 @@ Example response:
       "exec": true,
       "web": true
     },
-    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
-    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "head", "tail", "grep", "sort", "uniq", "diff", "write", "edit", "apply_patch", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
+    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
+    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "head", "tail", "grep", "sort", "uniq", "diff", "write", "edit", "apply_patch", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
     "idempotency": {
       "params_field": "idempotency_key",
-      "methods": ["chat", "session.reset", "presence.set", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.cancel", "agent.steer", "subagent.spawn", "subagent.kill", "subagent.steer", "memory.insert", "memory.delete", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.approve", "exec.reject", "cron.create", "cron.update", "cron.delete", "cron.trigger", "heartbeat.set", "heartbeat.wake", "server.set_log_level"]
+      "methods": ["chat", "session.reset", "presence.set", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.cancel", "agent.steer", "subagent.spawn", "subagent.kill", "subagent.steer", "memory.insert", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.approve", "exec.reject", "cron.create", "cron.update", "cron.delete", "cron.trigger", "heartbeat.set", "heartbeat.wake", "server.set_log_level"]
     },
     "stream_notifications": ["stream.delta", "stream.event", "session.message"]
   }
@@ -568,14 +570,94 @@ Search long-term semantic memory for this peer. Requires `MEMORY_DB_PATH` to be 
 
 ### `memory.insert` / `memory.get`
 
-Store a memory chunk for the current peer, or fetch one by id.
+Store a memory chunk for the current peer, or fetch one by id. Memories can optionally declare retention and expiry metadata. `retention_class` accepts `working`, `pinned`, or `archive`. Archived memories remain searchable but are excluded from automatic prompt injection. `exposure_policy` accepts `auto` or `search_only`.
 
 ```json
-{"id": "12a", "method": "memory.insert", "params": {"content": "Deployment windows are narrow on Fridays."}}
+{"id": "12a", "method": "memory.insert", "params": {"content": "Deployment windows are narrow on Fridays.", "retention_class": "pinned", "exposure_policy": "auto", "expires_at": 0}}
 ```
 
 ```json
 {"id": "12b", "method": "memory.get", "params": {"id": "<chunk-id>"}}
+```
+
+### `memory.entity.*`
+
+Create stable entities for people, projects, places, and ongoing topics, then attach chunks and relationship edges so memory can pivot around durable objects instead of only raw text. Archived turn summaries now auto-extract durable entities and link the stored summary chunk to each extracted entity.
+
+```json
+{"id": "12c", "method": "memory.entity.create", "params": {"kind": "project", "name": "Borealis Trip", "aliases": ["summer trip"], "notes": "Annual planning thread"}}
+```
+
+```json
+{"id": "12d", "method": "memory.entity.link_chunk", "params": {"id": "<entity-id>", "chunk_id": "<chunk-id>"}}
+```
+
+```json
+{"id": "12e", "method": "memory.entity.relate", "params": {"source_id": "<project-id>", "target_id": "<person-id>", "relation": "owned_by", "notes": "Alice coordinates logistics"}}
+```
+
+```json
+{"id": "12f", "method": "memory.entity.get", "params": {"id": "<entity-id>"}}
+```
+
+```json
+{"id": "12g", "method": "memory.entity.unlink_chunk", "params": {"id": "<entity-id>", "chunk_id": "<chunk-id>"}}
+```
+
+```json
+{"id": "12h", "method": "memory.entity.unrelate", "params": {"source_id": "<project-id>", "target_id": "<person-id>", "relation": "owned_by"}}
+```
+
+```json
+{"id": "12i", "method": "memory.entity.delete", "params": {"id": "<entity-id>"}}
+```
+
+---
+
+### `calendar.source.create` / `calendar.source.list` / `calendar.source.delete`
+
+Register or manage agenda sources backed by local `.ics` files or remote ICS URLs.
+
+```json
+{"id": "12j", "method": "calendar.source.create", "params": {
+  "name": "Work",
+  "path": "/absolute/path/to/work.ics",
+  "timezone": "America/New_York",
+  "enabled": true
+}}
+```
+
+```json
+{"id": "12k", "method": "calendar.source.create", "params": {
+  "name": "Family",
+  "url": "https://example.com/family.ics",
+  "enabled": true
+}}
+```
+
+```json
+{"id": "12l", "method": "calendar.source.list", "params": {"enabled_only": true}}
+```
+
+---
+
+### `calendar.agenda`
+
+Query agenda windows from registered ICS sources. Supported scopes are `today`, `this_week`, and `next_conflict`.
+
+```json
+{"id": "12m", "method": "calendar.agenda", "params": {
+  "scope": "today",
+  "timezone": "America/New_York",
+  "limit": 20
+}}
+```
+
+```json
+{"id": "12n", "method": "calendar.agenda", "params": {
+  "scope": "next_conflict",
+  "timezone": "UTC"
+}}
 ```
 
 ---

@@ -10,6 +10,12 @@ package handler
 //	/status
 //	/new | /reset
 //	/compact [status|now]
+//	/memory queue [list [status]|add <text>|edit <id> <text>|approve <id>|merge <id> <chunk-id>|reject <id> <reason>]
+//	/tasks [list [status]|queue list [status]|queue add <title>|extract <text>|queue approve <id>|queue reject <id> <reason>|assign <id> <owner>|snooze <id> <unix>|complete <id>|reopen <id>]
+//	/waiting [list [status]|add <waiting-for> | <title>|resolve <id>|reopen <id>|snooze <id> <unix>]
+//	/calendar [list|add [<name> |] <path-or-url> [| <timezone>]|remove <id>|agenda [today|this_week|next_conflict] [timezone]]
+//	/brief [daily|weekly] [timezone]
+//	/review [weekly|daily] [timezone]
 //	/restart  (owner-only)
 //
 // When a recognised command is found, handleSlashCommand processes it and
@@ -20,10 +26,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/ffimnsr/koios/internal/briefing"
+	"github.com/ffimnsr/koios/internal/calendar"
+	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -49,9 +61,21 @@ func parseSlashCommand(text string) (name, arg string, ok bool) {
 	parts := strings.SplitN(text, " ", 2)
 	name = strings.ToLower(strings.TrimSpace(parts[0]))
 	if len(parts) == 2 {
-		arg = strings.ToLower(strings.TrimSpace(parts[1]))
+		arg = strings.TrimSpace(parts[1])
 	}
 	return name, arg, name != ""
+}
+
+func trimLeadingFields(rest string, count int) string {
+	rest = strings.TrimSpace(rest)
+	for index := 0; index < count && rest != ""; index++ {
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return ""
+		}
+		rest = strings.TrimSpace(rest[len(fields[0]):])
+	}
+	return rest
 }
 
 // lastUserText returns the trimmed content of the last user-role message in
@@ -99,11 +123,49 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 	case "compact":
 		h.slashCompact(ctx, wsc, req, arg)
 		return true
+	case "memory":
+		h.slashMemory(ctx, wsc, req, arg)
+		return true
+	case "tasks", "task":
+		h.slashTasks(ctx, wsc, req, arg)
+		return true
+	case "waiting":
+		h.slashWaiting(ctx, wsc, req, arg)
+		return true
+	case "calendar":
+		h.slashCalendar(ctx, wsc, req, arg)
+		return true
+	case "brief":
+		h.slashBrief(ctx, wsc, req, arg, briefing.KindDaily)
+		return true
+	case "review":
+		h.slashBrief(ctx, wsc, req, arg, briefing.KindWeekly)
+		return true
 	case "restart":
 		h.slashRestart(wsc, req)
 		return true
 	}
 	return false
+}
+
+func (h *Handler) slashBrief(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string, defaultKind briefing.Kind) {
+	fields := strings.Fields(strings.TrimSpace(arg))
+	kind := string(defaultKind)
+	timezone := ""
+	if len(fields) > 0 && (fields[0] == string(briefing.KindDaily) || fields[0] == string(briefing.KindWeekly)) {
+		kind = fields[0]
+		fields = fields[1:]
+	}
+	if len(fields) > 0 {
+		timezone = fields[0]
+	}
+	result, err := h.briefGenerate(wsc.peerID, briefing.Options{Kind: kind, Timezone: timezone}, ctx)
+	if err != nil {
+		slashReply(wsc, req, "Brief generation failed: "+err.Error())
+		return
+	}
+	text, _ := result["text"].(string)
+	wsc.reply(req.ID, map[string]any{"assistant_text": text, "brief": result["report"], "done": true})
 }
 
 // ── /think ────────────────────────────────────────────────────────────────────
@@ -339,6 +401,660 @@ func renderCompactionReport(report session.CompactionReport) string {
 		lines = append(lines, "Compaction did not run.")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ── /memory queue ────────────────────────────────────────────────────────────
+
+func (h *Handler) slashMemory(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string) {
+	if h.memStore == nil {
+		slashReply(wsc, req, "Memory is not enabled.")
+		return
+	}
+	rest := strings.TrimSpace(arg)
+	if strings.HasPrefix(rest, "queue") {
+		rest = trimLeadingFields(rest, 1)
+	}
+	if rest == "" {
+		h.slashMemoryList(ctx, wsc, req, "pending")
+		return
+	}
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		h.slashMemoryList(ctx, wsc, req, "pending")
+		return
+	}
+	switch strings.ToLower(parts[0]) {
+	case "list":
+		status := "pending"
+		if len(parts) > 1 {
+			status = strings.ToLower(parts[1])
+		}
+		h.slashMemoryList(ctx, wsc, req, status)
+	case "add":
+		content := trimLeadingFields(rest, 1)
+		if content == "" {
+			slashReply(wsc, req, "Usage: /memory queue add <text>")
+			return
+		}
+		candidate, err := h.memStore.QueueCandidate(ctx, wsc.peerID, content, memory.ChunkOptions{})
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "candidate create error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Queued memory candidate %s.", candidate.ID))
+	case "edit":
+		if len(parts) < 3 {
+			slashReply(wsc, req, "Usage: /memory queue edit <candidate-id> <text>")
+			return
+		}
+		id := parts[1]
+		content := trimLeadingFields(rest, 2)
+		candidate, err := h.memStore.EditCandidate(ctx, wsc.peerID, id, memory.CandidatePatch{Content: &content})
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "candidate edit error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Updated memory candidate %s.", candidate.ID))
+	case "approve":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /memory queue approve <candidate-id>")
+			return
+		}
+		candidate, chunk, err := h.memStore.ApproveCandidate(ctx, wsc.peerID, parts[1], memory.CandidatePatch{}, "approved from chat")
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "candidate approve error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Approved candidate %s into memory chunk %s.", candidate.ID, chunk.ID))
+	case "merge":
+		if len(parts) != 3 {
+			slashReply(wsc, req, "Usage: /memory queue merge <candidate-id> <chunk-id>")
+			return
+		}
+		candidate, chunk, err := h.memStore.MergeCandidate(ctx, wsc.peerID, parts[1], parts[2], memory.CandidatePatch{}, "merged from chat")
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "candidate merge error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Merged candidate %s into memory chunk %s.", candidate.ID, chunk.ID))
+	case "reject":
+		if len(parts) < 3 {
+			slashReply(wsc, req, "Usage: /memory queue reject <candidate-id> <reason>")
+			return
+		}
+		id := parts[1]
+		reason := trimLeadingFields(rest, 2)
+		candidate, err := h.memStore.RejectCandidate(ctx, wsc.peerID, id, reason)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "candidate reject error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Rejected memory candidate %s.", candidate.ID))
+	default:
+		slashReply(wsc, req, "Usage: /memory queue [list [status]|add <text>|edit <id> <text>|approve <id>|merge <id> <chunk-id>|reject <id> <reason>]")
+	}
+}
+
+func (h *Handler) slashMemoryList(ctx context.Context, wsc *wsConn, req *rpcRequest, status string) {
+	candidates, err := h.memStore.ListCandidates(ctx, wsc.peerID, 10, memory.CandidateStatus(status))
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "candidate list error: "+err.Error())
+		return
+	}
+	if len(candidates) == 0 {
+		slashReply(wsc, req, fmt.Sprintf("No %s memory candidates.", strings.TrimSpace(status)))
+		return
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Memory candidates (%s):", strings.TrimSpace(status))
+	for _, candidate := range candidates {
+		preview := candidate.Content
+		if len(preview) > 72 {
+			preview = preview[:72] + "..."
+		}
+		fmt.Fprintf(&sb, "\n- %s [%s] %s", candidate.ID, candidate.Status, preview)
+		if origin := formatCandidateOrigin(candidate); origin != "" {
+			fmt.Fprintf(&sb, "\n  source: %s", origin)
+		}
+	}
+	slashReply(wsc, req, sb.String())
+}
+
+func formatCandidateOrigin(candidate memory.Candidate) string {
+	parts := make([]string, 0, 3)
+	if candidate.CaptureKind != "" {
+		parts = append(parts, candidate.CaptureKind)
+	}
+	if candidate.SourceSessionKey != "" {
+		parts = append(parts, candidate.SourceSessionKey)
+	}
+	if candidate.SourceExcerpt != "" {
+		parts = append(parts, fmt.Sprintf("%q", candidate.SourceExcerpt))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " | ")
+}
+
+// ── /tasks ───────────────────────────────────────────────────────────────────
+
+func (h *Handler) slashTasks(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string) {
+	if h.taskStore == nil {
+		slashReply(wsc, req, "Tasks are not enabled.")
+		return
+	}
+	rest := strings.TrimSpace(arg)
+	if rest == "" {
+		h.slashTaskList(ctx, wsc, req, "open")
+		return
+	}
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		h.slashTaskList(ctx, wsc, req, "open")
+		return
+	}
+	switch strings.ToLower(parts[0]) {
+	case "list":
+		status := "open"
+		if len(parts) > 1 {
+			status = strings.ToLower(parts[1])
+		}
+		h.slashTaskList(ctx, wsc, req, status)
+	case "queue":
+		h.slashTaskQueue(ctx, wsc, req, trimLeadingFields(rest, 1))
+	case "extract":
+		text := trimLeadingFields(rest, 1)
+		if text == "" {
+			slashReply(wsc, req, "Usage: /tasks extract <text>")
+			return
+		}
+		candidates, err := h.taskStore.ExtractAndQueue(ctx, wsc.peerID, text, tasks.CandidateProvenance{
+			CaptureKind:      tasks.CandidateCaptureExternalExtract,
+			SourceSessionKey: wsc.peerID + "::main",
+			SourceExcerpt:    text,
+		})
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "task extract error: "+err.Error())
+			return
+		}
+		if len(candidates) == 0 {
+			slashReply(wsc, req, "No task candidates extracted.")
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Queued %d task candidates.", len(candidates)))
+	case "assign":
+		if len(parts) < 3 {
+			slashReply(wsc, req, "Usage: /tasks assign <task-id> <owner>")
+			return
+		}
+		id := parts[1]
+		owner := trimLeadingFields(rest, 2)
+		task, err := h.taskStore.AssignTask(ctx, wsc.peerID, id, owner)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "task assign error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Assigned task %s to %s.", task.ID, task.Owner))
+	case "snooze":
+		if len(parts) != 3 {
+			slashReply(wsc, req, "Usage: /tasks snooze <task-id> <unix>")
+			return
+		}
+		until, err := parseInt64Arg(parts[2])
+		if err != nil {
+			slashReply(wsc, req, "Usage: /tasks snooze <task-id> <unix>")
+			return
+		}
+		task, err := h.taskStore.SnoozeTask(ctx, wsc.peerID, parts[1], until)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "task snooze error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Snoozed task %s until %d.", task.ID, task.SnoozeUntil))
+	case "complete":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /tasks complete <task-id>")
+			return
+		}
+		task, err := h.taskStore.CompleteTask(ctx, wsc.peerID, parts[1])
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "task complete error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Completed task %s.", task.ID))
+	case "reopen":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /tasks reopen <task-id>")
+			return
+		}
+		task, err := h.taskStore.ReopenTask(ctx, wsc.peerID, parts[1])
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "task reopen error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Reopened task %s.", task.ID))
+	default:
+		slashReply(wsc, req, "Usage: /tasks [list [status]|queue list [status]|queue add <title>|extract <text>|queue approve <id>|queue reject <id> <reason>|assign <id> <owner>|snooze <id> <unix>|complete <id>|reopen <id>]")
+	}
+}
+
+func (h *Handler) slashTaskQueue(ctx context.Context, wsc *wsConn, req *rpcRequest, rest string) {
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		h.slashTaskCandidateList(ctx, wsc, req, "pending")
+		return
+	}
+	switch strings.ToLower(parts[0]) {
+	case "list":
+		status := "pending"
+		if len(parts) > 1 {
+			status = strings.ToLower(parts[1])
+		}
+		h.slashTaskCandidateList(ctx, wsc, req, status)
+	case "add":
+		title := trimLeadingFields(rest, 1)
+		if title == "" {
+			slashReply(wsc, req, "Usage: /tasks queue add <title>")
+			return
+		}
+		candidate, err := h.taskStore.QueueCandidate(ctx, wsc.peerID, tasks.CandidateInput{Title: title})
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "task candidate create error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Queued task candidate %s.", candidate.ID))
+	case "approve":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /tasks queue approve <candidate-id>")
+			return
+		}
+		candidate, task, err := h.taskStore.ApproveCandidate(ctx, wsc.peerID, parts[1], tasks.CandidatePatch{}, "approved from chat")
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "task candidate approve error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Approved task candidate %s into task %s.", candidate.ID, task.ID))
+	case "reject":
+		if len(parts) < 3 {
+			slashReply(wsc, req, "Usage: /tasks queue reject <candidate-id> <reason>")
+			return
+		}
+		id := parts[1]
+		reason := trimLeadingFields(rest, 2)
+		candidate, err := h.taskStore.RejectCandidate(ctx, wsc.peerID, id, reason)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "task candidate reject error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Rejected task candidate %s.", candidate.ID))
+	default:
+		slashReply(wsc, req, "Usage: /tasks queue [list [status]|add <title>|approve <id>|reject <id> <reason>]")
+	}
+}
+
+func (h *Handler) slashTaskCandidateList(ctx context.Context, wsc *wsConn, req *rpcRequest, status string) {
+	candidates, err := h.taskStore.ListCandidates(ctx, wsc.peerID, 10, tasks.CandidateStatus(status))
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "task candidate list error: "+err.Error())
+		return
+	}
+	if len(candidates) == 0 {
+		slashReply(wsc, req, fmt.Sprintf("No %s task candidates.", strings.TrimSpace(status)))
+		return
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Task candidates (%s):", strings.TrimSpace(status))
+	for _, candidate := range candidates {
+		preview := candidate.Title
+		if len(preview) > 72 {
+			preview = preview[:72] + "..."
+		}
+		fmt.Fprintf(&sb, "\n- %s [%s] %s", candidate.ID, candidate.Status, preview)
+		if origin := formatTaskCandidateOrigin(candidate); origin != "" {
+			fmt.Fprintf(&sb, "\n  source: %s", origin)
+		}
+	}
+	slashReply(wsc, req, sb.String())
+}
+
+func (h *Handler) slashTaskList(ctx context.Context, wsc *wsConn, req *rpcRequest, status string) {
+	tasksList, err := h.taskStore.ListTasks(ctx, wsc.peerID, 10, tasks.TaskStatus(status))
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "task list error: "+err.Error())
+		return
+	}
+	if len(tasksList) == 0 {
+		slashReply(wsc, req, fmt.Sprintf("No %s tasks.", strings.TrimSpace(status)))
+		return
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Tasks (%s):", strings.TrimSpace(status))
+	for _, task := range tasksList {
+		preview := task.Title
+		if len(preview) > 72 {
+			preview = preview[:72] + "..."
+		}
+		fmt.Fprintf(&sb, "\n- %s [%s] %s", task.ID, task.Status, preview)
+		if task.Owner != "" {
+			fmt.Fprintf(&sb, " (owner: %s)", task.Owner)
+		}
+	}
+	slashReply(wsc, req, sb.String())
+}
+
+func formatTaskCandidateOrigin(candidate tasks.Candidate) string {
+	parts := make([]string, 0, 3)
+	if candidate.CaptureKind != "" {
+		parts = append(parts, candidate.CaptureKind)
+	}
+	if candidate.SourceSessionKey != "" {
+		parts = append(parts, candidate.SourceSessionKey)
+	}
+	if candidate.SourceExcerpt != "" {
+		parts = append(parts, fmt.Sprintf("%q", candidate.SourceExcerpt))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func parseInt64Arg(value string) (int64, error) {
+	return strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+}
+
+// ── /waiting ────────────────────────────────────────────────────────────────
+
+func (h *Handler) slashWaiting(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string) {
+	if h.taskStore == nil {
+		slashReply(wsc, req, "Tasks are not enabled.")
+		return
+	}
+	rest := strings.TrimSpace(arg)
+	if rest == "" {
+		h.slashWaitingList(ctx, wsc, req, string(tasks.WaitingStatusOpen))
+		return
+	}
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		h.slashWaitingList(ctx, wsc, req, string(tasks.WaitingStatusOpen))
+		return
+	}
+	switch strings.ToLower(parts[0]) {
+	case "list":
+		status := string(tasks.WaitingStatusOpen)
+		if len(parts) > 1 {
+			status = strings.ToLower(parts[1])
+		}
+		h.slashWaitingList(ctx, wsc, req, status)
+	case "add":
+		payload := trimLeadingFields(rest, 1)
+		fields := strings.SplitN(payload, "|", 2)
+		if len(fields) != 2 {
+			slashReply(wsc, req, "Usage: /waiting add <waiting-for> | <title>")
+			return
+		}
+		waitingFor := strings.TrimSpace(fields[0])
+		title := strings.TrimSpace(fields[1])
+		item, err := h.taskStore.CreateWaitingOn(ctx, wsc.peerID, tasks.WaitingOnInput{
+			Title:            title,
+			WaitingFor:       waitingFor,
+			SourceSessionKey: wsc.peerID + "::main",
+			SourceExcerpt:    payload,
+		})
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "waiting create error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Created waiting-on %s for %s.", item.ID, item.WaitingFor))
+	case "resolve":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /waiting resolve <id>")
+			return
+		}
+		item, err := h.taskStore.ResolveWaitingOn(ctx, wsc.peerID, parts[1])
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "waiting resolve error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Resolved waiting-on %s.", item.ID))
+	case "reopen":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /waiting reopen <id>")
+			return
+		}
+		item, err := h.taskStore.ReopenWaitingOn(ctx, wsc.peerID, parts[1])
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "waiting reopen error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Reopened waiting-on %s.", item.ID))
+	case "snooze":
+		if len(parts) != 3 {
+			slashReply(wsc, req, "Usage: /waiting snooze <id> <unix>")
+			return
+		}
+		until, err := parseInt64Arg(parts[2])
+		if err != nil {
+			slashReply(wsc, req, "Usage: /waiting snooze <id> <unix>")
+			return
+		}
+		item, err := h.taskStore.SnoozeWaitingOn(ctx, wsc.peerID, parts[1], until)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "waiting snooze error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Snoozed waiting-on %s until %d.", item.ID, item.SnoozeUntil))
+	default:
+		slashReply(wsc, req, "Usage: /waiting [list [status]|add <waiting-for> | <title>|resolve <id>|reopen <id>|snooze <id> <unix>]")
+	}
+}
+
+func (h *Handler) slashWaitingList(ctx context.Context, wsc *wsConn, req *rpcRequest, status string) {
+	items, err := h.taskStore.ListWaitingOns(ctx, wsc.peerID, 10, tasks.WaitingStatus(status))
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "waiting list error: "+err.Error())
+		return
+	}
+	if len(items) == 0 {
+		slashReply(wsc, req, fmt.Sprintf("No %s waiting-on records.", strings.TrimSpace(status)))
+		return
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Waiting-on (%s):", strings.TrimSpace(status))
+	for _, item := range items {
+		preview := item.Title
+		if len(preview) > 72 {
+			preview = preview[:72] + "..."
+		}
+		fmt.Fprintf(&sb, "\n- %s [%s] %s (waiting for: %s)", item.ID, item.Status, preview, item.WaitingFor)
+	}
+	slashReply(wsc, req, sb.String())
+}
+
+// ── /calendar ───────────────────────────────────────────────────────────────
+
+func (h *Handler) slashCalendar(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string) {
+	if h.calendarStore == nil {
+		slashReply(wsc, req, "Calendar is not enabled.")
+		return
+	}
+	rest := strings.TrimSpace(arg)
+	if rest == "" {
+		h.slashCalendarAgenda(ctx, wsc, req, string(calendar.AgendaScopeToday), "")
+		return
+	}
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		h.slashCalendarAgenda(ctx, wsc, req, string(calendar.AgendaScopeToday), "")
+		return
+	}
+	switch strings.ToLower(parts[0]) {
+	case "list":
+		h.slashCalendarList(ctx, wsc, req)
+	case "add":
+		h.slashCalendarAdd(ctx, wsc, req, trimLeadingFields(rest, 1))
+	case "remove", "delete", "rm":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /calendar remove <source-id>")
+			return
+		}
+		if err := h.calendarStore.DeleteSource(ctx, wsc.peerID, parts[1]); err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "calendar remove error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Removed calendar source %s.", parts[1]))
+	case "agenda":
+		scope := string(calendar.AgendaScopeToday)
+		timezone := ""
+		if len(parts) > 1 {
+			scope = normalizeSlashAgendaScope(parts[1])
+		}
+		if len(parts) > 2 {
+			timezone = parts[2]
+		}
+		h.slashCalendarAgenda(ctx, wsc, req, scope, timezone)
+	default:
+		h.slashCalendarAgenda(ctx, wsc, req, normalizeSlashAgendaScope(parts[0]), strings.Join(parts[1:], " "))
+	}
+}
+
+func (h *Handler) slashCalendarAdd(ctx context.Context, wsc *wsConn, req *rpcRequest, payload string) {
+	fields := strings.SplitN(payload, "|", 3)
+	values := make([]string, 0, len(fields))
+	for _, field := range fields {
+		values = append(values, strings.TrimSpace(field))
+	}
+	var name, target, timezone string
+	switch len(values) {
+	case 1:
+		target = values[0]
+	case 2:
+		name = values[0]
+		target = values[1]
+	case 3:
+		name = values[0]
+		target = values[1]
+		timezone = values[2]
+	default:
+		slashReply(wsc, req, "Usage: /calendar add [<name> |] <path-or-url> [| <timezone>]")
+		return
+	}
+	if target == "" {
+		slashReply(wsc, req, "Usage: /calendar add [<name> |] <path-or-url> [| <timezone>]")
+		return
+	}
+	input := calendar.SourceInput{Name: name, Timezone: timezone}
+	if strings.HasPrefix(strings.ToLower(target), "http://") || strings.HasPrefix(strings.ToLower(target), "https://") {
+		input.URL = target
+	} else {
+		input.Path = target
+	}
+	source, err := h.calendarStore.CreateSource(ctx, wsc.peerID, input)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "calendar add error: "+err.Error())
+		return
+	}
+	slashReply(wsc, req, fmt.Sprintf("Created calendar source %s (%s).", source.ID, source.Name))
+}
+
+func (h *Handler) slashCalendarList(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	sources, err := h.calendarStore.ListSources(ctx, wsc.peerID, false)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "calendar list error: "+err.Error())
+		return
+	}
+	if len(sources) == 0 {
+		slashReply(wsc, req, "No calendar sources.")
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("Calendar sources:")
+	for _, source := range sources {
+		target := source.Path
+		if target == "" {
+			target = source.URL
+		}
+		fmt.Fprintf(&sb, "\n- %s [%s] %s", source.ID, source.Kind, firstNonEmptySlashValue(source.Name, target))
+		if target != "" && target != source.Name {
+			fmt.Fprintf(&sb, " -> %s", target)
+		}
+	}
+	slashReply(wsc, req, sb.String())
+}
+
+func (h *Handler) slashCalendarAgenda(ctx context.Context, wsc *wsConn, req *rpcRequest, scope, timezone string) {
+	agenda, err := h.calendarStore.Agenda(ctx, wsc.peerID, calendar.AgendaQuery{Scope: scope, Timezone: timezone, Limit: 10}, h.fetchClient)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "calendar agenda error: "+err.Error())
+		return
+	}
+	loc := time.Local
+	if agenda.Timezone != "" {
+		if loaded, loadErr := time.LoadLocation(agenda.Timezone); loadErr == nil {
+			loc = loaded
+		}
+	}
+	var lines []string
+	if agenda.Conflict != nil {
+		if len(agenda.Conflict.Events) == 0 {
+			lines = append(lines, "No upcoming conflicts found.")
+		} else {
+			lines = append(lines, "Next conflict:")
+			for _, event := range agenda.Conflict.Events {
+				lines = append(lines, fmt.Sprintf("- %s (%s)", event.Summary, formatSlashCalendarEvent(event, loc)))
+			}
+		}
+	} else {
+		if len(agenda.Events) == 0 {
+			lines = append(lines, "No events in the requested agenda window.")
+		} else {
+			lines = append(lines, fmt.Sprintf("Agenda (%s):", agenda.Scope))
+			for _, event := range agenda.Events {
+				lines = append(lines, fmt.Sprintf("- %s (%s)", event.Summary, formatSlashCalendarEvent(event, loc)))
+			}
+		}
+	}
+	for _, warning := range agenda.Warnings {
+		lines = append(lines, "warning: "+warning)
+	}
+	slashReply(wsc, req, strings.Join(lines, "\n"))
+}
+
+func normalizeSlashAgendaScope(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "today":
+		return string(calendar.AgendaScopeToday)
+	case "this-week", "this_week", "week":
+		return string(calendar.AgendaScopeThisWeek)
+	case "next-conflict", "next_conflict", "conflict":
+		return string(calendar.AgendaScopeNextConflict)
+	default:
+		return string(calendar.AgendaScopeToday)
+	}
+}
+
+func formatSlashCalendarEvent(event calendar.Event, loc *time.Location) string {
+	start := time.Unix(event.StartAt, 0).In(loc)
+	end := time.Unix(event.EndAt, 0).In(loc)
+	if event.AllDay {
+		return start.Format("2006-01-02") + " all day"
+	}
+	span := start.Format(time.RFC3339)
+	if event.EndAt > 0 && event.EndAt != event.StartAt {
+		span += " to " + end.Format(time.RFC3339)
+	}
+	if event.SourceName != "" {
+		span += " | " + event.SourceName
+	}
+	return span
+}
+
+func firstNonEmptySlashValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // ── /restart ──────────────────────────────────────────────────────────────────

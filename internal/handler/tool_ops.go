@@ -6,8 +6,41 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/workflow"
 )
+
+func candidatePatch(content *string, tags *[]string, category *string, retentionClass *string, exposurePolicy *string, expiresAt *int64) memory.CandidatePatch {
+	patch := memory.CandidatePatch{
+		Content:   content,
+		Tags:      tags,
+		Category:  category,
+		ExpiresAt: expiresAt,
+	}
+	if retentionClass != nil {
+		value := memory.RetentionClass(strings.TrimSpace(*retentionClass))
+		patch.RetentionClass = &value
+	}
+	if exposurePolicy != nil {
+		value := memory.ExposurePolicy(strings.TrimSpace(*exposurePolicy))
+		patch.ExposurePolicy = &value
+	}
+	return patch
+}
+
+func entityPatch(kind *string, name *string, aliases *[]string, notes *string, lastSeenAt *int64) memory.EntityPatch {
+	patch := memory.EntityPatch{
+		Name:       name,
+		Aliases:    aliases,
+		Notes:      notes,
+		LastSeenAt: lastSeenAt,
+	}
+	if kind != nil {
+		value := memory.EntityKind(strings.TrimSpace(*kind))
+		patch.Kind = &value
+	}
+	return patch
+}
 
 func (h *Handler) memorySearch(peerID, query string, limit int, ctx context.Context) (map[string]any, error) {
 	if h.memStore == nil {
@@ -27,6 +60,10 @@ func (h *Handler) memorySearch(peerID, query string, limit int, ctx context.Cont
 }
 
 func (h *Handler) memoryInsert(peerID, content string, ctx context.Context) (map[string]any, error) {
+	return h.memoryInsertWithOptions(peerID, content, nil, "", "", "", 0, ctx)
+}
+
+func (h *Handler) memoryInsertWithOptions(peerID, content string, tags []string, category string, retentionClass string, exposurePolicy string, expiresAt int64, ctx context.Context) (map[string]any, error) {
 	if h.memStore == nil {
 		return nil, fmt.Errorf("memory is not enabled")
 	}
@@ -38,7 +75,13 @@ func (h *Handler) memoryInsert(peerID, content string, ctx context.Context) (map
 	if len(content) > maxContentBytes {
 		return nil, fmt.Errorf("content exceeds %d byte limit", maxContentBytes)
 	}
-	chunk, err := h.memStore.InsertChunk(ctx, peerID, content)
+	chunk, err := h.memStore.InsertChunkWithOptions(ctx, peerID, content, memory.ChunkOptions{
+		Tags:           tags,
+		Category:       category,
+		RetentionClass: memory.RetentionClass(retentionClass),
+		ExposurePolicy: memory.ExposurePolicy(exposurePolicy),
+		ExpiresAt:      expiresAt,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -118,17 +161,17 @@ func (h *Handler) memoryBatchGet(peerID string, ids []string, ctx context.Contex
 	return map[string]any{"count": len(chunks), "chunks": chunks}, nil
 }
 
-func (h *Handler) memoryTag(peerID, id string, tags []string, category string, ctx context.Context) (map[string]any, error) {
+func (h *Handler) memoryTag(peerID, id string, tags []string, category string, retentionClass string, exposurePolicy string, expiresAt int64, ctx context.Context) (map[string]any, error) {
 	if h.memStore == nil {
 		return nil, fmt.Errorf("memory is not enabled")
 	}
 	if strings.TrimSpace(id) == "" {
 		return nil, fmt.Errorf("id is required")
 	}
-	if err := h.memStore.TagChunk(ctx, peerID, id, tags, category); err != nil {
+	if err := h.memStore.TagChunk(ctx, peerID, id, tags, category, memory.RetentionClass(retentionClass), memory.ExposurePolicy(exposurePolicy), expiresAt); err != nil {
 		return nil, err
 	}
-	return map[string]any{"ok": true, "id": id, "tags": tags, "category": category}, nil
+	return map[string]any{"ok": true, "id": id, "tags": tags, "category": category, "retention_class": retentionClass, "exposure_policy": exposurePolicy, "expires_at": expiresAt}, nil
 }
 
 func (h *Handler) memoryStats(peerID string, ctx context.Context) (map[string]any, error) {
@@ -140,6 +183,283 @@ func (h *Handler) memoryStats(peerID string, ctx context.Context) (map[string]an
 		return nil, err
 	}
 	return map[string]any{"stats": stats}, nil
+}
+
+func (h *Handler) memoryCandidateCreate(peerID, content string, tags []string, category string, retentionClass string, exposurePolicy string, expiresAt int64, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, fmt.Errorf("content is required")
+	}
+	candidate, err := h.memStore.QueueCandidate(ctx, peerID, content, memory.ChunkOptions{
+		Tags:           tags,
+		Category:       category,
+		RetentionClass: memory.RetentionClass(retentionClass),
+		ExposurePolicy: memory.ExposurePolicy(exposurePolicy),
+		ExpiresAt:      expiresAt,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "candidate": candidate}, nil
+}
+
+func (h *Handler) memoryCandidateList(peerID string, limit int, status string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	candidates, err := h.memStore.ListCandidates(ctx, peerID, limit, memory.CandidateStatus(status))
+	if err != nil {
+		return nil, err
+	}
+	manualCount := 0
+	autoGeneratedCount := 0
+	byCaptureKind := make(map[string]int)
+	for _, candidate := range candidates {
+		kind := strings.TrimSpace(candidate.CaptureKind)
+		if kind == "" {
+			kind = memory.CandidateCaptureManual
+		}
+		byCaptureKind[kind]++
+		switch kind {
+		case memory.CandidateCaptureManual:
+			manualCount++
+		case memory.CandidateCaptureAutoTurnExtract:
+			autoGeneratedCount++
+		}
+	}
+	return map[string]any{
+		"count":                len(candidates),
+		"candidates":           candidates,
+		"status":               strings.TrimSpace(status),
+		"manual_count":         manualCount,
+		"auto_generated_count": autoGeneratedCount,
+		"capture_kinds":        byCaptureKind,
+	}, nil
+}
+
+func (h *Handler) memoryCandidateEdit(peerID, id string, patch memory.CandidatePatch, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	candidate, err := h.memStore.EditCandidate(ctx, peerID, id, patch)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "candidate": candidate}, nil
+}
+
+func (h *Handler) memoryCandidateApprove(peerID, id string, patch memory.CandidatePatch, reason string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	candidate, chunk, err := h.memStore.ApproveCandidate(ctx, peerID, id, patch, reason)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "candidate": candidate, "chunk": chunk}, nil
+}
+
+func (h *Handler) memoryCandidateMerge(peerID, id, mergeIntoID string, patch memory.CandidatePatch, reason string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if strings.TrimSpace(mergeIntoID) == "" {
+		return nil, fmt.Errorf("merge_into_id is required")
+	}
+	candidate, chunk, err := h.memStore.MergeCandidate(ctx, peerID, id, mergeIntoID, patch, reason)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "candidate": candidate, "chunk": chunk}, nil
+}
+
+func (h *Handler) memoryCandidateReject(peerID, id, reason string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if strings.TrimSpace(reason) == "" {
+		return nil, fmt.Errorf("reason is required")
+	}
+	candidate, err := h.memStore.RejectCandidate(ctx, peerID, id, reason)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "candidate": candidate}, nil
+}
+
+func (h *Handler) memoryEntityCreate(peerID string, kind string, name string, aliases []string, notes string, lastSeenAt int64, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	entity, err := h.memStore.CreateEntity(ctx, peerID, memory.EntityKind(kind), name, aliases, notes, lastSeenAt)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "entity": entity}, nil
+}
+
+func (h *Handler) memoryEntityUpdate(peerID, id string, patch memory.EntityPatch, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	entity, err := h.memStore.UpdateEntity(ctx, peerID, id, patch)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "entity": entity}, nil
+}
+
+func (h *Handler) memoryEntityGet(peerID, id string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	graph, err := h.memStore.GetEntityGraph(ctx, peerID, id)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"entity_graph": graph}, nil
+}
+
+func (h *Handler) memoryEntityList(peerID, kind string, limit int, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	entities, err := h.memStore.ListEntities(ctx, peerID, memory.EntityKind(kind), limit)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"count": len(entities), "entities": entities, "kind": strings.TrimSpace(kind)}, nil
+}
+
+func (h *Handler) memoryEntitySearch(peerID, query string, limit int, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, fmt.Errorf("q is required")
+	}
+	entities, err := h.memStore.SearchEntities(ctx, peerID, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"count": len(entities), "entities": entities}, nil
+}
+
+func (h *Handler) memoryEntityLinkChunk(peerID, id, chunkID string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if strings.TrimSpace(chunkID) == "" {
+		return nil, fmt.Errorf("chunk_id is required")
+	}
+	if err := h.memStore.LinkChunkToEntity(ctx, peerID, id, chunkID); err != nil {
+		return nil, err
+	}
+	graph, err := h.memStore.GetEntityGraph(ctx, peerID, id)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "entity_graph": graph}, nil
+}
+
+func (h *Handler) memoryEntityRelate(peerID, sourceID, targetID, relation, notes string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	relationship, err := h.memStore.RelateEntities(ctx, peerID, sourceID, targetID, relation, notes)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "relationship": relationship}, nil
+}
+
+func (h *Handler) memoryEntityTouch(peerID, id string, lastSeenAt int64, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	entity, err := h.memStore.TouchEntity(ctx, peerID, id, lastSeenAt)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "entity": entity}, nil
+}
+
+func (h *Handler) memoryEntityDelete(peerID, id string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if err := h.memStore.DeleteEntity(ctx, peerID, id); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "id": id}, nil
+}
+
+func (h *Handler) memoryEntityUnlinkChunk(peerID, id, chunkID string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if strings.TrimSpace(chunkID) == "" {
+		return nil, fmt.Errorf("chunk_id is required")
+	}
+	if err := h.memStore.UnlinkChunkFromEntity(ctx, peerID, id, chunkID); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "id": id, "chunk_id": chunkID}, nil
+}
+
+func (h *Handler) memoryEntityUnrelate(peerID, sourceID, targetID, relation string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(sourceID) == "" {
+		return nil, fmt.Errorf("source_id is required")
+	}
+	if strings.TrimSpace(targetID) == "" {
+		return nil, fmt.Errorf("target_id is required")
+	}
+	if strings.TrimSpace(relation) == "" {
+		return nil, fmt.Errorf("relation is required")
+	}
+	if err := h.memStore.UnrelateEntities(ctx, peerID, sourceID, targetID, relation); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "source_id": sourceID, "target_id": targetID, "relation": relation}, nil
 }
 
 func (h *Handler) workspaceList(peerID, path string, recursive bool, limit int) (map[string]any, error) {

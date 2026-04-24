@@ -11,6 +11,7 @@ SELECT chunks_fts.id,
   JOIN chunks ON chunks.id = chunks_fts.id
  WHERE chunks_fts MATCH ?
    AND chunks.peer_id = ?
+   AND COALESCE(chunks.exposure_policy,'auto') = 'auto'
    AND (COALESCE(chunks.expires_at,0) = 0 OR chunks.expires_at > strftime('%s','now'))
  ORDER BY rank
  LIMIT ?

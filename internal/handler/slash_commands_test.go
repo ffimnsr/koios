@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/handler"
+	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/gorilla/websocket"
 )
@@ -55,6 +60,119 @@ func dialSlashServerWithStore(t *testing.T, store *session.Store, ownerPeerIDs [
 	t.Cleanup(srv.Close)
 	conn := dialWS(t, srv, peerID)
 	return conn, store, prov
+}
+
+func dialSlashServerWithMemory(t *testing.T, peerID string) (*websocket.Conn, *memory.Store) {
+	t.Helper()
+	store := session.NewWithOptions(session.Options{MaxMessages: 50})
+	prov := &stubProvider{response: newSlashChatResponse("LLM reply")}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	t.Cleanup(func() { coord.Stop() })
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+		MemStore:     memStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return dialWS(t, srv, peerID), memStore
+}
+
+func dialSlashServerWithTasks(t *testing.T, peerID string) (*websocket.Conn, *tasks.Store) {
+	t.Helper()
+	store := session.NewWithOptions(session.Options{MaxMessages: 50})
+	prov := &stubProvider{response: newSlashChatResponse("LLM reply")}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	t.Cleanup(func() { coord.Stop() })
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	rt.EnableTasks(taskStore)
+	t.Cleanup(func() { _ = taskStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+		TaskStore:    taskStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return dialWS(t, srv, peerID), taskStore
+}
+
+func dialSlashServerWithCalendar(t *testing.T, peerID string) (*websocket.Conn, *calendar.Store) {
+	t.Helper()
+	store := session.NewWithOptions(session.Options{MaxMessages: 50})
+	prov := &stubProvider{response: newSlashChatResponse("LLM reply")}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	t.Cleanup(func() { coord.Stop() })
+	calendarStore, err := calendar.New(filepath.Join(t.TempDir(), "calendar.db"))
+	if err != nil {
+		t.Fatalf("calendar.New: %v", err)
+	}
+	t.Cleanup(func() { _ = calendarStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:         "test-model",
+		Timeout:       5 * time.Second,
+		AgentRuntime:  rt,
+		AgentCoord:    coord,
+		CalendarStore: calendarStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return dialWS(t, srv, peerID), calendarStore
+}
+
+func dialSlashServerWithBriefing(t *testing.T, peerID string) (*websocket.Conn, *memory.Store, *tasks.Store, *calendar.Store) {
+	t.Helper()
+	store := session.NewWithOptions(session.Options{MaxMessages: 50})
+	prov := &stubProvider{response: newSlashChatResponse("LLM reply")}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	t.Cleanup(func() { coord.Stop() })
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	t.Cleanup(func() { _ = taskStore.Close() })
+	calendarStore, err := calendar.New(filepath.Join(t.TempDir(), "calendar.db"))
+	if err != nil {
+		t.Fatalf("calendar.New: %v", err)
+	}
+	t.Cleanup(func() { _ = calendarStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:         "test-model",
+		Timeout:       5 * time.Second,
+		AgentRuntime:  rt,
+		AgentCoord:    coord,
+		MemStore:      memStore,
+		TaskStore:     taskStore,
+		CalendarStore: calendarStore,
+	})
+	store.Append(peerID,
+		types.Message{Role: "user", Content: "We need to send the vendor follow-up email today."},
+		types.Message{Role: "assistant", Content: "I should draft the project summary after the sync."},
+	)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return dialWS(t, srv, peerID), memStore, taskStore, calendarStore
 }
 
 type slashMemoryFlusher struct {
@@ -301,5 +419,312 @@ func TestNonSlash_FallsThrough(t *testing.T) {
 	sendSlashChat(t, conn, "1", "hello")
 	if len(prov.seenReqs) == 0 {
 		t.Error("expected LLM to be called for non-slash message")
+	}
+}
+
+func TestSlashMemoryQueueListAndApprove(t *testing.T) {
+	conn, memStore := dialSlashServerWithMemory(t, "memory-lima")
+	ctx := context.Background()
+	candidate, err := memStore.QueueCandidate(ctx, "memory-lima", "Remember the preferred deploy checklist", memory.ChunkOptions{})
+	if err != nil {
+		t.Fatalf("QueueCandidate: %v", err)
+	}
+
+	msg := sendSlashChat(t, conn, "1", "/memory queue list")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(text, candidate.ID) {
+		t.Fatalf("expected candidate id in list output, got: %s", text)
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/memory queue approve "+candidate.ID)
+	text = slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "approved") {
+		t.Fatalf("expected approval confirmation, got: %s", text)
+	}
+
+	chunks, err := memStore.List(ctx, "memory-lima", 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one approved memory chunk, got %d", len(chunks))
+	}
+	if chunks[0].Content != "Remember the preferred deploy checklist" {
+		t.Fatalf("unexpected approved chunk content: %q", chunks[0].Content)
+	}
+}
+
+func TestSlashMemoryQueueRejectRequiresReason(t *testing.T) {
+	conn, memStore := dialSlashServerWithMemory(t, "memory-mike")
+	ctx := context.Background()
+	candidate, err := memStore.QueueCandidate(ctx, "memory-mike", "Temporary draft note", memory.ChunkOptions{})
+	if err != nil {
+		t.Fatalf("QueueCandidate: %v", err)
+	}
+
+	msg := sendSlashChat(t, conn, "1", "/memory queue reject "+candidate.ID)
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(text, "Usage") {
+		t.Fatalf("expected usage guidance, got: %s", text)
+	}
+	pending, err := memStore.ListCandidates(ctx, "memory-mike", 10, memory.CandidateStatusPending)
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected candidate to remain pending, got %d", len(pending))
+	}
+}
+
+func TestSlashMemoryQueueListShowsProvenance(t *testing.T) {
+	conn, memStore := dialSlashServerWithMemory(t, "memory-november")
+	ctx := context.Background()
+	_, err := memStore.QueueCandidateWithProvenance(ctx, "memory-november", "User prefers terse release notes.", memory.ChunkOptions{}, memory.CandidateProvenance{
+		CaptureKind:      memory.CandidateCaptureAutoTurnExtract,
+		SourceSessionKey: "memory-november::main",
+		SourceExcerpt:    "Remember that I prefer terse release notes in updates.",
+	})
+	if err != nil {
+		t.Fatalf("QueueCandidateWithProvenance: %v", err)
+	}
+
+	msg := sendSlashChat(t, conn, "1", "/memory queue list")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(text, "source:") {
+		t.Fatalf("expected provenance in queue list, got: %s", text)
+	}
+	if !strings.Contains(text, "memory-november::main") {
+		t.Fatalf("expected source session in queue list, got: %s", text)
+	}
+	if !strings.Contains(text, "auto_turn_extract") {
+		t.Fatalf("expected capture kind in queue list, got: %s", text)
+	}
+}
+
+func TestSlashTasksExtractAndApprove(t *testing.T) {
+	conn, taskStore := dialSlashServerWithTasks(t, "tasks-oscar")
+	ctx := context.Background()
+
+	msg := sendSlashChat(t, conn, "1", "/tasks extract Remember to pay the hosting invoice tomorrow.")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(text, "Queued 1 task candidates") {
+		t.Fatalf("expected extraction confirmation, got: %s", text)
+	}
+
+	candidates, err := taskStore.ListCandidates(ctx, "tasks-oscar", 10, tasks.CandidateStatusPending)
+	if err != nil {
+		t.Fatalf("ListCandidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("pending candidates = %d, want 1", len(candidates))
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/tasks queue approve "+candidates[0].ID)
+	text = slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "approved") {
+		t.Fatalf("expected approval confirmation, got: %s", text)
+	}
+
+	tasksList, err := taskStore.ListTasks(ctx, "tasks-oscar", 10, tasks.TaskStatusOpen)
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasksList) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(tasksList))
+	}
+	if !strings.Contains(strings.ToLower(tasksList[0].Title), "hosting invoice") {
+		t.Fatalf("unexpected task title: %q", tasksList[0].Title)
+	}
+}
+
+func TestSlashTasksAssignCompleteAndReopen(t *testing.T) {
+	conn, taskStore := dialSlashServerWithTasks(t, "tasks-papa")
+	ctx := context.Background()
+	candidate, err := taskStore.QueueCandidate(ctx, "tasks-papa", tasks.CandidateInput{Title: "Send board update"})
+	if err != nil {
+		t.Fatalf("QueueCandidate: %v", err)
+	}
+	_, task, err := taskStore.ApproveCandidate(ctx, "tasks-papa", candidate.ID, tasks.CandidatePatch{}, "confirmed")
+	if err != nil {
+		t.Fatalf("ApproveCandidate: %v", err)
+	}
+
+	msg := sendSlashChat(t, conn, "1", "/tasks assign "+task.ID+" finance")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "assigned") {
+		t.Fatalf("expected assign confirmation, got: %s", text)
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/tasks complete "+task.ID)
+	text = slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "completed") {
+		t.Fatalf("expected complete confirmation, got: %s", text)
+	}
+
+	msg = sendSlashChat(t, conn, "3", "/tasks reopen "+task.ID)
+	text = slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "reopened") {
+		t.Fatalf("expected reopen confirmation, got: %s", text)
+	}
+
+	loaded, err := taskStore.GetTask(ctx, "tasks-papa", task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if loaded.Owner != "finance" {
+		t.Fatalf("owner = %q, want finance", loaded.Owner)
+	}
+	if loaded.Status != tasks.TaskStatusOpen {
+		t.Fatalf("status = %q, want open", loaded.Status)
+	}
+}
+
+func TestSlashWaitingAddAndResolve(t *testing.T) {
+	conn, taskStore := dialSlashServerWithTasks(t, "waiting-romeo")
+	ctx := context.Background()
+
+	msg := sendSlashChat(t, conn, "1", "/waiting add vendor | Vendor reply on contract redlines")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "created waiting-on") {
+		t.Fatalf("expected waiting creation confirmation, got: %s", text)
+	}
+
+	items, err := taskStore.ListWaitingOns(ctx, "waiting-romeo", 10, tasks.WaitingStatusOpen)
+	if err != nil {
+		t.Fatalf("ListWaitingOns: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("waiting records = %d, want 1", len(items))
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/waiting resolve "+items[0].ID)
+	text = slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "resolved") {
+		t.Fatalf("expected waiting resolve confirmation, got: %s", text)
+	}
+
+	loaded, err := taskStore.GetWaitingOn(ctx, "waiting-romeo", items[0].ID)
+	if err != nil {
+		t.Fatalf("GetWaitingOn: %v", err)
+	}
+	if loaded.Status != tasks.WaitingStatusResolved {
+		t.Fatalf("status = %q, want resolved", loaded.Status)
+	}
+}
+
+func TestSlashCalendarAddListAndAgenda(t *testing.T) {
+	conn, calendarStore := dialSlashServerWithCalendar(t, "calendar-sierra")
+	ctx := context.Background()
+	icsPath := filepath.Join(t.TempDir(), "Agenda.ics")
+	ics := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:evt-1\nSUMMARY:Design review\nDTSTART:20260424T090000Z\nDTEND:20260424T100000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+	if err := os.WriteFile(icsPath, []byte(ics), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	msg := sendSlashChat(t, conn, "1", "/calendar add Work | "+icsPath+" | UTC")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "created calendar source") {
+		t.Fatalf("expected create confirmation, got: %s", text)
+	}
+
+	sources, err := calendarStore.ListSources(ctx, "calendar-sierra", false)
+	if err != nil {
+		t.Fatalf("ListSources: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("sources = %d, want 1", len(sources))
+	}
+	if sources[0].Path != icsPath {
+		t.Fatalf("path = %q, want %q", sources[0].Path, icsPath)
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/calendar list")
+	text = slashAssistantText(t, msg)
+	if !strings.Contains(text, "Work") {
+		t.Fatalf("expected source listing, got: %s", text)
+	}
+
+	msg = sendSlashChat(t, conn, "3", "/calendar agenda today UTC")
+	text = slashAssistantText(t, msg)
+	if !strings.Contains(text, "Design review") {
+		t.Fatalf("expected agenda event, got: %s", text)
+	}
+	if !strings.Contains(text, "Work") {
+		t.Fatalf("expected source name in agenda, got: %s", text)
+	}
+}
+
+func TestSlashCalendarRemove(t *testing.T) {
+	conn, calendarStore := dialSlashServerWithCalendar(t, "calendar-tango")
+	ctx := context.Background()
+	icsPath := filepath.Join(t.TempDir(), "team.ics")
+	ics := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:evt-2\nSUMMARY:Standup\nDTSTART:20260424T110000Z\nDTEND:20260424T113000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+	if err := os.WriteFile(icsPath, []byte(ics), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	source, err := calendarStore.CreateSource(ctx, "calendar-tango", calendar.SourceInput{Name: "Team", Path: icsPath})
+	if err != nil {
+		t.Fatalf("CreateSource: %v", err)
+	}
+
+	msg := sendSlashChat(t, conn, "1", "/calendar remove "+source.ID)
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(strings.ToLower(text), "removed calendar source") {
+		t.Fatalf("expected remove confirmation, got: %s", text)
+	}
+
+	sources, err := calendarStore.ListSources(ctx, "calendar-tango", false)
+	if err != nil {
+		t.Fatalf("ListSources: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("sources = %d, want 0", len(sources))
+	}
+}
+
+func TestSlashBriefDaily(t *testing.T) {
+	conn, memStore, taskStore, calendarStore := dialSlashServerWithBriefing(t, "brief-nina")
+	ctx := context.Background()
+	if _, err := memStore.QueueCandidate(ctx, "brief-nina", "Remember preferred summary style", memory.ChunkOptions{}); err != nil {
+		t.Fatalf("QueueCandidate: %v", err)
+	}
+	if _, err := taskStore.CreateWaitingOn(ctx, "brief-nina", tasks.WaitingOnInput{Title: "Vendor reply", WaitingFor: "vendor", FollowUpAt: time.Now().Add(-time.Hour).Unix()}); err != nil {
+		t.Fatalf("CreateWaitingOn: %v", err)
+	}
+	if _, err := memStore.CreateEntity(ctx, "brief-nina", memory.EntityKindProject, "Launch", nil, "Kickoff week", time.Now().Unix()); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	icsPath := filepath.Join(t.TempDir(), "brief.ics")
+	ics := strings.Join([]string{
+		"BEGIN:VCALENDAR",
+		"VERSION:2.0",
+		"PRODID:-//Koios//EN",
+		"BEGIN:VEVENT",
+		"UID:brief-event",
+		"DTSTAMP:20260424T090000Z",
+		"DTSTART:20260424T150000Z",
+		"DTEND:20260424T153000Z",
+		"SUMMARY:Planning Sync",
+		"END:VEVENT",
+		"END:VCALENDAR",
+	}, "\n")
+	if err := os.WriteFile(icsPath, []byte(ics), 0o600); err != nil {
+		t.Fatalf("write ics: %v", err)
+	}
+	enabled := true
+	if _, err := calendarStore.CreateSource(ctx, "brief-nina", calendar.SourceInput{Name: "Work", Path: icsPath, Enabled: &enabled}); err != nil {
+		t.Fatalf("CreateSource: %v", err)
+	}
+
+	msg := sendSlashChat(t, conn, "1", "/brief daily UTC")
+	text := slashAssistantText(t, msg)
+	if !strings.Contains(text, "Daily brief") {
+		t.Fatalf("expected daily brief output, got: %s", text)
+	}
+	if !strings.Contains(text, "Planning Sync") {
+		t.Fatalf("expected agenda event in brief, got: %s", text)
+	}
+	if !strings.Contains(text, "Vendor reply") {
+		t.Fatalf("expected waiting item in brief, got: %s", text)
 	}
 }

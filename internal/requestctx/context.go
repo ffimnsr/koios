@@ -187,7 +187,7 @@ func injectMemory(ctx context.Context, store *memory.Store, peerID, query string
 	if strings.TrimSpace(query) == "" {
 		return "", 0, nil
 	}
-	hits, err := store.Search(ctx, peerID, query, topK)
+	hits, err := store.SearchForInjection(ctx, peerID, query, topK)
 	if err != nil || len(hits) == 0 {
 		return "", 0, err
 	}
@@ -201,7 +201,7 @@ func injectMemory(ctx context.Context, store *memory.Store, peerID, query string
 }
 
 func injectRecentMemory(ctx context.Context, store *memory.Store, peerID string, n int) (string, int, error) {
-	chunks, err := store.Recent(ctx, peerID, n)
+	chunks, err := store.RecentForInjection(ctx, peerID, n)
 	if err != nil || len(chunks) == 0 {
 		return "", 0, err
 	}

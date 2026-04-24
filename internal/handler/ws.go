@@ -38,12 +38,16 @@
 //	ping
 //	server.capabilities
 //	chat
+//	brief.generate
 //	session.history
 //	session.reset
 //	standing.get / .set / .clear
 //	agent.run / .start / .get / .wait / .cancel
 //	subagent.list / .spawn / .get / .status / .kill / .steer / .transcript
-//	memory.search / .insert / .list / .delete
+//	memory.search / .insert / .get / .list / .delete / .tag / .batch_get / .timeline / .stats
+//	task.candidate.create / .extract / .list / .edit / .approve / .reject
+//	task.list / .get / .update / .assign / .snooze / .complete / .reopen
+//	waiting.create / .list / .get / .update / .snooze / .resolve / .reopen
 //	cron.list / .create / .get / .update / .delete / .trigger / .runs
 //	runs.list / .get
 //	heartbeat.get / .set / .wake
@@ -61,6 +65,8 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/briefing"
+	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/heartbeat"
 	"github.com/ffimnsr/koios/internal/mcp"
@@ -74,6 +80,7 @@ import (
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
+	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/usage"
 	"github.com/ffimnsr/koios/internal/workflow"
@@ -213,6 +220,8 @@ type Handler struct {
 	timeout                 time.Duration
 	model                   string
 	memStore                *memory.Store
+	taskStore               *tasks.Store
+	calendarStore           *calendar.Store
 	memTopK                 int
 	memInject               bool
 	identityDir             string
@@ -276,6 +285,8 @@ type HandlerOptions struct {
 	Model                   string
 	Timeout                 time.Duration
 	MemStore                *memory.Store
+	TaskStore               *tasks.Store
+	CalendarStore           *calendar.Store
 	MemTopK                 int
 	MemInject               bool
 	HBRunner                *heartbeat.Runner
@@ -343,6 +354,8 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		timeout:                 timeout,
 		model:                   opts.Model,
 		memStore:                opts.MemStore,
+		taskStore:               opts.TaskStore,
+		calendarStore:           opts.CalendarStore,
 		memTopK:                 topK,
 		memInject:               opts.MemInject,
 		identityDir:             opts.WorkspaceRoot,
@@ -692,6 +705,8 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 	// ── Chat ──────────────────────────────────────────────────────────────
 	case "chat":
 		h.rpcChat(ctx, wsc, req)
+	case "brief.generate":
+		h.rpcBriefGenerate(ctx, wsc, req)
 	case "session.history":
 		h.rpcSessionHistory(ctx, wsc, req)
 	case "session.reset":
@@ -790,6 +805,260 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcMemoryDelete(ctx, wsc, req)
+	case "memory.tag":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryTag(ctx, wsc, req)
+	case "memory.entity.create":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityCreate(ctx, wsc, req)
+	case "memory.entity.update":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityUpdate(ctx, wsc, req)
+	case "memory.entity.get":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityGet(ctx, wsc, req)
+	case "memory.entity.list":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityList(ctx, wsc, req)
+	case "memory.entity.search":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntitySearch(ctx, wsc, req)
+	case "memory.entity.link_chunk":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityLinkChunk(ctx, wsc, req)
+	case "memory.entity.relate":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityRelate(ctx, wsc, req)
+	case "memory.entity.touch":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityTouch(ctx, wsc, req)
+	case "memory.entity.delete":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityDelete(ctx, wsc, req)
+	case "memory.entity.unlink_chunk":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityUnlinkChunk(ctx, wsc, req)
+	case "memory.entity.unrelate":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryEntityUnrelate(ctx, wsc, req)
+	case "memory.candidate.create":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryCandidateCreate(ctx, wsc, req)
+	case "memory.candidate.list":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryCandidateList(ctx, wsc, req)
+	case "memory.candidate.edit":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryCandidateEdit(ctx, wsc, req)
+	case "memory.candidate.approve":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryCandidateApprove(ctx, wsc, req)
+	case "memory.candidate.merge":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryCandidateMerge(ctx, wsc, req)
+	case "memory.candidate.reject":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryCandidateReject(ctx, wsc, req)
+
+	// ── Tasks ─────────────────────────────────────────────────────────────
+	case "task.candidate.create":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskCandidateCreate(ctx, wsc, req)
+	case "task.candidate.extract":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskCandidateExtract(ctx, wsc, req)
+	case "task.candidate.list":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskCandidateList(ctx, wsc, req)
+	case "task.candidate.edit":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskCandidateEdit(ctx, wsc, req)
+	case "task.candidate.approve":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskCandidateApprove(ctx, wsc, req)
+	case "task.candidate.reject":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskCandidateReject(ctx, wsc, req)
+	case "task.list":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskList(ctx, wsc, req)
+	case "task.get":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskGet(ctx, wsc, req)
+	case "task.update":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskUpdate(ctx, wsc, req)
+	case "task.assign":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskAssign(ctx, wsc, req)
+	case "task.snooze":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskSnooze(ctx, wsc, req)
+	case "task.complete":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskComplete(ctx, wsc, req)
+	case "task.reopen":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcTaskReopen(ctx, wsc, req)
+	case "waiting.create":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcWaitingCreate(ctx, wsc, req)
+	case "waiting.list":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcWaitingList(ctx, wsc, req)
+	case "waiting.get":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcWaitingGet(ctx, wsc, req)
+	case "waiting.update":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcWaitingUpdate(ctx, wsc, req)
+	case "waiting.snooze":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcWaitingSnooze(ctx, wsc, req)
+	case "waiting.resolve":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcWaitingResolve(ctx, wsc, req)
+	case "waiting.reopen":
+		if h.taskStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "tasks are not enabled")
+			return
+		}
+		h.rpcWaitingReopen(ctx, wsc, req)
+	case "calendar.source.create":
+		if h.calendarStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "calendar is not enabled")
+			return
+		}
+		h.rpcCalendarSourceCreate(ctx, wsc, req)
+	case "calendar.source.list":
+		if h.calendarStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "calendar is not enabled")
+			return
+		}
+		h.rpcCalendarSourceList(ctx, wsc, req)
+	case "calendar.source.delete":
+		if h.calendarStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "calendar is not enabled")
+			return
+		}
+		h.rpcCalendarSourceDelete(ctx, wsc, req)
+	case "calendar.agenda":
+		if h.calendarStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "calendar is not enabled")
+			return
+		}
+		h.rpcCalendarAgenda(ctx, wsc, req)
 
 	// ── Workspace ─────────────────────────────────────────────────────────
 	case "workspace.list":
@@ -1011,6 +1280,9 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 	caps := map[string]bool{
 		"agent_runtime": h.agentRuntime != nil && h.agentCoord != nil,
 		"memory":        h.memStore != nil,
+		"tasks":         h.taskStore != nil,
+		"calendar":      h.calendarStore != nil,
+		"briefing":      true,
 		"cron":          h.jobStore != nil && h.sched != nil,
 		"heartbeat":     h.hbRunner != nil && h.hbConfigStore != nil,
 		"standing":      h.standingManager != nil,
@@ -1025,6 +1297,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		"ping",
 		"server.capabilities",
 		"chat",
+		"brief.generate",
 		"session.history",
 		"session.reset",
 	}
@@ -1056,7 +1329,63 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		)
 	}
 	if caps["memory"] {
-		methods = append(methods, "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete")
+		methods = append(methods,
+			"memory.search",
+			"memory.insert",
+			"memory.get",
+			"memory.list",
+			"memory.delete",
+			"memory.tag",
+			"memory.entity.create",
+			"memory.entity.update",
+			"memory.entity.get",
+			"memory.entity.list",
+			"memory.entity.search",
+			"memory.entity.link_chunk",
+			"memory.entity.relate",
+			"memory.entity.touch",
+			"memory.entity.delete",
+			"memory.entity.unlink_chunk",
+			"memory.entity.unrelate",
+			"memory.candidate.create",
+			"memory.candidate.list",
+			"memory.candidate.edit",
+			"memory.candidate.approve",
+			"memory.candidate.merge",
+			"memory.candidate.reject",
+		)
+	}
+	if caps["tasks"] {
+		methods = append(methods,
+			"task.candidate.create",
+			"task.candidate.extract",
+			"task.candidate.list",
+			"task.candidate.edit",
+			"task.candidate.approve",
+			"task.candidate.reject",
+			"task.list",
+			"task.get",
+			"task.update",
+			"task.assign",
+			"task.snooze",
+			"task.complete",
+			"task.reopen",
+			"waiting.create",
+			"waiting.list",
+			"waiting.get",
+			"waiting.update",
+			"waiting.snooze",
+			"waiting.resolve",
+			"waiting.reopen",
+		)
+	}
+	if caps["calendar"] {
+		methods = append(methods,
+			"calendar.source.create",
+			"calendar.source.list",
+			"calendar.source.delete",
+			"calendar.agenda",
+		)
 	}
 	if caps["workspace"] {
 		methods = append(methods, "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete")
@@ -1303,7 +1632,6 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 				"content": visibleText,
 			})
 		}
-		h.indexMemory(ctx, wsc.peerID, append(turnMessages, types.Message{Role: "assistant", Content: result.AssistantText}))
 		if h.usageStore != nil {
 			h.usageStore.Add(wsc.peerID, result.Usage)
 		}
@@ -1317,7 +1645,6 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 		wsc.replyErr(req.ID, errCodeServer, "upstream error: "+err.Error())
 		return
 	}
-	h.indexMemory(ctx, wsc.peerID, append(turnMessages, types.Message{Role: "assistant", Content: result.AssistantText}))
 	if h.usageStore != nil {
 		if result.Response != nil {
 			h.usageStore.Add(wsc.peerID, result.Response.Usage)
@@ -1325,22 +1652,6 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	}
 	_, visibleResp := h.userVisibleReply(wsc.peerID, result)
 	wsc.reply(req.ID, visibleResp)
-}
-
-// indexMemory inserts new conversation turns into the long-term memory store.
-// Runs best-effort: errors are logged and discarded.
-func (h *Handler) indexMemory(ctx context.Context, peerID string, msgs []types.Message) {
-	if h.memStore == nil {
-		return
-	}
-	for _, m := range msgs {
-		if m.Content == "" {
-			continue
-		}
-		if err := h.memStore.Insert(ctx, peerID, m.Content); err != nil {
-			slog.Warn("ws: memory index", "peer", peerID, "err", err)
-		}
-	}
 }
 
 // attachFilesToLastUserMessage builds multipart content for the last user
@@ -1395,6 +1706,20 @@ func (h *Handler) rpcSessionReset(_ context.Context, wsc *wsConn, req *rpcReques
 	h.store.Reset(wsc.peerID)
 	slog.Info("ws: session reset", "peer", wsc.peerID)
 	wsc.reply(req.ID, map[string]bool{"ok": true})
+}
+
+func (h *Handler) rpcBriefGenerate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var opts briefing.Options
+	if err := decodeParams(req.Params, &opts); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.briefGenerate(wsc.peerID, opts, ctx)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
 }
 
 func (h *Handler) rpcSessionHistory(_ context.Context, wsc *wsConn, req *rpcRequest) {
@@ -1918,13 +2243,18 @@ func (h *Handler) rpcMemorySearch(ctx context.Context, wsc *wsConn, req *rpcRequ
 
 func (h *Handler) rpcMemoryInsert(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
-		Content string `json:"content"`
+		Content        string   `json:"content"`
+		Tags           []string `json:"tags"`
+		Category       string   `json:"category"`
+		RetentionClass string   `json:"retention_class"`
+		ExposurePolicy string   `json:"exposure_policy"`
+		ExpiresAt      int64    `json:"expires_at"`
 	}
 	if err := decodeParams(req.Params, &p); err != nil {
 		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
 		return
 	}
-	result, err := h.memoryInsert(wsc.peerID, p.Content, ctx)
+	result, err := h.memoryInsertWithOptions(wsc.peerID, p.Content, p.Tags, p.Category, p.RetentionClass, p.ExposurePolicy, p.ExpiresAt, ctx)
 	if err != nil {
 		slog.Error("ws: memory insert", "peer", wsc.peerID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "insert error: "+err.Error())
@@ -1945,6 +2275,234 @@ func (h *Handler) rpcMemoryGet(ctx context.Context, wsc *wsConn, req *rpcRequest
 	if err != nil {
 		slog.Error("ws: memory get", "peer", wsc.peerID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "get error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryTag(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID             string   `json:"id"`
+		Tags           []string `json:"tags"`
+		Category       string   `json:"category"`
+		RetentionClass string   `json:"retention_class"`
+		ExposurePolicy string   `json:"exposure_policy"`
+		ExpiresAt      int64    `json:"expires_at"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryTag(wsc.peerID, p.ID, p.Tags, p.Category, p.RetentionClass, p.ExposurePolicy, p.ExpiresAt, ctx)
+	if err != nil {
+		slog.Error("ws: memory tag", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "tag error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityCreate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Kind       string   `json:"kind"`
+		Name       string   `json:"name"`
+		Aliases    []string `json:"aliases"`
+		Notes      string   `json:"notes"`
+		LastSeenAt int64    `json:"last_seen_at"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityCreate(wsc.peerID, p.Kind, p.Name, p.Aliases, p.Notes, p.LastSeenAt, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity create", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity create error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityUpdate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID         string    `json:"id"`
+		Kind       *string   `json:"kind"`
+		Name       *string   `json:"name"`
+		Aliases    *[]string `json:"aliases"`
+		Notes      *string   `json:"notes"`
+		LastSeenAt *int64    `json:"last_seen_at"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityUpdate(wsc.peerID, p.ID, entityPatch(p.Kind, p.Name, p.Aliases, p.Notes, p.LastSeenAt), ctx)
+	if err != nil {
+		slog.Error("ws: memory entity update", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity update error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityGet(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityGet(wsc.peerID, p.ID, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity get", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity get error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityList(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Kind  string `json:"kind"`
+		Limit int    `json:"limit"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityList(wsc.peerID, p.Kind, p.Limit, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity list", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity list error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntitySearch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Q     string `json:"q"`
+		Limit int    `json:"limit"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntitySearch(wsc.peerID, p.Q, p.Limit, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity search", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity search error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityLinkChunk(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID      string `json:"id"`
+		ChunkID string `json:"chunk_id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityLinkChunk(wsc.peerID, p.ID, p.ChunkID, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity link chunk", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity link error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityRelate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		SourceID string `json:"source_id"`
+		TargetID string `json:"target_id"`
+		Relation string `json:"relation"`
+		Notes    string `json:"notes"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityRelate(wsc.peerID, p.SourceID, p.TargetID, p.Relation, p.Notes, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity relate", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity relate error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityTouch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID         string `json:"id"`
+		LastSeenAt int64  `json:"last_seen_at"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityTouch(wsc.peerID, p.ID, p.LastSeenAt, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity touch", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity touch error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityDelete(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityDelete(wsc.peerID, p.ID, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity delete", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity delete error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityUnlinkChunk(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID      string `json:"id"`
+		ChunkID string `json:"chunk_id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityUnlinkChunk(wsc.peerID, p.ID, p.ChunkID, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity unlink chunk", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity unlink error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryEntityUnrelate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		SourceID string `json:"source_id"`
+		TargetID string `json:"target_id"`
+		Relation string `json:"relation"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryEntityUnrelate(wsc.peerID, p.SourceID, p.TargetID, p.Relation, ctx)
+	if err != nil {
+		slog.Error("ws: memory entity unrelate", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "entity unrelate error: "+err.Error())
 		return
 	}
 	wsc.reply(req.ID, result)
@@ -1994,6 +2552,136 @@ func (h *Handler) rpcMemoryDelete(ctx context.Context, wsc *wsConn, req *rpcRequ
 		return
 	}
 	wsc.reply(req.ID, map[string]bool{"ok": true})
+}
+
+func (h *Handler) rpcMemoryCandidateCreate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Content        string   `json:"content"`
+		Tags           []string `json:"tags"`
+		Category       string   `json:"category"`
+		RetentionClass string   `json:"retention_class"`
+		ExposurePolicy string   `json:"exposure_policy"`
+		ExpiresAt      int64    `json:"expires_at"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryCandidateCreate(wsc.peerID, p.Content, p.Tags, p.Category, p.RetentionClass, p.ExposurePolicy, p.ExpiresAt, ctx)
+	if err != nil {
+		slog.Error("ws: memory candidate create", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "candidate create error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryCandidateList(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Limit  int    `json:"limit,omitempty"`
+		Status string `json:"status,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryCandidateList(wsc.peerID, p.Limit, p.Status, ctx)
+	if err != nil {
+		slog.Error("ws: memory candidate list", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "candidate list error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryCandidateEdit(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID             string    `json:"id"`
+		Content        *string   `json:"content"`
+		Tags           *[]string `json:"tags"`
+		Category       *string   `json:"category"`
+		RetentionClass *string   `json:"retention_class"`
+		ExposurePolicy *string   `json:"exposure_policy"`
+		ExpiresAt      *int64    `json:"expires_at"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryCandidateEdit(wsc.peerID, p.ID, candidatePatch(p.Content, p.Tags, p.Category, p.RetentionClass, p.ExposurePolicy, p.ExpiresAt), ctx)
+	if err != nil {
+		slog.Error("ws: memory candidate edit", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "candidate edit error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryCandidateApprove(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID             string    `json:"id"`
+		Reason         string    `json:"reason"`
+		Content        *string   `json:"content"`
+		Tags           *[]string `json:"tags"`
+		Category       *string   `json:"category"`
+		RetentionClass *string   `json:"retention_class"`
+		ExposurePolicy *string   `json:"exposure_policy"`
+		ExpiresAt      *int64    `json:"expires_at"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryCandidateApprove(wsc.peerID, p.ID, candidatePatch(p.Content, p.Tags, p.Category, p.RetentionClass, p.ExposurePolicy, p.ExpiresAt), p.Reason, ctx)
+	if err != nil {
+		slog.Error("ws: memory candidate approve", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "candidate approve error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryCandidateMerge(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID             string    `json:"id"`
+		MergeIntoID    string    `json:"merge_into_id"`
+		Reason         string    `json:"reason"`
+		Content        *string   `json:"content"`
+		Tags           *[]string `json:"tags"`
+		Category       *string   `json:"category"`
+		RetentionClass *string   `json:"retention_class"`
+		ExposurePolicy *string   `json:"exposure_policy"`
+		ExpiresAt      *int64    `json:"expires_at"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryCandidateMerge(wsc.peerID, p.ID, p.MergeIntoID, candidatePatch(p.Content, p.Tags, p.Category, p.RetentionClass, p.ExposurePolicy, p.ExpiresAt), p.Reason, ctx)
+	if err != nil {
+		slog.Error("ws: memory candidate merge", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "candidate merge error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryCandidateReject(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID     string `json:"id"`
+		Reason string `json:"reason"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryCandidateReject(wsc.peerID, p.ID, p.Reason, ctx)
+	if err != nil {
+		slog.Error("ws: memory candidate reject", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "candidate reject error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
 }
 
 // ── workspace ────────────────────────────────────────────────────────────────

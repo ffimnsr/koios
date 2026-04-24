@@ -20,6 +20,7 @@ import (
 	"github.com/ffimnsr/koios/internal/requestctx"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
+	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -119,6 +120,28 @@ type Result struct {
 	SuppressionToken string              `json:"suppression_token,omitempty"`
 }
 
+type memoryCandidateExtraction struct {
+	Candidates []memoryCandidateSuggestion `json:"candidates"`
+}
+
+type memoryCandidateSuggestion struct {
+	Content        string   `json:"content"`
+	Category       string   `json:"category,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	RetentionClass string   `json:"retention_class,omitempty"`
+}
+
+type entityExtraction struct {
+	Entities []entitySuggestion `json:"entities"`
+}
+
+type entitySuggestion struct {
+	Kind    string   `json:"kind"`
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases,omitempty"`
+	Notes   string   `json:"notes,omitempty"`
+}
+
 type providerCapabilities interface {
 	Capabilities(model string) types.ProviderCapabilities
 }
@@ -175,6 +198,7 @@ type Runtime struct {
 	defaultTimeout    time.Duration
 	globalKey         string
 	memStore          *memory.Store
+	taskStore         *tasks.Store
 	memTopK           int
 	memInject         bool
 	memLCMWindow      int
@@ -231,6 +255,11 @@ func (rt *Runtime) EnableMemory(store *memory.Store, inject bool, topK int) {
 	if rt.memTopK <= 0 {
 		rt.memTopK = 3
 	}
+}
+
+// EnableTasks configures the durable task store used for extraction and review.
+func (rt *Runtime) EnableTasks(store *tasks.Store) {
+	rt.taskStore = store
 }
 
 // SetMemoryLCM configures the Latent Context Memory sliding-window window size
@@ -710,7 +739,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				if assistantMsg, ok := assistantMessage(assistantText, resp); ok {
 					persistedMessages = append(persistedMessages, assistantMsg)
 				}
-				rt.persistTurn(reqCopy.PeerID, sessionKey, persistedMessages, workingMessages, assistantText, result.SuppressedReply)
+				rt.persistTurn(reqCopy.PeerID, sessionKey, reqCopy.Model, persistedMessages, workingMessages, assistantText, result.SuppressedReply)
 				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunFinish, SessionKey: sessionKey, Step: step, Message: assistantText})
 				return result, nil
 			}
@@ -799,9 +828,9 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 	} else {
 		resp, callErr = rt.prov.Complete(ctx, req)
 		if callErr == nil {
-				if resp == nil {
-					callErr = fmt.Errorf("nil response from provider")
-				} else if len(resp.Choices) == 0 {
+			if resp == nil {
+				callErr = fmt.Errorf("nil response from provider")
+			} else if len(resp.Choices) == 0 {
 				callErr = fmt.Errorf("empty response from provider")
 			} else {
 				text = resp.Choices[0].Message.Content
@@ -871,17 +900,15 @@ func assistantMessage(assistantText string, resp *types.ChatResponse) (types.Mes
 	return types.Message{Role: "assistant", Content: assistantText}, true
 }
 
-func (rt *Runtime) persistTurn(peerID, sessionKey string, transcript, workingMessages []types.Message, assistantText string, suppressed bool) {
+func (rt *Runtime) persistTurn(peerID, sessionKey, model string, transcript, workingMessages []types.Message, assistantText string, suppressed bool) {
 	// Session persistence — unchanged behavior.
 	if len(transcript) > 0 {
 		rt.store.AppendCtx(context.Background(), sessionKey, transcript...)
 	}
 
-	// Long-term memory persistence — write a compact turn summary on every
-	// completed run so that past interactions are retrievable via semantic
-	// search without waiting for a compaction event.
-	// Tool result payloads are intentionally excluded; only tool names are
-	// recorded so that entries stay small and signal-rich.
+	// Long-term memory persistence stores a compact archived turn summary for
+	// operator recall while candidate extraction proposes higher-signal facts
+	// for explicit approval before they become auto-injectable memory.
 	if suppressed || rt.memStore == nil || peerID == "" {
 		return
 	}
@@ -889,8 +916,25 @@ func (rt *Runtime) persistTurn(peerID, sessionKey string, transcript, workingMes
 	if chunk == "" {
 		return
 	}
-	if err := rt.memStore.Insert(context.Background(), peerID, redact.String(chunk)); err != nil {
-		slog.Warn("agent: long-term memory insert failed", "peer", peerID, "err", err)
+	memCtx, cancel := context.WithTimeout(context.Background(), minDuration(rt.defaultTimeout/4, 8*time.Second))
+	defer cancel()
+	archivedChunk, err := rt.memStore.InsertChunkWithOptions(memCtx, peerID, redact.String(chunk), memory.ChunkOptions{
+		Category:       "conversation",
+		RetentionClass: memory.RetentionClassArchive,
+		ExposurePolicy: memory.ExposurePolicySearchOnly,
+	})
+	if err != nil {
+		slog.Warn("agent: archived turn memory insert failed", "peer", peerID, "err", err)
+		return
+	}
+	if err := rt.queueTurnMemoryCandidates(memCtx, peerID, sessionKey, model, transcript, chunk); err != nil {
+		slog.Warn("agent: memory candidate extraction failed", "peer", peerID, "err", err)
+	}
+	if err := rt.queueTurnTaskCandidates(memCtx, peerID, sessionKey, transcript); err != nil {
+		slog.Warn("agent: task candidate extraction failed", "peer", peerID, "err", err)
+	}
+	if err := rt.upsertTurnEntities(memCtx, peerID, sessionKey, model, transcript, chunk, archivedChunk.ID); err != nil {
+		slog.Warn("agent: entity extraction failed", "peer", peerID, "err", err)
 	}
 }
 
@@ -925,12 +969,7 @@ func (rt *Runtime) sessionPolicy(sessionKey string) session.SessionPolicy {
 // and the final assistant response.
 func buildTurnMemoryChunk(userMsgs, workingMsgs []types.Message, assistantText string) string {
 	// Use the last non-empty user message as the anchor.
-	var userContent string
-	for _, m := range userMsgs {
-		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
-			userContent = strings.TrimSpace(m.Content)
-		}
-	}
+	userContent := lastUserMessageContent(userMsgs)
 	if userContent == "" {
 		return ""
 	}
@@ -956,6 +995,331 @@ func buildTurnMemoryChunk(userMsgs, workingMsgs []types.Message, assistantText s
 		fmt.Fprintf(&sb, "Assistant: %s", a)
 	}
 	return strings.TrimSpace(sb.String())
+}
+
+func lastUserMessageContent(msgs []types.Message) string {
+	var userContent string
+	for _, m := range msgs {
+		if m.Role == "user" && strings.TrimSpace(m.Content) != "" {
+			userContent = strings.TrimSpace(m.Content)
+		}
+	}
+	return userContent
+}
+
+func (rt *Runtime) queueTurnMemoryCandidates(ctx context.Context, peerID, sessionKey, model string, transcript []types.Message, summary string) error {
+	if rt == nil || rt.prov == nil || rt.memStore == nil {
+		return nil
+	}
+	userContent := lastUserMessageContent(transcript)
+	if !shouldExtractMemoryCandidates(userContent) {
+		return nil
+	}
+	suggestions, err := rt.extractMemoryCandidates(ctx, model, summary)
+	if err != nil {
+		return err
+	}
+	if len(suggestions) == 0 {
+		return nil
+	}
+	seen, err := rt.existingMemoryContentSet(ctx, peerID)
+	if err != nil {
+		return err
+	}
+	for _, suggestion := range suggestions {
+		normalized := normalizeMemoryCandidateContent(suggestion.Content)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		if _, err := rt.memStore.QueueCandidateWithProvenance(ctx, peerID, suggestion.Content, memory.ChunkOptions{
+			Tags:           suggestion.Tags,
+			Category:       strings.TrimSpace(suggestion.Category),
+			RetentionClass: normalizeSuggestionRetention(suggestion.RetentionClass),
+		}, memory.CandidateProvenance{
+			CaptureKind:      memory.CandidateCaptureAutoTurnExtract,
+			SourceSessionKey: rt.normalizeSessionKey(sessionKey),
+			SourceExcerpt:    userContent,
+		}); err != nil {
+			slog.Warn("agent: memory candidate queue failed", "peer", peerID, "err", err)
+			continue
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
+func (rt *Runtime) queueTurnTaskCandidates(ctx context.Context, peerID, sessionKey string, transcript []types.Message) error {
+	if rt == nil || rt.taskStore == nil {
+		return nil
+	}
+	userContent := lastUserMessageContent(transcript)
+	if !shouldExtractTaskCandidates(userContent) {
+		return nil
+	}
+	_, err := rt.taskStore.ExtractAndQueue(ctx, peerID, userContent, tasks.CandidateProvenance{
+		CaptureKind:      tasks.CandidateCaptureAutoTurnExtract,
+		SourceSessionKey: rt.normalizeSessionKey(sessionKey),
+		SourceExcerpt:    userContent,
+	})
+	return err
+}
+
+func (rt *Runtime) extractMemoryCandidates(ctx context.Context, model, summary string) ([]memoryCandidateSuggestion, error) {
+	if strings.TrimSpace(summary) == "" {
+		return nil, nil
+	}
+	temperature := 0.0
+	resp, err := rt.prov.Complete(ctx, &types.ChatRequest{
+		Model: model,
+		Messages: []types.Message{
+			{Role: "system", Content: memoryCandidateExtractorPrompt},
+			{Role: "user", Content: "Completed conversation turn:\n\n" + summary},
+		},
+		Stream:      false,
+		MaxTokens:   300,
+		Temperature: &temperature,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return nil, nil
+	}
+	return parseMemoryCandidateExtraction(resp.Choices[0].Message.Content)
+}
+
+func (rt *Runtime) upsertTurnEntities(ctx context.Context, peerID, sessionKey, model string, transcript []types.Message, summary string, chunkID string) error {
+	if rt == nil || rt.prov == nil || rt.memStore == nil {
+		return nil
+	}
+	userContent := lastUserMessageContent(transcript)
+	if !shouldExtractMemoryCandidates(userContent) {
+		return nil
+	}
+	entities, err := rt.extractEntityCandidates(ctx, model, summary)
+	if err != nil {
+		return err
+	}
+	for _, suggestion := range entities {
+		entity, err := rt.memStore.UpsertEntity(ctx, peerID, memory.EntityKind(suggestion.Kind), suggestion.Name, suggestion.Aliases, suggestion.Notes, time.Now().Unix())
+		if err != nil {
+			slog.Warn("agent: entity upsert failed", "peer", peerID, "name", suggestion.Name, "err", err)
+			continue
+		}
+		if strings.TrimSpace(chunkID) != "" {
+			if err := rt.memStore.LinkChunkToEntity(ctx, peerID, entity.ID, chunkID); err != nil {
+				slog.Warn("agent: entity chunk link failed", "peer", peerID, "entity", entity.ID, "chunk", chunkID, "err", err)
+			}
+		}
+	}
+	return nil
+}
+
+func (rt *Runtime) extractEntityCandidates(ctx context.Context, model, summary string) ([]entitySuggestion, error) {
+	if strings.TrimSpace(summary) == "" {
+		return nil, nil
+	}
+	temperature := 0.0
+	resp, err := rt.prov.Complete(ctx, &types.ChatRequest{
+		Model: model,
+		Messages: []types.Message{
+			{Role: "system", Content: entityExtractorPrompt},
+			{Role: "user", Content: "Completed conversation turn:\n\n" + summary},
+		},
+		Stream:      false,
+		MaxTokens:   300,
+		Temperature: &temperature,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		return nil, nil
+	}
+	entities, err := parseEntityExtraction(resp.Choices[0].Message.Content)
+	if err != nil {
+		return nil, nil
+	}
+	return entities, nil
+}
+
+func parseMemoryCandidateExtraction(raw string) ([]memoryCandidateSuggestion, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(raw, "```") {
+		raw = strings.TrimPrefix(raw, "```json")
+		raw = strings.TrimPrefix(raw, "```")
+		raw = strings.TrimSuffix(strings.TrimSpace(raw), "```")
+	}
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start >= 0 && end > start {
+		raw = raw[start : end+1]
+	}
+	var payload memoryCandidateExtraction
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, err
+	}
+	if len(payload.Candidates) > 2 {
+		payload.Candidates = payload.Candidates[:2]
+	}
+	return payload.Candidates, nil
+}
+
+func parseEntityExtraction(raw string) ([]entitySuggestion, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(raw, "```") {
+		raw = strings.TrimPrefix(raw, "```json")
+		raw = strings.TrimPrefix(raw, "```")
+		raw = strings.TrimSuffix(strings.TrimSpace(raw), "```")
+	}
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start >= 0 && end > start {
+		raw = raw[start : end+1]
+	}
+	var payload entityExtraction
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, err
+	}
+	if len(payload.Entities) > 4 {
+		payload.Entities = payload.Entities[:4]
+	}
+	filtered := make([]entitySuggestion, 0, len(payload.Entities))
+	seen := make(map[string]struct{}, len(payload.Entities))
+	for _, suggestion := range payload.Entities {
+		kind := strings.TrimSpace(suggestion.Kind)
+		name := strings.TrimSpace(suggestion.Name)
+		if kind == "" || name == "" {
+			continue
+		}
+		key := strings.ToLower(kind + "::" + name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		filtered = append(filtered, entitySuggestion{
+			Kind:    kind,
+			Name:    name,
+			Aliases: suggestion.Aliases,
+			Notes:   suggestion.Notes,
+		})
+	}
+	return filtered, nil
+}
+
+func (rt *Runtime) existingMemoryContentSet(ctx context.Context, peerID string) (map[string]struct{}, error) {
+	seen := make(map[string]struct{})
+	candidates, err := rt.memStore.ListCandidates(ctx, peerID, 100, memory.CandidateStatusAll)
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		if normalized := normalizeMemoryCandidateContent(candidate.Content); normalized != "" {
+			seen[normalized] = struct{}{}
+		}
+	}
+	chunks, err := rt.memStore.List(ctx, peerID, 100)
+	if err != nil {
+		return nil, err
+	}
+	for _, chunk := range chunks {
+		if normalized := normalizeMemoryCandidateContent(chunk.Content); normalized != "" {
+			seen[normalized] = struct{}{}
+		}
+	}
+	return seen, nil
+}
+
+func shouldExtractMemoryCandidates(userContent string) bool {
+	trimmed := strings.TrimSpace(userContent)
+	if trimmed == "" || len(trimmed) > 800 || strings.Contains(trimmed, "```") {
+		return false
+	}
+	lower := " " + strings.ToLower(trimmed) + " "
+	signals := []string{
+		" remember ",
+		" i ",
+		" i'm ",
+		" i’m ",
+		" my ",
+		" me ",
+		" we ",
+		" we're ",
+		" we’re ",
+		" our ",
+		" us ",
+		" prefer ",
+		" preference ",
+		" call me ",
+		" keep in mind ",
+		" note that ",
+		" deadline ",
+		" due ",
+	}
+	for _, signal := range signals {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldExtractTaskCandidates(userContent string) bool {
+	trimmed := strings.TrimSpace(userContent)
+	if trimmed == "" || len(trimmed) > 800 || strings.Contains(trimmed, "```") {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	signals := []string{
+		"todo",
+		"task",
+		"remember to",
+		"need to",
+		"should ",
+		"must ",
+		"follow up",
+		"please ",
+		"[ ]",
+	}
+	for _, signal := range signals {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeSuggestionRetention(value string) memory.RetentionClass {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case string(memory.RetentionClassPinned):
+		return memory.RetentionClassPinned
+	default:
+		return memory.RetentionClassWorking
+	}
+}
+
+func normalizeMemoryCandidateContent(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	return strings.ToLower(strings.Join(strings.Fields(content), " "))
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a <= 0 || a > b {
+		return b
+	}
+	return a
 }
 
 func (rt *Runtime) sessionKey(req RunRequest) string {

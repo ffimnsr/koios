@@ -32,6 +32,12 @@ func (c *Config) RunsDir() string { return filepath.Join(c.WorkspaceRoot, "runs"
 // MemoryDBPath returns the path for the long-term memory SQLite database, derived from WorkspaceRoot.
 func (c *Config) MemoryDBPath() string { return filepath.Join(c.WorkspaceRoot, "memory.db") }
 
+// TasksDBPath returns the path for the durable task SQLite database, derived from WorkspaceRoot.
+func (c *Config) TasksDBPath() string { return filepath.Join(c.WorkspaceRoot, "tasks.db") }
+
+// CalendarDBPath returns the path for the durable calendar SQLite database, derived from WorkspaceRoot.
+func (c *Config) CalendarDBPath() string { return filepath.Join(c.WorkspaceRoot, "calendar.db") }
+
 const (
 	// DefaultConfigFile is the default runtime config path in the repo root.
 	DefaultConfigFile = "koios.config.toml"

@@ -9,11 +9,14 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/briefing"
+	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/mcp"
 	"github.com/ffimnsr/koios/internal/orchestrator"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/subagent"
+	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -89,12 +92,17 @@ var toolDefs = []toolDef{
 		parameters: mustJSONSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"content": map[string]any{"type": "string"},
+				"content":         map[string]any{"type": "string"},
+				"tags":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"category":        map[string]any{"type": "string"},
+				"retention_class": map[string]any{"type": "string", "enum": []string{"working", "pinned", "archive"}},
+				"exposure_policy": map[string]any{"type": "string", "enum": []string{"auto", "search_only"}},
+				"expires_at":      map[string]any{"type": "integer"},
 			},
 			"required":             []string{"content"},
 			"additionalProperties": false,
 		}),
-		argHint:   `{"content":"string"}`,
+		argHint:   `{"content":"string","retention_class":"working|pinned|archive","exposure_policy":"auto|search_only","expires_at":0}`,
 		available: func(h *Handler) bool { return h.memStore != nil },
 	},
 	{
@@ -170,18 +178,21 @@ var toolDefs = []toolDef{
 	},
 	{
 		name:        "memory.tag",
-		description: "Update tags and/or category on an existing memory chunk.",
+		description: "Update tags, category, retention, exposure policy, or expiry on an existing memory chunk.",
 		parameters: mustJSONSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"id":       map[string]any{"type": "string"},
-				"tags":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"category": map[string]any{"type": "string"},
+				"id":              map[string]any{"type": "string"},
+				"tags":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"category":        map[string]any{"type": "string"},
+				"retention_class": map[string]any{"type": "string", "enum": []string{"working", "pinned", "archive"}},
+				"exposure_policy": map[string]any{"type": "string", "enum": []string{"auto", "search_only"}},
+				"expires_at":      map[string]any{"type": "integer"},
 			},
 			"required":             []string{"id"},
 			"additionalProperties": false,
 		}),
-		argHint:   `{"id":"chunk-id","tags":["important","project"],"category":"notes"}`,
+		argHint:   `{"id":"chunk-id","tags":["important","project"],"category":"notes","retention_class":"pinned","exposure_policy":"auto","expires_at":0}`,
 		available: func(h *Handler) bool { return h.memStore != nil },
 	},
 	{
@@ -194,6 +205,483 @@ var toolDefs = []toolDef{
 		}),
 		argHint:   `{}`,
 		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.candidate.create",
+		description: "Queue a proposed memory for explicit review instead of storing it immediately.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"content":         map[string]any{"type": "string"},
+				"tags":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"category":        map[string]any{"type": "string"},
+				"retention_class": map[string]any{"type": "string", "enum": []string{"working", "pinned", "archive"}},
+				"exposure_policy": map[string]any{"type": "string", "enum": []string{"auto", "search_only"}},
+				"expires_at":      map[string]any{"type": "integer"},
+			},
+			"required":             []string{"content"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"content":"string","tags":["fact"],"category":"preferences"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.candidate.list",
+		description: "List pending or reviewed memory candidates for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit":  map[string]any{"type": "integer"},
+				"status": map[string]any{"type": "string", "enum": []string{"pending", "approved", "merged", "rejected", "all"}},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"status":"pending","limit":20}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.candidate.edit",
+		description: "Edit a pending memory candidate before it is approved, merged, or rejected.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":              map[string]any{"type": "string"},
+				"content":         map[string]any{"type": "string"},
+				"tags":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"category":        map[string]any{"type": "string"},
+				"retention_class": map[string]any{"type": "string", "enum": []string{"working", "pinned", "archive"}},
+				"exposure_policy": map[string]any{"type": "string", "enum": []string{"auto", "search_only"}},
+				"expires_at":      map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"candidate-id","content":"edited text"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.candidate.approve",
+		description: "Approve a pending memory candidate and store it as durable memory, optionally with edited fields.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":              map[string]any{"type": "string"},
+				"reason":          map[string]any{"type": "string"},
+				"content":         map[string]any{"type": "string"},
+				"tags":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"category":        map[string]any{"type": "string"},
+				"retention_class": map[string]any{"type": "string", "enum": []string{"working", "pinned", "archive"}},
+				"exposure_policy": map[string]any{"type": "string", "enum": []string{"auto", "search_only"}},
+				"expires_at":      map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"candidate-id","reason":"confirmed by user"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.candidate.merge",
+		description: "Merge a pending memory candidate into an existing durable memory chunk.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":              map[string]any{"type": "string"},
+				"merge_into_id":   map[string]any{"type": "string"},
+				"reason":          map[string]any{"type": "string"},
+				"content":         map[string]any{"type": "string"},
+				"tags":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"category":        map[string]any{"type": "string"},
+				"retention_class": map[string]any{"type": "string", "enum": []string{"working", "pinned", "archive"}},
+				"exposure_policy": map[string]any{"type": "string", "enum": []string{"auto", "search_only"}},
+				"expires_at":      map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id", "merge_into_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"candidate-id","merge_into_id":"chunk-id"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.candidate.reject",
+		description: "Reject a pending memory candidate and record why it was discarded.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":     map[string]any{"type": "string"},
+				"reason": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id", "reason"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"candidate-id","reason":"too transient"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.create",
+		description: "Create a durable memory entity for a person, project, place, or ongoing topic.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":         map[string]any{"type": "string", "enum": []string{"person", "project", "place", "topic"}},
+				"name":         map[string]any{"type": "string"},
+				"aliases":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"notes":        map[string]any{"type": "string"},
+				"last_seen_at": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"kind", "name"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"kind":"person|project|place|topic","name":"Alice","aliases":["Al"],"notes":"Primary reviewer"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.update",
+		description: "Edit an existing memory entity.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":           map[string]any{"type": "string"},
+				"kind":         map[string]any{"type": "string", "enum": []string{"person", "project", "place", "topic"}},
+				"name":         map[string]any{"type": "string"},
+				"aliases":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"notes":        map[string]any{"type": "string"},
+				"last_seen_at": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"entity-id","notes":"Blocked on vendor reply"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.get",
+		description: "Fetch one memory entity with its linked chunks and relationships.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"entity-id"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.list",
+		description: "List memory entities for this peer, optionally filtered by kind.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":  map[string]any{"type": "string", "enum": []string{"person", "project", "place", "topic"}},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"kind":"project","limit":20}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.search",
+		description: "Search entities by name, alias, or notes.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"q":     map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"q"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"q":"release project","limit":10}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.link_chunk",
+		description: "Link an existing memory chunk to a durable entity.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":       map[string]any{"type": "string"},
+				"chunk_id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id", "chunk_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"entity-id","chunk_id":"chunk-id"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.relate",
+		description: "Create or update a relationship edge between two entities.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"source_id": map[string]any{"type": "string"},
+				"target_id": map[string]any{"type": "string"},
+				"relation":  map[string]any{"type": "string"},
+				"notes":     map[string]any{"type": "string"},
+			},
+			"required":             []string{"source_id", "target_id", "relation"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"source_id":"entity-a","target_id":"entity-b","relation":"blocked_by","notes":"Waiting on venue approval"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.touch",
+		description: "Update when an entity was last seen or discussed.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":           map[string]any{"type": "string"},
+				"last_seen_at": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"entity-id","last_seen_at":0}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.delete",
+		description: "Delete a durable entity and remove its links and relationships.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"entity-id"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.unlink_chunk",
+		description: "Remove a linked memory chunk from an entity.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":       map[string]any{"type": "string"},
+				"chunk_id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id", "chunk_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"entity-id","chunk_id":"chunk-id"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "memory.entity.unrelate",
+		description: "Remove a relationship edge between two entities.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"source_id": map[string]any{"type": "string"},
+				"target_id": map[string]any{"type": "string"},
+				"relation":  map[string]any{"type": "string"},
+			},
+			"required":             []string{"source_id", "target_id", "relation"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"source_id":"entity-a","target_id":"entity-b","relation":"blocked_by"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "waiting.create",
+		description: "Create a waiting-on record for a delegated ask, unanswered message, or follow-up deadline.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":              map[string]any{"type": "string"},
+				"details":            map[string]any{"type": "string"},
+				"waiting_for":        map[string]any{"type": "string"},
+				"follow_up_at":       map[string]any{"type": "integer"},
+				"remind_at":          map[string]any{"type": "integer"},
+				"source_session_key": map[string]any{"type": "string"},
+				"source_excerpt":     map[string]any{"type": "string"},
+			},
+			"required":             []string{"title", "waiting_for"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"title":"Vendor reply on contract","waiting_for":"vendor","follow_up_at":0,"remind_at":0}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "waiting.list",
+		description: "List waiting-on records for this peer, optionally filtered by status.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit":  map[string]any{"type": "integer"},
+				"status": map[string]any{"type": "string", "enum": []string{"open", "snoozed", "resolved", "all"}},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"status":"open|snoozed|resolved|all","limit":20}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "waiting.get",
+		description: "Fetch one waiting-on record by id.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"waiting-id"}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "waiting.update",
+		description: "Edit an existing waiting-on record.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":                 map[string]any{"type": "string"},
+				"title":              map[string]any{"type": "string"},
+				"details":            map[string]any{"type": "string"},
+				"waiting_for":        map[string]any{"type": "string"},
+				"follow_up_at":       map[string]any{"type": "integer"},
+				"remind_at":          map[string]any{"type": "integer"},
+				"snooze_until":       map[string]any{"type": "integer"},
+				"source_session_key": map[string]any{"type": "string"},
+				"source_excerpt":     map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"waiting-id","details":"optional update","follow_up_at":0}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "waiting.snooze",
+		description: "Snooze a waiting-on record until a later Unix timestamp.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":    map[string]any{"type": "string"},
+				"until": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id", "until"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"waiting-id","until":1735689600}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "waiting.resolve",
+		description: "Mark a waiting-on record as resolved.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"waiting-id"}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "waiting.reopen",
+		description: "Reopen a resolved waiting-on record.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"waiting-id"}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "calendar.source.create",
+		description: "Register a local .ics file or remote ICS URL as a calendar source for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":     map[string]any{"type": "string"},
+				"path":     map[string]any{"type": "string"},
+				"url":      map[string]any{"type": "string"},
+				"timezone": map[string]any{"type": "string"},
+				"enabled":  map[string]any{"type": "boolean"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"Work","path":"/path/to/calendar.ics","url":"https://example.com/calendar.ics","timezone":"America/New_York","enabled":true}`,
+		available: func(h *Handler) bool { return h.calendarStore != nil },
+	},
+	{
+		name:        "calendar.source.list",
+		description: "List registered calendar sources for this peer.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"enabled_only": map[string]any{"type": "boolean"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"enabled_only":true}`,
+		available: func(h *Handler) bool { return h.calendarStore != nil },
+	},
+	{
+		name:        "calendar.source.delete",
+		description: "Delete a registered calendar source.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"calendar-source-id"}`,
+		available: func(h *Handler) bool { return h.calendarStore != nil },
+	},
+	{
+		name:        "calendar.agenda",
+		description: "Query today's agenda, this week's agenda, or the next calendar conflict across registered ICS sources.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"scope":    map[string]any{"type": "string", "enum": []string{"today", "this_week", "next_conflict"}},
+				"timezone": map[string]any{"type": "string"},
+				"now":      map[string]any{"type": "integer"},
+				"limit":    map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"scope":"today|this_week|next_conflict","timezone":"America/New_York","limit":20}`,
+		available: func(h *Handler) bool { return h.calendarStore != nil },
+	},
+	{
+		name:        "brief.generate",
+		description: "Generate a daily brief or weekly review synthesis from calendar, tasks, waiting-ons, memory candidates, recent commitments, and active projects.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":            map[string]any{"type": "string", "enum": []string{"daily", "weekly"}},
+				"timezone":        map[string]any{"type": "string"},
+				"now":             map[string]any{"type": "integer"},
+				"session_key":     map[string]any{"type": "string"},
+				"history_limit":   map[string]any{"type": "integer"},
+				"event_limit":     map[string]any{"type": "integer"},
+				"waiting_limit":   map[string]any{"type": "integer"},
+				"task_limit":      map[string]any{"type": "integer"},
+				"project_limit":   map[string]any{"type": "integer"},
+				"candidate_limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"kind":"daily|weekly","timezone":"UTC","session_key":"optional","history_limit":12}`,
 	},
 	{
 		name:        "cron.list",
@@ -1291,12 +1779,17 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		return h.memorySearch(peerID, args.Q, args.Limit, ctx)
 	case "memory.insert":
 		var args struct {
-			Content string `json:"content"`
+			Content        string   `json:"content"`
+			Tags           []string `json:"tags"`
+			Category       string   `json:"category"`
+			RetentionClass string   `json:"retention_class"`
+			ExposurePolicy string   `json:"exposure_policy"`
+			ExpiresAt      int64    `json:"expires_at"`
 		}
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		return h.memoryInsert(peerID, args.Content, ctx)
+		return h.memoryInsertWithOptions(peerID, args.Content, args.Tags, args.Category, args.RetentionClass, args.ExposurePolicy, args.ExpiresAt, ctx)
 	case "memory.get":
 		var args struct {
 			ID string `json:"id"`
@@ -1341,16 +1834,327 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		return h.memoryBatchGet(peerID, args.IDs, ctx)
 	case "memory.tag":
 		var args struct {
-			ID       string   `json:"id"`
-			Tags     []string `json:"tags"`
-			Category string   `json:"category"`
+			ID             string   `json:"id"`
+			Tags           []string `json:"tags"`
+			Category       string   `json:"category"`
+			RetentionClass string   `json:"retention_class"`
+			ExposurePolicy string   `json:"exposure_policy"`
+			ExpiresAt      int64    `json:"expires_at"`
 		}
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		return h.memoryTag(peerID, args.ID, args.Tags, args.Category, ctx)
+		return h.memoryTag(peerID, args.ID, args.Tags, args.Category, args.RetentionClass, args.ExposurePolicy, args.ExpiresAt, ctx)
 	case "memory.stats":
 		return h.memoryStats(peerID, ctx)
+	case "memory.candidate.create":
+		var args struct {
+			Content        string   `json:"content"`
+			Tags           []string `json:"tags"`
+			Category       string   `json:"category"`
+			RetentionClass string   `json:"retention_class"`
+			ExposurePolicy string   `json:"exposure_policy"`
+			ExpiresAt      int64    `json:"expires_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryCandidateCreate(peerID, args.Content, args.Tags, args.Category, args.RetentionClass, args.ExposurePolicy, args.ExpiresAt, ctx)
+	case "memory.candidate.list":
+		var args struct {
+			Limit  int    `json:"limit"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryCandidateList(peerID, args.Limit, args.Status, ctx)
+	case "memory.candidate.edit":
+		var args struct {
+			ID             string    `json:"id"`
+			Content        *string   `json:"content"`
+			Tags           *[]string `json:"tags"`
+			Category       *string   `json:"category"`
+			RetentionClass *string   `json:"retention_class"`
+			ExposurePolicy *string   `json:"exposure_policy"`
+			ExpiresAt      *int64    `json:"expires_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryCandidateEdit(peerID, args.ID, candidatePatch(args.Content, args.Tags, args.Category, args.RetentionClass, args.ExposurePolicy, args.ExpiresAt), ctx)
+	case "memory.candidate.approve":
+		var args struct {
+			ID             string    `json:"id"`
+			Reason         string    `json:"reason"`
+			Content        *string   `json:"content"`
+			Tags           *[]string `json:"tags"`
+			Category       *string   `json:"category"`
+			RetentionClass *string   `json:"retention_class"`
+			ExposurePolicy *string   `json:"exposure_policy"`
+			ExpiresAt      *int64    `json:"expires_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryCandidateApprove(peerID, args.ID, candidatePatch(args.Content, args.Tags, args.Category, args.RetentionClass, args.ExposurePolicy, args.ExpiresAt), args.Reason, ctx)
+	case "memory.candidate.merge":
+		var args struct {
+			ID             string    `json:"id"`
+			MergeIntoID    string    `json:"merge_into_id"`
+			Reason         string    `json:"reason"`
+			Content        *string   `json:"content"`
+			Tags           *[]string `json:"tags"`
+			Category       *string   `json:"category"`
+			RetentionClass *string   `json:"retention_class"`
+			ExposurePolicy *string   `json:"exposure_policy"`
+			ExpiresAt      *int64    `json:"expires_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryCandidateMerge(peerID, args.ID, args.MergeIntoID, candidatePatch(args.Content, args.Tags, args.Category, args.RetentionClass, args.ExposurePolicy, args.ExpiresAt), args.Reason, ctx)
+	case "memory.candidate.reject":
+		var args struct {
+			ID     string `json:"id"`
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryCandidateReject(peerID, args.ID, args.Reason, ctx)
+	case "memory.entity.create":
+		var args struct {
+			Kind       string   `json:"kind"`
+			Name       string   `json:"name"`
+			Aliases    []string `json:"aliases"`
+			Notes      string   `json:"notes"`
+			LastSeenAt int64    `json:"last_seen_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityCreate(peerID, args.Kind, args.Name, args.Aliases, args.Notes, args.LastSeenAt, ctx)
+	case "memory.entity.update":
+		var args struct {
+			ID         string    `json:"id"`
+			Kind       *string   `json:"kind"`
+			Name       *string   `json:"name"`
+			Aliases    *[]string `json:"aliases"`
+			Notes      *string   `json:"notes"`
+			LastSeenAt *int64    `json:"last_seen_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityUpdate(peerID, args.ID, entityPatch(args.Kind, args.Name, args.Aliases, args.Notes, args.LastSeenAt), ctx)
+	case "memory.entity.get":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityGet(peerID, args.ID, ctx)
+	case "memory.entity.list":
+		var args struct {
+			Kind  string `json:"kind"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityList(peerID, args.Kind, args.Limit, ctx)
+	case "memory.entity.search":
+		var args struct {
+			Q     string `json:"q"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntitySearch(peerID, args.Q, args.Limit, ctx)
+	case "memory.entity.link_chunk":
+		var args struct {
+			ID      string `json:"id"`
+			ChunkID string `json:"chunk_id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityLinkChunk(peerID, args.ID, args.ChunkID, ctx)
+	case "memory.entity.relate":
+		var args struct {
+			SourceID string `json:"source_id"`
+			TargetID string `json:"target_id"`
+			Relation string `json:"relation"`
+			Notes    string `json:"notes"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityRelate(peerID, args.SourceID, args.TargetID, args.Relation, args.Notes, ctx)
+	case "memory.entity.touch":
+		var args struct {
+			ID         string `json:"id"`
+			LastSeenAt int64  `json:"last_seen_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityTouch(peerID, args.ID, args.LastSeenAt, ctx)
+	case "memory.entity.delete":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityDelete(peerID, args.ID, ctx)
+	case "memory.entity.unlink_chunk":
+		var args struct {
+			ID      string `json:"id"`
+			ChunkID string `json:"chunk_id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityUnlinkChunk(peerID, args.ID, args.ChunkID, ctx)
+	case "memory.entity.unrelate":
+		var args struct {
+			SourceID string `json:"source_id"`
+			TargetID string `json:"target_id"`
+			Relation string `json:"relation"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.memoryEntityUnrelate(peerID, args.SourceID, args.TargetID, args.Relation, ctx)
+	case "waiting.create":
+		var args struct {
+			Title            string `json:"title"`
+			Details          string `json:"details"`
+			WaitingFor       string `json:"waiting_for"`
+			FollowUpAt       int64  `json:"follow_up_at"`
+			RemindAt         int64  `json:"remind_at"`
+			SourceSessionKey string `json:"source_session_key"`
+			SourceExcerpt    string `json:"source_excerpt"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.waitingCreate(peerID, tasks.WaitingOnInput{
+			Title:            args.Title,
+			Details:          args.Details,
+			WaitingFor:       args.WaitingFor,
+			FollowUpAt:       args.FollowUpAt,
+			RemindAt:         args.RemindAt,
+			SourceSessionKey: args.SourceSessionKey,
+			SourceExcerpt:    args.SourceExcerpt,
+		}, ctx)
+	case "waiting.list":
+		var args struct {
+			Limit  int    `json:"limit"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.waitingList(peerID, args.Limit, args.Status, ctx)
+	case "waiting.get":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.waitingGet(peerID, args.ID, ctx)
+	case "waiting.update":
+		var args struct {
+			ID               string  `json:"id"`
+			Title            *string `json:"title"`
+			Details          *string `json:"details"`
+			WaitingFor       *string `json:"waiting_for"`
+			FollowUpAt       *int64  `json:"follow_up_at"`
+			RemindAt         *int64  `json:"remind_at"`
+			SnoozeUntil      *int64  `json:"snooze_until"`
+			SourceSessionKey *string `json:"source_session_key"`
+			SourceExcerpt    *string `json:"source_excerpt"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.waitingUpdate(peerID, args.ID, waitingPatch(args.Title, args.Details, args.WaitingFor, args.FollowUpAt, args.RemindAt, args.SnoozeUntil, args.SourceSessionKey, args.SourceExcerpt), ctx)
+	case "waiting.snooze":
+		var args struct {
+			ID    string `json:"id"`
+			Until int64  `json:"until"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.waitingSnooze(peerID, args.ID, args.Until, ctx)
+	case "waiting.resolve":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.waitingResolve(peerID, args.ID, ctx)
+	case "waiting.reopen":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.waitingReopen(peerID, args.ID, ctx)
+	case "calendar.source.create":
+		var args struct {
+			Name     string `json:"name"`
+			Path     string `json:"path"`
+			URL      string `json:"url"`
+			Timezone string `json:"timezone"`
+			Enabled  *bool  `json:"enabled"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.calendarSourceCreate(peerID, calendar.SourceInput{Name: args.Name, Path: args.Path, URL: args.URL, Timezone: args.Timezone, Enabled: args.Enabled}, ctx)
+	case "calendar.source.list":
+		var args struct {
+			EnabledOnly bool `json:"enabled_only"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.calendarSourceList(peerID, args.EnabledOnly, ctx)
+	case "calendar.source.delete":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.calendarSourceDelete(peerID, args.ID, ctx)
+	case "calendar.agenda":
+		var args struct {
+			Scope    string `json:"scope"`
+			Timezone string `json:"timezone"`
+			Now      int64  `json:"now"`
+			Limit    int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.calendarAgenda(peerID, calendar.AgendaQuery{Scope: args.Scope, Timezone: args.Timezone, Now: args.Now, Limit: args.Limit}, ctx)
+	case "brief.generate":
+		var args briefing.Options
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.briefGenerate(peerID, args, ctx)
 	case "session.reset":
 		h.store.Reset(peerID)
 		return map[string]bool{"ok": true}, nil

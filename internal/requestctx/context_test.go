@@ -2,8 +2,11 @@ package requestctx
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -155,4 +158,51 @@ func TestBuild_PrunesByToolInteractionBlock(t *testing.T) {
 	if !foundCurrentBlock {
 		t.Fatalf("expected most recent tool block to remain, got %#v", built.Request.Messages)
 	}
+}
+
+func TestBuild_InjectsOnlyAutoExposureMemory(t *testing.T) {
+	store, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	_, err = store.InsertChunkWithOptions(ctx, "alice", "Pinned deployment preference", memory.ChunkOptions{
+		RetentionClass: memory.RetentionClassPinned,
+	})
+	if err != nil {
+		t.Fatalf("insert pinned memory: %v", err)
+	}
+	_, err = store.InsertChunkWithOptions(ctx, "alice", "Archived deployment note", memory.ChunkOptions{
+		RetentionClass: memory.RetentionClassArchive,
+	})
+	if err != nil {
+		t.Fatalf("insert archived memory: %v", err)
+	}
+
+	built, err := Build(ctx, BuildOptions{
+		Model:        "m",
+		Messages:     []types.Message{{Role: "user", Content: "deployment preference"}},
+		MemoryStore:  store,
+		MemoryInject: true,
+		MemoryTopK:   5,
+		MemoryPeerID: "alice",
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if built.MemoryHits != 1 {
+		t.Fatalf("MemoryHits = %d, want 1", built.MemoryHits)
+	}
+	if built.InjectedMemory == "" || !containsSubstring(built.InjectedMemory, "Pinned deployment preference") {
+		t.Fatalf("expected pinned memory in injected context, got %q", built.InjectedMemory)
+	}
+	if containsSubstring(built.InjectedMemory, "Archived deployment note") {
+		t.Fatalf("did not expect archived memory in injected context, got %q", built.InjectedMemory)
+	}
+}
+
+func containsSubstring(s, want string) bool {
+	return strings.Contains(s, want)
 }

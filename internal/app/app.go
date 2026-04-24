@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/handler"
@@ -34,6 +35,7 @@ import (
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
+	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/usage"
 	"github.com/ffimnsr/koios/internal/workflow"
@@ -140,6 +142,8 @@ func RunGateway(build BuildInfo) error {
 		storeOpts.Compactor = session.NewLLMCompactor(prov, cfg.Model)
 	}
 	var memStore *memory.Store
+	var taskStore *tasks.Store
+	var calendarStore *calendar.Store
 	{
 		var embedder memory.Embedder
 		if cfg.EmbedModel != "" {
@@ -179,6 +183,14 @@ func RunGateway(build BuildInfo) error {
 		}
 		store.AppendWithSource(sessionKey, ev.Source, *ev.Message)
 	})
+	taskStore, err = tasks.New(cfg.TasksDBPath())
+	if err != nil {
+		return err
+	}
+	calendarStore, err = calendar.New(cfg.CalendarDBPath())
+	if err != nil {
+		return err
+	}
 	presenceMgr := presence.NewManager(cfg.PresenceTypingTTL)
 
 	var (
@@ -207,6 +219,7 @@ func RunGateway(build BuildInfo) error {
 	agentRuntime.SetPruning(cfg.SessionPruneKeepToolMessages)
 	agentRuntime.SetStandingOrders(standingMgr)
 	agentRuntime.SetIdentityDir(cfg.WorkspaceRoot)
+	agentRuntime.EnableTasks(taskStore)
 	agentCoord = agent.NewCoordinator(agentRuntime)
 	runLedger, err = runledger.New(cfg.RunsDir())
 	if err != nil {
@@ -310,6 +323,8 @@ func RunGateway(build BuildInfo) error {
 		Model:           cfg.Model,
 		Timeout:         cfg.RequestTimeout,
 		MemStore:        memStore,
+		TaskStore:       taskStore,
+		CalendarStore:   calendarStore,
 		MemTopK:         cfg.MemoryTopK,
 		MemInject:       cfg.MemoryInject,
 		HBRunner:        hbRunner,
@@ -544,6 +559,12 @@ shutdown:
 	}
 	if memStore != nil {
 		_ = memStore.Close()
+	}
+	if taskStore != nil {
+		_ = taskStore.Close()
+	}
+	if calendarStore != nil {
+		_ = calendarStore.Close()
 	}
 	if subRegistry != nil {
 		_ = subRegistry.Sweep(0)

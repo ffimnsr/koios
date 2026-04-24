@@ -218,7 +218,6 @@ func TestHealthStatusAndCronOverTestServer(t *testing.T) {
 	if !strings.Contains(healthOut.String(), `"status": "ok"`) {
 		t.Fatalf("unexpected health output: %s", healthOut.String())
 	}
-
 	statusCmd := newStatusCommand(cmdCtx)
 	var statusOut bytes.Buffer
 	statusCmd.SetOut(&statusOut)
@@ -241,6 +240,225 @@ func TestHealthStatusAndCronOverTestServer(t *testing.T) {
 	}
 	if !strings.Contains(cronOut.String(), `"job_id": "job-1"`) {
 		t.Fatalf("unexpected cron output: %s", cronOut.String())
+	}
+}
+
+func TestTasksListCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1.0", "git_hash": "abc", "build_time": "now"})
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			method, _ := req["method"].(string)
+			var result any
+			switch method {
+			case "server.capabilities":
+				result = map[string]any{"capabilities": map[string]bool{"tasks": true}}
+			case "task.list":
+				result = map[string]any{"tasks": []map[string]any{{"id": "task-1", "title": "Ship release notes", "status": "open", "owner": "ops"}}}
+			default:
+				result = map[string]any{"ok": true}
+			}
+			_ = conn.WriteJSON(map[string]any{"id": req["id"], "result": result})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newTasksCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"list", "--peer", "alice"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "task-1") {
+		t.Fatalf("expected task id in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "Ship release notes") {
+		t.Fatalf("expected task title in output: %s", out.String())
+	}
+}
+
+func TestBriefCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1.0", "git_hash": "abc", "build_time": "now"})
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			method, _ := req["method"].(string)
+			result := map[string]any{"ok": true}
+			if method == "brief.generate" {
+				result = map[string]any{"text": "Daily brief\nSummary: 1 events"}
+			}
+			_ = conn.WriteJSON(map[string]any{"id": req["id"], "result": result})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newBriefCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--peer", "alice", "--kind", "daily"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Daily brief") {
+		t.Fatalf("unexpected brief output: %s", out.String())
+	}
+}
+
+func TestWaitingListCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1.0", "git_hash": "abc", "build_time": "now"})
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			method, _ := req["method"].(string)
+			var result any
+			switch method {
+			case "server.capabilities":
+				result = map[string]any{"capabilities": map[string]bool{"tasks": true}}
+			case "waiting.list":
+				result = map[string]any{"waiting": []map[string]any{{"id": "wait-1", "title": "Vendor reply", "status": "open", "waiting_for": "vendor"}}, "status": "open"}
+			default:
+				result = map[string]any{"ok": true}
+			}
+			_ = conn.WriteJSON(map[string]any{"id": req["id"], "result": result})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newWaitingCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"list", "--peer", "alice"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "wait-1") {
+		t.Fatalf("expected waiting-on id in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "Vendor reply") {
+		t.Fatalf("expected waiting-on title in output: %s", out.String())
+	}
+}
+
+func TestCalendarAgendaCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1.0", "git_hash": "abc", "build_time": "now"})
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			method, _ := req["method"].(string)
+			var result any
+			switch method {
+			case "calendar.agenda":
+				result = map[string]any{"agenda": map[string]any{"events": []map[string]any{{"summary": "Design review", "start_at": float64(1777021200), "end_at": float64(1777024800)}}}}
+			default:
+				result = map[string]any{"ok": true}
+			}
+			_ = conn.WriteJSON(map[string]any{"id": req["id"], "result": result})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newCalendarCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"agenda", "--peer", "alice", "--scope", "today"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Design review") {
+		t.Fatalf("expected event summary in output: %s", out.String())
 	}
 }
 
@@ -286,6 +504,192 @@ func TestAgentOneShotCommand(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Hello world") {
 		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestMemoryQueueListCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			method, _ := req["method"].(string)
+			var result any
+			switch method {
+			case "memory.candidate.list":
+				result = map[string]any{
+					"count":                1,
+					"manual_count":         0,
+					"auto_generated_count": 1,
+					"capture_kinds": map[string]any{
+						"auto_turn_extract": 1,
+					},
+					"candidates": []map[string]any{{
+						"id":                 "cand-1",
+						"content":            "remember deployment checklist",
+						"status":             "pending",
+						"capture_kind":       "auto_turn_extract",
+						"source_session_key": "alice::main",
+						"source_excerpt":     "Remember deployment checklist before each release.",
+					}},
+				}
+			default:
+				result = map[string]any{"ok": true}
+			}
+			_ = conn.WriteJSON(map[string]any{"id": "1", "result": result})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	toml := fmt.Sprintf(agentOneShotConfigTemplate, server.URL)
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newMemoryCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"queue", "list", "--peer", "alice"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "1 auto-generated | 0 manual") {
+		t.Fatalf("unexpected human memory queue output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), "alice::main") {
+		t.Fatalf("expected provenance in human output: %s", out.String())
+	}
+
+	out.Reset()
+	cmd.SetArgs([]string{"queue", "list", "--peer", "alice", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"cand-1"`) {
+		t.Fatalf("unexpected memory queue output: %s", out.String())
+	}
+}
+
+func TestMemoryEntityListCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			method, _ := req["method"].(string)
+			var result any
+			switch method {
+			case "memory.entity.list":
+				result = map[string]any{
+					"count": 1,
+					"kind":  "project",
+					"entities": []map[string]any{{
+						"id":                 "entity-1",
+						"kind":               "project",
+						"name":               "Borealis Trip",
+						"aliases":            []string{"summer trip"},
+						"linked_chunk_count": 2,
+					}},
+				}
+			default:
+				result = map[string]any{"ok": true}
+			}
+			_ = conn.WriteJSON(map[string]any{"id": "1", "result": result})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	toml := fmt.Sprintf(agentOneShotConfigTemplate, server.URL)
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newMemoryCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"entity", "list", "--peer", "alice", "--kind", "project", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"entity-1"`) || !strings.Contains(out.String(), `"Borealis Trip"`) {
+		t.Fatalf("unexpected memory entity output: %s", out.String())
+	}
+}
+
+func TestMemoryEntityDeleteCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			method, _ := req["method"].(string)
+			if method != "memory.entity.delete" {
+				t.Errorf("unexpected method %q", method)
+			}
+			_ = conn.WriteJSON(map[string]any{"id": "1", "result": map[string]any{"ok": true, "id": "entity-1"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	toml := fmt.Sprintf(agentOneShotConfigTemplate, server.URL)
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newMemoryCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"entity", "delete", "--peer", "alice", "--id", "entity-1", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"entity-1"`) {
+		t.Fatalf("unexpected memory entity delete output: %s", out.String())
 	}
 }
 

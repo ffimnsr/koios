@@ -211,6 +211,12 @@ func (s *repoState) validate() []doctorFinding {
 	if dbPath := s.memoryDBPath(); dbPath != "" && !dirExists(filepath.Dir(dbPath)) {
 		findings = append(findings, doctorFinding{Level: "warn", Key: "memory.db", Message: fmt.Sprintf("memory database parent directory does not exist yet: %s", filepath.Dir(dbPath)), Path: filepath.Dir(dbPath), Hint: "run koios doctor --repair to create the local state directories", Repairable: true})
 	}
+	if dbPath := s.tasksDBPath(); dbPath != "" && !dirExists(filepath.Dir(dbPath)) {
+		findings = append(findings, doctorFinding{Level: "warn", Key: "tasks.db", Message: fmt.Sprintf("task database parent directory does not exist yet: %s", filepath.Dir(dbPath)), Path: filepath.Dir(dbPath), Hint: "run koios doctor --repair to create the local state directories", Repairable: true})
+	}
+	if dbPath := s.calendarDBPath(); dbPath != "" && !dirExists(filepath.Dir(dbPath)) {
+		findings = append(findings, doctorFinding{Level: "warn", Key: "calendar.db", Message: fmt.Sprintf("calendar database parent directory does not exist yet: %s", filepath.Dir(dbPath)), Path: filepath.Dir(dbPath), Hint: "run koios doctor --repair to create the local state directories", Repairable: true})
+	}
 	return findings
 }
 
@@ -273,6 +279,22 @@ func (s *repoState) memoryDBPath() string {
 		return ""
 	}
 	return s.Config.MemoryDBPath()
+}
+
+// tasksDBPath returns the derived task database path.
+func (s *repoState) tasksDBPath() string {
+	if s.Config == nil || s.WorkspaceRoot == "" {
+		return ""
+	}
+	return s.Config.TasksDBPath()
+}
+
+// calendarDBPath returns the derived calendar database path.
+func (s *repoState) calendarDBPath() string {
+	if s.Config == nil || s.WorkspaceRoot == "" {
+		return ""
+	}
+	return s.Config.CalendarDBPath()
 }
 
 func fileExists(path string) bool {

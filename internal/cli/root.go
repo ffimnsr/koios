@@ -73,6 +73,10 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newUsageCommand(ctx))
 	root.AddCommand(newRunsCommand(ctx))
 	root.AddCommand(newMemoryCommand(ctx))
+	root.AddCommand(newTasksCommand(ctx))
+	root.AddCommand(newCalendarCommand(ctx))
+	root.AddCommand(newWaitingCommand(ctx))
+	root.AddCommand(newBriefCommand(ctx))
 	root.AddCommand(newModelCommand(ctx))
 	root.AddCommand(newHostCommand(ctx))
 	return root
@@ -171,6 +175,8 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 					"heartbeat":           state.WorkspaceRoot != "" && state.HeartbeatEnabled,
 					"subagents":           state.WorkspaceRoot != "",
 					"memory":              state.WorkspaceRoot != "",
+					"tasks":               state.WorkspaceRoot != "",
+					"calendar":            state.WorkspaceRoot != "",
 					"workspace":           state.WorkspaceRoot != "",
 				},
 			}
@@ -961,6 +967,8 @@ func statePaths(state *repoState) map[string]string {
 		"workflowDir": state.workflowDir(),
 		"runsDir":     state.runsDir(),
 		"memoryDB":    state.memoryDBPath(),
+		"tasksDB":     state.tasksDBPath(),
+		"calendarDB":  state.calendarDBPath(),
 		"workspace":   state.WorkspaceRoot,
 	}
 }
@@ -1039,7 +1047,7 @@ func collectBackupItems(state *repoState, onlyConfig bool) []string {
 	if onlyConfig {
 		return items
 	}
-	for _, candidate := range []string{state.sessionDir(), state.cronDir(), state.agentDir(), state.memoryDBPath(), state.WorkspaceRoot} {
+	for _, candidate := range []string{state.sessionDir(), state.cronDir(), state.agentDir(), state.memoryDBPath(), state.tasksDBPath(), state.calendarDBPath(), state.WorkspaceRoot} {
 		if candidate == "" {
 			continue
 		}
@@ -1155,6 +1163,12 @@ func resetTargets(state *repoState, scope string) ([]string, error) {
 	case "full":
 		out, _ := resetTargets(state, "config+creds+sessions")
 		if dbPath := state.memoryDBPath(); dbPath != "" {
+			out = append(out, dbPath)
+		}
+		if dbPath := state.tasksDBPath(); dbPath != "" {
+			out = append(out, dbPath)
+		}
+		if dbPath := state.calendarDBPath(); dbPath != "" {
 			out = append(out, dbPath)
 		}
 		return out, nil
