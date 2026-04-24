@@ -215,7 +215,7 @@ func TestBuild_InjectsStructuredPreferencesAheadOfGenericMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePreference: %v", err)
 	}
-	_, err = store.InsertChunkWithOptions(ctx, "alice", "Pinned deployment preference from prior chat", memory.ChunkOptions{
+	_, err = store.InsertChunkWithOptions(ctx, "alice", "When should I deploy? Deploy after 18:00 UTC and follow the rollout checklist.", memory.ChunkOptions{
 		RetentionClass: memory.RetentionClassPinned,
 	})
 	if err != nil {
@@ -239,7 +239,7 @@ func TestBuild_InjectsStructuredPreferencesAheadOfGenericMemory(t *testing.T) {
 	if !containsSubstring(built.InjectedMemory, "deployment windows: Prefer Tuesday deployments after 18:00 UTC.") {
 		t.Fatalf("expected structured preference content, got %q", built.InjectedMemory)
 	}
-	if !containsSubstring(built.InjectedMemory, "Pinned deployment preference from prior chat") {
+	if !containsSubstring(built.InjectedMemory, "When should I deploy? Deploy after 18:00 UTC and follow the rollout checklist.") {
 		t.Fatalf("expected generic memory block, got %q", built.InjectedMemory)
 	}
 	if strings.Index(built.InjectedMemory, "Stable preferences and durable decisions") > strings.Index(built.InjectedMemory, "Relevant context from past conversations") {

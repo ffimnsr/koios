@@ -130,6 +130,7 @@ func RunGateway(build BuildInfo) error {
 		IdlePruneAfter:    cfg.SessionIdlePruneAfter,
 		IdlePruneKeep:     cfg.SessionIdlePruneKeep,
 		DailyResetMinutes: dailyResetMinutes,
+		DailyResetEnabled: dailyResetMinutes >= 0,
 		CompactThreshold:  cfg.CompactThreshold,
 		CompactReserve:    cfg.CompactReserve,
 	}

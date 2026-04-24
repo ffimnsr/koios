@@ -422,6 +422,10 @@ type Options struct {
 	// DailyResetMinutes, when >= 0, resets sessions whose latest activity falls
 	// before today's local reset cutover and the current time is after it.
 	DailyResetMinutes int
+	// DailyResetEnabled distinguishes an explicit configured reset time from the
+	// zero-value default. Without this, an omitted option would incorrectly
+	// behave like a midnight reset.
+	DailyResetEnabled bool
 }
 
 // Store maps peer IDs to their isolated sessions.
@@ -487,9 +491,12 @@ func NewWithOptions(opts Options) *Store {
 		idleResetAfter:   opts.IdleResetAfter,
 		idlePruneAfter:   opts.IdlePruneAfter,
 		idlePruneKeep:    opts.IdlePruneKeep,
-		dailyResetMins:   opts.DailyResetMinutes,
+		dailyResetMins:   -1,
 		policies:         make(map[string]SessionPolicy),
 		subscribers:      make(map[string]map[uint64]func(AppendEvent)),
+	}
+	if opts.DailyResetEnabled {
+		st.dailyResetMins = opts.DailyResetMinutes
 	}
 	if opts.SessionDir != "" {
 		if err := os.MkdirAll(opts.SessionDir, 0o700); err != nil {

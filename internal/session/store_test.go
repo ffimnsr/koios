@@ -375,6 +375,7 @@ func TestStore_DailyResetOnGet(t *testing.T) {
 		MaxMessages:       10,
 		SessionDir:        dir,
 		DailyResetMinutes: resetMinutes,
+		DailyResetEnabled: true,
 	})
 	st.Append("daily-peer", types.Message{Role: "user", Content: "hello"})
 	path := filepath.Join(dir, "daily-peer.jsonl")
@@ -386,6 +387,7 @@ func TestStore_DailyResetOnGet(t *testing.T) {
 		MaxMessages:       10,
 		SessionDir:        dir,
 		DailyResetMinutes: resetMinutes,
+		DailyResetEnabled: true,
 	})
 	got := st2.Get("daily-peer").History()
 	if len(got) != 0 {
