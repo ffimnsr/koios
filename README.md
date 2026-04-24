@@ -131,6 +131,12 @@ koios backup create
 koios update status
 ```
 
+`koios doctor` now checks local config integrity, expected workspace state
+directories, sandbox prerequisites such as `bwrap`, enabled MCP server wiring,
+and, with `--deep`, the live gateway health and monitor endpoints. Use
+`koios doctor --repair` to generate a starter config and create the local state
+directory tree when those artifacts are missing.
+
 The `agent` command supports both one-shot calls and an interactive terminal
 chat interface. The interactive mode is built with Bubble Tea, which is a
 widely used Go TUI framework designed for stateful terminal applications.

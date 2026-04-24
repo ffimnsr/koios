@@ -280,43 +280,9 @@ func newDoctorCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "doctor",
 		Aliases: []string{"fix"},
-		Short:   "Validate the local Koios setup",
+		Short:   "Run diagnostics and repair guidance for the local Koios setup",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			state, err := ctx.state()
-			if err != nil {
-				return err
-			}
-			findings := state.validate()
-			repairs := []string{}
-			if repair {
-				if !state.ConfigExists && (force || !fileExists(state.ConfigPath)) {
-					if err := os.WriteFile(state.ConfigPath, []byte(config.DefaultTOML()), 0o600); err == nil {
-						repairs = append(repairs, "created koios.config.toml")
-					}
-				}
-				repairs = append(repairs, mapPaths(state.createStateDirs(), "created directory: ")...)
-			}
-			if deep {
-				client := newGatewayClient(state, 3*time.Second)
-				reqCtx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
-				defer cancel()
-				if health, _, err := client.health(reqCtx); err == nil {
-					findings = append(findings, doctorFinding{Level: "info", Message: fmt.Sprintf("gateway reachable: %v", health["status"])})
-				} else {
-					findings = append(findings, doctorFinding{Level: "warn", Message: "gateway probe failed: " + err.Error()})
-				}
-			}
-			if nonInteractive {
-				// Flag accepted for compatibility; no prompt flow in doctor.
-			}
-			payload := map[string]any{"findings": findings, "repairs": repairs}
-			emit(cmd, jsonOut, payload)
-			for _, finding := range findings {
-				if finding.Level == "error" {
-					return errors.New("doctor found configuration errors")
-				}
-			}
-			return nil
+			return runDoctorCommand(ctx, cmd, repair, force, nonInteractive, deep, jsonOut)
 		},
 	}
 	cmd.Flags().BoolVar(&repair, "repair", false, "perform safe repairs")
@@ -988,12 +954,14 @@ func emit(cmd *cobra.Command, jsonOut bool, v any) {
 
 func statePaths(state *repoState) map[string]string {
 	return map[string]string{
-		"config":     state.ConfigPath,
-		"sessionDir": state.sessionDir(),
-		"cronDir":    state.cronDir(),
-		"agentDir":   state.agentDir(),
-		"memoryDB":   state.memoryDBPath(),
-		"workspace":  state.WorkspaceRoot,
+		"config":      state.ConfigPath,
+		"sessionDir":  state.sessionDir(),
+		"cronDir":     state.cronDir(),
+		"agentDir":    state.agentDir(),
+		"workflowDir": state.workflowDir(),
+		"runsDir":     state.runsDir(),
+		"memoryDB":    state.memoryDBPath(),
+		"workspace":   state.WorkspaceRoot,
 	}
 }
 

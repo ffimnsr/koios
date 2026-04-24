@@ -763,10 +763,10 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Config wizard
 	- Research notes: PicoClaw is the strongest direct reference because it already exposes a practical config form backed by patch APIs. OpenClaw is the stronger validation/schema reference. IronClaw is the strongest secondary reference if Koios wants wizard output to map cleanly onto typed settings and secrets storage.
 	- References: OpenClaw `src/config/zod-schema.ts`, `src/flows/channel-setup.prompts.ts`; PicoClaw `web/frontend/src/components/config/config-page.tsx`, `web/frontend/src/components/config/form-model.ts`; IronClaw `src/setup/wizard.rs`, `src/config/mod.rs`.
-- [ ] Diagnostics and repair tooling
+- [x] Diagnostics and repair tooling
 	- Research notes: OpenClaw and IronClaw are the strongest references here. OpenClaw already has targeted doctor flows for sandbox and state integrity. IronClaw's `doctor` vision is broader and explicitly called out in feature parity docs. PicoClaw has useful launcher/runtime status surfaces, but less visible automated repair logic in the current search.
 	- References: OpenClaw `src/commands/doctor-sandbox.ts`, `src/commands/doctor-state-integrity.ts`; PicoClaw `web/README.md`; IronClaw `FEATURE_PARITY.md`, `src/cli/doctor.rs`, `docs/drafts/help/troubleshooting.mdx`.
-- [ ] `doctor` command for diagnostics and repair guidance
+- [x] `doctor` command for diagnostics and repair guidance
 	- Research notes: IronClaw is the strongest direct reference because it explicitly treats `doctor` as a broad diagnostics command spanning settings, services, Docker, MCP, and skills. OpenClaw also has strong doctor subflows today. PicoClaw's visible launcher/runtime status is a weaker but still useful operator UX reference.
 	- References: OpenClaw `src/commands/doctor-sandbox.ts`, `src/commands/doctor/channel-capabilities.ts`; PicoClaw `web/README.md`; IronClaw `FEATURE_PARITY.md`, `src/cli/doctor.rs`.
 - [ ] Update command with release channel selection

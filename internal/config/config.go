@@ -498,8 +498,8 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		strconv.Quote(cfg.AgentRetryMaxBackoff.String()),
 		quoteIntSlice(cfg.AgentRetryStatusCodes),
 		strconv.Quote(cfg.ToolProfile),
-		quoteStringSlice(cfg.ToolsAllow),
-		quoteStringSlice(cfg.ToolsDeny),
+		inlineQuotedStringSlice(cfg.ToolsAllow),
+		inlineQuotedStringSlice(cfg.ToolsDeny),
 		cfg.CodeExecutionEnabled,
 		cfg.CodeExecutionNetworkEnabled,
 		strconv.Quote(cfg.CodeExecutionDefaultTimeout.String()),
@@ -517,11 +517,14 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		cfg.ProcessMaxProcessesPerPeer,
 		cfg.ExecEnabled,
 		cfg.ExecEnableDenyPatterns,
+		inlineQuotedStringSlice(cfg.ExecCustomDenyPatterns),
+		inlineQuotedStringSlice(cfg.ExecCustomAllowPatterns),
 		strconv.Quote(cfg.ExecDefaultTimeout.String()),
 		strconv.Quote(cfg.ExecMaxTimeout.String()),
 		strconv.Quote(cfg.ExecApprovalMode),
 		strconv.Quote(cfg.ExecApprovalTTL.String()),
 		cfg.ExecIsolationEnabled,
+		inlineExecIsolationPaths(cfg.ExecIsolationPaths),
 		strconv.Quote(cfg.WorkspaceRoot),
 		cfg.WorkspacePerAgent,
 		cfg.WorkspaceMaxBytes,
@@ -957,15 +960,39 @@ func quoteStringSlice(values []string) string {
 	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
+func inlineQuotedStringSlice(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			quoted = append(quoted, strconv.Quote(trimmed))
+		}
+	}
+	return strings.Join(quoted, ", ")
+}
+
 func quoteIntSlice(values []int) string {
 	if len(values) == 0 {
-		return "[]"
+		return ""
 	}
 	parts := make([]string, 0, len(values))
 	for _, value := range values {
 		parts = append(parts, strconv.Itoa(value))
 	}
-	return "[" + strings.Join(parts, ", ") + "]"
+	return strings.Join(parts, ", ")
+}
+
+func inlineExecIsolationPaths(values []ExecIsolationPath) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf(`{ source = %q, target = %q, mode = %q }`, value.Source, value.Target, value.Mode))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func ParseDailyResetMinutes(raw string) (int, error) {

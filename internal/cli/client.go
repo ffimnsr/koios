@@ -103,6 +103,23 @@ func (c *gatewayClient) version(ctx context.Context) (map[string]any, int, error
 	return payload, resp.StatusCode, nil
 }
 
+func (c *gatewayClient) monitor(ctx context.Context) (map[string]any, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseHTTP+"/v1/monitor", nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return payload, resp.StatusCode, nil
+}
+
 func (c *gatewayClient) rpc(ctx context.Context, peer, method string, params any, out any) error {
 	conn, err := c.openConn(ctx, peer)
 	if err != nil {

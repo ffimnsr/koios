@@ -289,6 +289,327 @@ func TestAgentOneShotCommand(t *testing.T) {
 	}
 }
 
+func TestDoctorRepairCreatesConfigAndStateDirs(t *testing.T) {
+	dir := t.TempDir()
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newDoctorCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--repair", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor repair failed: %v\noutput:\n%s", err, out.String())
+	}
+	if !fileExists(filepath.Join(dir, config.DefaultConfigFile)) {
+		t.Fatal("expected doctor repair to create koios.config.toml")
+	}
+	for _, path := range []string{
+		filepath.Join(dir, "workspace"),
+		filepath.Join(dir, "workspace", "sessions"),
+		filepath.Join(dir, "workspace", "cron"),
+		filepath.Join(dir, "workspace", "agents"),
+		filepath.Join(dir, "workspace", "workflows"),
+		filepath.Join(dir, "workspace", "runs"),
+		filepath.Join(dir, "workspace", "AGENTS.md"),
+		filepath.Join(dir, "workspace", "BOOTSTRAP.md"),
+	} {
+		if strings.HasSuffix(path, ".md") {
+			if !fileExists(path) {
+				t.Fatalf("expected %s to exist after repair", path)
+			}
+			continue
+		}
+		if !dirExists(path) {
+			t.Fatalf("expected %s to exist after repair", path)
+		}
+	}
+	if !strings.Contains(out.String(), `"created workspace starter doc:`) {
+		t.Fatalf("expected workspace doc creation in repair output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"repairs": 14`) {
+		t.Fatalf("unexpected doctor output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"created koios.config.toml"`) {
+		t.Fatalf("expected repair output to mention config creation: %s", out.String())
+	}
+}
+
+func TestDoctorRepairNormalizesInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Join([]string{
+		"[server]",
+		`request_timeout = "1s"`,
+		"",
+		"[llm]",
+		`provider = "bogus"`,
+		`model = ""`,
+		"",
+		"[session]",
+		"max_messages = 0",
+		"max_entries = -1",
+		`daily_reset_time = "99:99"`,
+		"",
+		"[cron]",
+		"max_concurrent = 0",
+		"",
+		"[agent]",
+		"max_children = 0",
+		"retry_attempts = 0",
+		"retry_status_codes = [200, 999]",
+		"",
+		"[tools]",
+		`profile = "broken"`,
+		"",
+		"[tools.exec]",
+		`approval_mode = "sometimes"`,
+		`default_timeout = "0s"`,
+		`max_timeout = "0s"`,
+		`approval_ttl = "0s"`,
+		"",
+		"[tools.process]",
+		`stop_timeout = "0s"`,
+		"log_tail_bytes = 0",
+		"max_processes_per_peer = 0",
+		"",
+		"[workspace]",
+		`root = ""`,
+		"max_file_bytes = 0",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newDoctorCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--repair", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor repair failed: %v\noutput:\n%s", err, out.String())
+	}
+	data, err := os.ReadFile(filepath.Join(dir, config.DefaultConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, expected := range []string{
+		`provider = "openai"`,
+		`model = "gpt-4o"`,
+		`max_messages = 100`,
+		`max_entries = 0`,
+		`max_concurrent = 1`,
+		`max_children = 4`,
+		`retry_attempts = 3`,
+		`profile = "full"`,
+		`approval_mode = "dangerous"`,
+		`root = "./workspace"`,
+		`max_file_bytes = 1048576`,
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected repaired config to contain %q, got:\n%s", expected, text)
+		}
+	}
+	if !strings.Contains(out.String(), `rewrote koios.config.toml with normalized settings`) {
+		t.Fatalf("expected rewrite repair note in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `reset llm.provider to`) {
+		t.Fatalf("expected detailed repair notes in output: %s", out.String())
+	}
+}
+
+func TestDoctorRepairForceReplacesUnreadableConfig(t *testing.T) {
+	dir := t.TempDir()
+	brokenPath := filepath.Join(dir, config.DefaultConfigFile)
+	broken := []byte("[llm\nprovider = \"openai\"\n")
+	if err := os.WriteFile(brokenPath, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newDoctorCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--repair", "--force", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor force repair failed: %v\noutput:\n%s", err, out.String())
+	}
+	data, err := os.ReadFile(brokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `[llm]`) || !strings.Contains(string(data), `provider = "openai"`) {
+		t.Fatalf("expected broken config to be replaced with defaults, got:\n%s", string(data))
+	}
+	backup, err := os.ReadFile(brokenPath + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backup) != string(broken) {
+		t.Fatalf("expected backup to preserve broken config contents")
+	}
+	if !strings.Contains(out.String(), `replaced unreadable koios.config.toml with defaults`) {
+		t.Fatalf("expected forced replacement repair note in output: %s", out.String())
+	}
+}
+
+func TestDoctorReportsConfigParseError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte("[llm\nprovider = \"openai\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newDoctorCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected doctor to fail on parse error")
+	}
+	if !strings.Contains(out.String(), `"key": "config.parse"`) {
+		t.Fatalf("expected parse finding in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `parse config file`) {
+		t.Fatalf("expected parse error details in output: %s", out.String())
+	}
+}
+
+func TestDoctorDeepProbesGatewayAndMonitor(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1.0", "git_hash": "abc", "build_time": "now"})
+		case "/v1/monitor":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"stale": false,
+				"subsystems": map[string]any{
+					"scheduler": map[string]any{"restarts": 1},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newDoctorCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--deep", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"gateway"`) {
+		t.Fatalf("expected gateway payload in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"key": "gateway.monitor.subsystem"`) {
+		t.Fatalf("expected monitor restart finding in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `gateway reachable at`) {
+		t.Fatalf("expected gateway reachability finding in output: %s", out.String())
+	}
+}
+
+func TestDoctorDeepProbesMCPHTTPServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1.0", "git_hash": "abc", "build_time": "now"})
+		case "/v1/monitor":
+			_ = json.NewEncoder(w).Encode(map[string]any{"stale": false, "subsystems": map[string]any{}})
+		case "/mcp":
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode mcp request: %v", err)
+			}
+			method, _ := req["method"].(string)
+			switch method {
+			case "initialize":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req["id"],
+					"result": map[string]any{
+						"protocolVersion": "2024-11-05",
+						"capabilities":    map[string]any{},
+						"serverInfo":      map[string]any{"name": "demo", "version": "1.0.0"},
+					},
+				})
+			case "tools/list":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req["id"],
+					"result": map[string]any{
+						"tools": []map[string]any{{
+							"name":        "echo",
+							"description": "echo input",
+							"inputSchema": map[string]any{"type": "object"},
+						}},
+					},
+				})
+			default:
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req["id"],
+					"error":   map[string]any{"code": -32601, "message": "method not found"},
+				})
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	configText := strings.Join([]string{
+		fmt.Sprintf("[server]\nlisten_addr = %q\n", server.URL),
+		"[llm]",
+		`provider = "openai"`,
+		`model = "gpt-4o"`,
+		`api_key = "test-key"`,
+		"",
+		"[workspace]",
+		`root = "./workspace"`,
+		"",
+		"[[mcp.servers]]",
+		`name = "demo"`,
+		`transport = "http"`,
+		fmt.Sprintf("url = %q", server.URL+"/mcp"),
+		`timeout = "2s"`,
+		"enabled = true",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(configText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newDoctorCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--deep", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"key": "mcp.servers[0].probe"`) {
+		t.Fatalf("expected MCP probe finding in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `reachable over http with 1 tool(s)`) {
+		t.Fatalf("expected successful MCP probe output: %s", out.String())
+	}
+}
+
 func TestRootNoArgsShowsHelp(t *testing.T) {
 	called := false
 	root := NewRootCommand(app.BuildInfo{Version: "test"}, func(app.BuildInfo) error {
