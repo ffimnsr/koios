@@ -13,6 +13,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/presence"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -116,6 +117,43 @@ func TestCalcNextRun_Stagger_Deterministic(t *testing.T) {
 	base := from.Add(time.Minute)
 	if a.Before(base) || a.After(base.Add(5*time.Second)) {
 		t.Errorf("got %v, expected in [%v, %v]", a, base, base.Add(5*time.Second))
+	}
+}
+
+func TestSchedulerRunAgentTurn_UsesProfileStandingOrders(t *testing.T) {
+	store, err := NewJobStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJobStore: %v", err)
+	}
+	sessionStore := session.New(10)
+	standingStore, err := standing.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("standing.NewStore: %v", err)
+	}
+	if _, err := standingStore.SaveDocument(&standing.Document{
+		PeerID:  "peer-1",
+		Content: "Base standing order",
+		Profiles: map[string]standing.Profile{
+			"focus": {Content: "Focus profile standing order"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	prov := &stubProvider{complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+		if len(req.Messages) == 0 || !strings.Contains(req.Messages[0].Content, "Focus profile standing order") {
+			return nil, errors.New("profile standing order not injected")
+		}
+		return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}, nil
+	}}
+	sched := New(store, prov, sessionStore, standing.NewManager(standingStore, ""), "test-model", 1)
+	job := &Job{
+		JobID:   "job-1",
+		PeerID:  "peer-1",
+		Name:    "focus",
+		Payload: Payload{Kind: PayloadAgentTurn, Message: "do work", Profile: "focus"},
+	}
+	if _, err := sched.runAgentTurn(context.Background(), job); err != nil {
+		t.Fatalf("runAgentTurn: %v", err)
 	}
 }
 

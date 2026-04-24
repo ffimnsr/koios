@@ -41,7 +41,8 @@ type SearchResult struct {
 	RetentionClass RetentionClass
 	ExposurePolicy ExposurePolicy
 	ExpiresAt      int64
-	Score          float64 // BM25 rank (negative) or cosine similarity [0,1]
+	ChunkProvenance
+	Score float64 // BM25 rank (negative) or cosine similarity [0,1]
 }
 
 type RetentionClass string
@@ -70,8 +71,10 @@ const (
 )
 
 const (
-	CandidateCaptureManual          = "manual"
-	CandidateCaptureAutoTurnExtract = "auto_turn_extract"
+	CandidateCaptureManual           = "manual"
+	CandidateCaptureAutoTurnExtract  = "auto_turn_extract"
+	ChunkCaptureConversationArchive  = "conversation_archive"
+	ChunkCaptureCompactionCheckpoint = "compaction_checkpoint"
 )
 
 type ChunkOptions struct {
@@ -80,6 +83,19 @@ type ChunkOptions struct {
 	RetentionClass RetentionClass
 	ExposurePolicy ExposurePolicy
 	ExpiresAt      int64
+	Provenance     ChunkProvenance
+}
+
+type ChunkProvenance struct {
+	CaptureKind       string  `json:"capture_kind,omitempty"`
+	CaptureReason     string  `json:"capture_reason,omitempty"`
+	Confidence        float64 `json:"confidence,omitempty"`
+	SourceSessionKey  string  `json:"source_session_key,omitempty"`
+	SourceMessageID   string  `json:"source_message_id,omitempty"`
+	SourceRunID       string  `json:"source_run_id,omitempty"`
+	SourceHook        string  `json:"source_hook,omitempty"`
+	SourceCandidateID string  `json:"source_candidate_id,omitempty"`
+	SourceExcerpt     string  `json:"source_excerpt,omitempty"`
 }
 
 type CandidateProvenance struct {
@@ -165,6 +181,59 @@ type EntityGraph struct {
 	LinkedChunks []Chunk              `json:"linked_chunks,omitempty"`
 	Outgoing     []EntityRelationship `json:"outgoing_relationships,omitempty"`
 	Incoming     []EntityRelationship `json:"incoming_relationships,omitempty"`
+}
+
+type PreferenceKind string
+
+const (
+	PreferenceKindPreference PreferenceKind = "preference"
+	PreferenceKindDecision   PreferenceKind = "decision"
+)
+
+type PreferenceScope string
+
+const (
+	PreferenceScopeGlobal    PreferenceScope = "global"
+	PreferenceScopeWorkspace PreferenceScope = "workspace"
+	PreferenceScopeProfile   PreferenceScope = "profile"
+	PreferenceScopeProject   PreferenceScope = "project"
+	PreferenceScopeTopic     PreferenceScope = "topic"
+)
+
+type PreferenceRecord struct {
+	ID               string          `json:"id"`
+	PeerID           string          `json:"peer_id"`
+	Kind             PreferenceKind  `json:"kind"`
+	Name             string          `json:"name"`
+	Value            string          `json:"value"`
+	Category         string          `json:"category,omitempty"`
+	Scope            PreferenceScope `json:"scope"`
+	ScopeRef         string          `json:"scope_ref,omitempty"`
+	Confidence       float64         `json:"confidence"`
+	LastConfirmedAt  int64           `json:"last_confirmed_at,omitempty"`
+	CreatedAt        int64           `json:"created_at"`
+	UpdatedAt        int64           `json:"updated_at"`
+	SourceSessionKey string          `json:"source_session_key,omitempty"`
+	SourceExcerpt    string          `json:"source_excerpt,omitempty"`
+}
+
+type PreferencePatch struct {
+	Kind             *PreferenceKind
+	Name             *string
+	Value            *string
+	Category         *string
+	Scope            *PreferenceScope
+	ScopeRef         *string
+	Confidence       *float64
+	LastConfirmedAt  *int64
+	SourceSessionKey *string
+	SourceExcerpt    *string
+}
+
+type PreferenceFilter struct {
+	Kind  PreferenceKind
+	Scope PreferenceScope
+	Limit int
 }
 
 // Store is a SQLite-backed memory store with optional Milvus vector search.
@@ -327,6 +396,7 @@ type Chunk struct {
 	RetentionClass RetentionClass `json:"retention_class,omitempty"`
 	ExposurePolicy ExposurePolicy `json:"exposure_policy,omitempty"`
 	ExpiresAt      int64          `json:"expires_at,omitempty"`
+	ChunkProvenance
 }
 
 // List returns all chunks stored for a peer, ordered by creation time descending.
@@ -338,7 +408,7 @@ func (s *Store) List(ctx context.Context, peerID string, limit int) ([]Chunk, er
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,''), COALESCE(retention_class,?), COALESCE(exposure_policy,?), COALESCE(expires_at,0) FROM chunks WHERE peer_id = ? ORDER BY created_at DESC LIMIT ?`,
+		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,''), COALESCE(retention_class,?), COALESCE(exposure_policy,?), COALESCE(expires_at,0), COALESCE(capture_kind,''), COALESCE(capture_reason,''), COALESCE(confidence,1.0), COALESCE(source_session_key,''), COALESCE(source_message_id,''), COALESCE(source_run_id,''), COALESCE(source_hook,''), COALESCE(source_candidate_id,''), COALESCE(source_excerpt,'') FROM chunks WHERE peer_id = ? ORDER BY created_at DESC LIMIT ?`,
 		RetentionClassWorking, ExposurePolicyAuto,
 		peerID, limit)
 	if err != nil {
@@ -409,9 +479,9 @@ func (s *Store) GetChunk(ctx context.Context, peerID, chunkID string) (*Chunk, e
 	var c Chunk
 	var tagStr string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,''), COALESCE(retention_class,?), COALESCE(exposure_policy,?), COALESCE(expires_at,0) FROM chunks WHERE id = ?`,
+		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,''), COALESCE(retention_class,?), COALESCE(exposure_policy,?), COALESCE(expires_at,0), COALESCE(capture_kind,''), COALESCE(capture_reason,''), COALESCE(confidence,1.0), COALESCE(source_session_key,''), COALESCE(source_message_id,''), COALESCE(source_run_id,''), COALESCE(source_hook,''), COALESCE(source_candidate_id,''), COALESCE(source_excerpt,'') FROM chunks WHERE id = ?`,
 		RetentionClassWorking, ExposurePolicyAuto, chunkID,
-	).Scan(&c.ID, &c.PeerID, &c.Content, &c.CreatedAt, &tagStr, &c.Category, &c.RetentionClass, &c.ExposurePolicy, &c.ExpiresAt)
+	).Scan(&c.ID, &c.PeerID, &c.Content, &c.CreatedAt, &tagStr, &c.Category, &c.RetentionClass, &c.ExposurePolicy, &c.ExpiresAt, &c.CaptureKind, &c.CaptureReason, &c.Confidence, &c.SourceSessionKey, &c.SourceMessageID, &c.SourceRunID, &c.SourceHook, &c.SourceCandidateID, &c.SourceExcerpt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("chunk %s not found", chunkID)
 	}
@@ -422,6 +492,9 @@ func (s *Store) GetChunk(ctx context.Context, peerID, chunkID string) (*Chunk, e
 		return nil, fmt.Errorf("chunk %s does not belong to peer", chunkID)
 	}
 	c.Tags = parseTags(tagStr)
+	if c.Confidence == 0 {
+		c.Confidence = 1
+	}
 	return &c, nil
 }
 
@@ -509,6 +582,9 @@ func (s *Store) DeletePeer(ctx context.Context, peerID string) error {
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_candidates WHERE peer_id = ?`, peerID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_preferences WHERE peer_id = ?`, peerID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_entity_edges WHERE peer_id = ?`, peerID); err != nil {
@@ -652,11 +728,14 @@ func (s *Store) BatchGet(ctx context.Context, peerID string, ids []string) ([]Ch
 
 // MemoryStats holds aggregate information about the memory store.
 type MemoryStats struct {
-	TotalChunks  int                    `json:"total_chunks"`
-	ByCategory   map[string]int         `json:"by_category"`
-	ByRetention  map[RetentionClass]int `json:"by_retention"`
-	MilvusActive bool                   `json:"milvus_active"`
-	MilvusCount  int                    `json:"milvus_count"`
+	TotalChunks       int                     `json:"total_chunks"`
+	ByCategory        map[string]int          `json:"by_category"`
+	ByRetention       map[RetentionClass]int  `json:"by_retention"`
+	TotalPreferences  int                     `json:"total_preferences"`
+	ByPreferenceKind  map[PreferenceKind]int  `json:"by_preference_kind"`
+	ByPreferenceScope map[PreferenceScope]int `json:"by_preference_scope"`
+	MilvusActive      bool                    `json:"milvus_active"`
+	MilvusCount       int                     `json:"milvus_count"`
 }
 
 // Stats returns aggregate information about the peer's memory store.
@@ -664,7 +743,12 @@ func (s *Store) Stats(ctx context.Context, peerID string) (*MemoryStats, error) 
 	if err := s.purgeExpired(ctx); err != nil {
 		return nil, err
 	}
-	stats := &MemoryStats{ByCategory: make(map[string]int), ByRetention: make(map[RetentionClass]int)}
+	stats := &MemoryStats{
+		ByCategory:        make(map[string]int),
+		ByRetention:       make(map[RetentionClass]int),
+		ByPreferenceKind:  make(map[PreferenceKind]int),
+		ByPreferenceScope: make(map[PreferenceScope]int),
+	}
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM chunks WHERE peer_id = ?`, peerID).Scan(&stats.TotalChunks)
 	if err != nil {
@@ -698,6 +782,36 @@ func (s *Store) Stats(ctx context.Context, peerID string) (*MemoryStats, error) 
 	if s.milvus != nil {
 		if n, err := s.milvus.Count(ctx); err == nil {
 			stats.MilvusCount = n
+		}
+	}
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM memory_preferences WHERE peer_id = ?`, peerID).Scan(&stats.TotalPreferences); err != nil {
+		return nil, fmt.Errorf("memory stats preferences: %w", err)
+	}
+	prefKindRows, err := s.db.QueryContext(ctx,
+		`SELECT COALESCE(kind,'preference'), COUNT(*) FROM memory_preferences WHERE peer_id = ? GROUP BY COALESCE(kind,'preference')`, peerID)
+	if err != nil {
+		return nil, fmt.Errorf("memory stats preference kinds: %w", err)
+	}
+	defer prefKindRows.Close()
+	for prefKindRows.Next() {
+		var kind string
+		var count int
+		if err := prefKindRows.Scan(&kind, &count); err == nil {
+			stats.ByPreferenceKind[PreferenceKind(kind)] = count
+		}
+	}
+	prefScopeRows, err := s.db.QueryContext(ctx,
+		`SELECT COALESCE(scope,'global'), COUNT(*) FROM memory_preferences WHERE peer_id = ? GROUP BY COALESCE(scope,'global')`, peerID)
+	if err != nil {
+		return nil, fmt.Errorf("memory stats preference scopes: %w", err)
+	}
+	defer prefScopeRows.Close()
+	for prefScopeRows.Next() {
+		var scope string
+		var count int
+		if err := prefScopeRows.Scan(&scope, &count); err == nil {
+			stats.ByPreferenceScope[PreferenceScope(scope)] = count
 		}
 	}
 	return stats, nil
@@ -870,7 +984,9 @@ func (s *Store) ApproveCandidate(ctx context.Context, peerID, candidateID string
 	if err != nil {
 		return nil, nil, err
 	}
-	chunk, err := insertChunkTx(ctx, tx, peerID, content, opts, time.Now().Unix())
+	storeOpts := opts
+	storeOpts.Provenance = candidateChunkProvenance(*candidate, reason)
+	chunk, err := insertChunkTx(ctx, tx, peerID, content, storeOpts, time.Now().Unix())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1402,6 +1518,16 @@ func (s *Store) milvusSearch(ctx context.Context, peerID, query string, topK int
 		if pid, ok := r.Metadata["peer_id"].(string); ok {
 			out[i].PeerID = pid
 		}
+		chunk, err := s.GetChunk(ctx, peerID, r.ID)
+		if err == nil {
+			out[i].PeerID = chunk.PeerID
+			out[i].Tags = append([]string(nil), chunk.Tags...)
+			out[i].Category = chunk.Category
+			out[i].RetentionClass = chunk.RetentionClass
+			out[i].ExposurePolicy = chunk.ExposurePolicy
+			out[i].ExpiresAt = chunk.ExpiresAt
+			out[i].ChunkProvenance = chunk.ChunkProvenance
+		}
 	}
 	return out, nil
 }
@@ -1463,20 +1589,21 @@ func mergeResults(bm25, milvusRes []SearchResult, topK int) []SearchResult {
 
 func insertChunkTx(ctx context.Context, tx *sql.Tx, peerID, content string, opts ChunkOptions, createdAt int64) (*Chunk, error) {
 	chunk := &Chunk{
-		ID:             newID(),
-		PeerID:         peerID,
-		Content:        content,
-		CreatedAt:      createdAt,
-		Tags:           opts.Tags,
-		Category:       opts.Category,
-		RetentionClass: opts.RetentionClass,
-		ExposurePolicy: opts.ExposurePolicy,
-		ExpiresAt:      opts.ExpiresAt,
+		ID:              newID(),
+		PeerID:          peerID,
+		Content:         content,
+		CreatedAt:       createdAt,
+		Tags:            opts.Tags,
+		Category:        opts.Category,
+		RetentionClass:  opts.RetentionClass,
+		ExposurePolicy:  opts.ExposurePolicy,
+		ExpiresAt:       opts.ExpiresAt,
+		ChunkProvenance: opts.Provenance,
 	}
 	tagStr := strings.Join(chunk.Tags, ",")
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO chunks(id, peer_id, content, created_at, tags, category, retention_class, exposure_policy, expires_at) VALUES (?,?,?,?,?,?,?,?,?)`,
-		chunk.ID, chunk.PeerID, chunk.Content, chunk.CreatedAt, tagStr, chunk.Category, chunk.RetentionClass, chunk.ExposurePolicy, chunk.ExpiresAt); err != nil {
+		`INSERT INTO chunks(id, peer_id, content, created_at, tags, category, retention_class, exposure_policy, expires_at, capture_kind, capture_reason, confidence, source_session_key, source_message_id, source_run_id, source_hook, source_candidate_id, source_excerpt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		chunk.ID, chunk.PeerID, chunk.Content, chunk.CreatedAt, tagStr, chunk.Category, chunk.RetentionClass, chunk.ExposurePolicy, chunk.ExpiresAt, chunk.CaptureKind, chunk.CaptureReason, chunk.Confidence, chunk.SourceSessionKey, chunk.SourceMessageID, chunk.SourceRunID, chunk.SourceHook, chunk.SourceCandidateID, chunk.SourceExcerpt); err != nil {
 		return nil, fmt.Errorf("memory insert: chunks: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -1490,8 +1617,8 @@ func insertChunkTx(ctx context.Context, tx *sql.Tx, peerID, content string, opts
 func updateChunkTx(ctx context.Context, tx *sql.Tx, chunk Chunk) error {
 	tagStr := strings.Join(chunk.Tags, ",")
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE chunks SET content = ?, tags = ?, category = ?, retention_class = ?, exposure_policy = ?, expires_at = ? WHERE id = ? AND peer_id = ?`,
-		chunk.Content, tagStr, chunk.Category, chunk.RetentionClass, chunk.ExposurePolicy, chunk.ExpiresAt, chunk.ID, chunk.PeerID); err != nil {
+		`UPDATE chunks SET content = ?, tags = ?, category = ?, retention_class = ?, exposure_policy = ?, expires_at = ?, capture_kind = ?, capture_reason = ?, confidence = ?, source_session_key = ?, source_message_id = ?, source_run_id = ?, source_hook = ?, source_candidate_id = ?, source_excerpt = ? WHERE id = ? AND peer_id = ?`,
+		chunk.Content, tagStr, chunk.Category, chunk.RetentionClass, chunk.ExposurePolicy, chunk.ExpiresAt, chunk.CaptureKind, chunk.CaptureReason, chunk.Confidence, chunk.SourceSessionKey, chunk.SourceMessageID, chunk.SourceRunID, chunk.SourceHook, chunk.SourceCandidateID, chunk.SourceExcerpt, chunk.ID, chunk.PeerID); err != nil {
 		return fmt.Errorf("memory update: chunks: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM chunks_fts WHERE id = ?`, chunk.ID); err != nil {
@@ -1505,7 +1632,7 @@ func updateChunkTx(ctx context.Context, tx *sql.Tx, chunk Chunk) error {
 
 func loadChunkTx(ctx context.Context, tx *sql.Tx, peerID, chunkID string) (*Chunk, error) {
 	chunk, err := scanChunk(tx.QueryRowContext(ctx,
-		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,''), COALESCE(retention_class,?), COALESCE(exposure_policy,?), COALESCE(expires_at,0) FROM chunks WHERE id = ?`,
+		`SELECT id, peer_id, content, created_at, COALESCE(tags,''), COALESCE(category,''), COALESCE(retention_class,?), COALESCE(exposure_policy,?), COALESCE(expires_at,0), COALESCE(capture_kind,''), COALESCE(capture_reason,''), COALESCE(confidence,1.0), COALESCE(source_session_key,''), COALESCE(source_message_id,''), COALESCE(source_run_id,''), COALESCE(source_hook,''), COALESCE(source_candidate_id,''), COALESCE(source_excerpt,'') FROM chunks WHERE id = ?`,
 		RetentionClassWorking, ExposurePolicyAuto, chunkID))
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("chunk %s not found", chunkID)
@@ -1623,10 +1750,13 @@ func (s *Store) bm25Search(ctx context.Context, peerID, query string, limit int,
 		var r SearchResult
 		var tagStr string
 		var rank float64
-		if err := rows.Scan(&r.ID, &r.PeerID, &r.Content, &tagStr, &r.Category, &r.RetentionClass, &r.ExposurePolicy, &r.ExpiresAt, &rank); err != nil {
+		if err := rows.Scan(&r.ID, &r.PeerID, &r.Content, &tagStr, &r.Category, &r.RetentionClass, &r.ExposurePolicy, &r.ExpiresAt, &r.CaptureKind, &r.CaptureReason, &r.Confidence, &r.SourceSessionKey, &r.SourceMessageID, &r.SourceRunID, &r.SourceHook, &r.SourceCandidateID, &r.SourceExcerpt, &rank); err != nil {
 			continue
 		}
 		r.Tags = parseTags(tagStr)
+		if r.Confidence == 0 {
+			r.Confidence = 1
+		}
 		r.Score = -rank // negate: FTS5 rank is negative; higher Score = better match
 		results = append(results, r)
 	}
@@ -1675,10 +1805,25 @@ func migrate(db *sql.DB) error {
 	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'working'`)
 	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN exposure_policy TEXT NOT NULL DEFAULT 'auto'`)
 	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN capture_kind TEXT NOT NULL DEFAULT 'manual'`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN capture_reason TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_message_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_run_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_hook TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_candidate_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE memory_candidates ADD COLUMN capture_kind TEXT NOT NULL DEFAULT 'manual'`)
 	_, _ = db.Exec(`ALTER TABLE memory_candidates ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE memory_candidates ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE memory_preferences ADD COLUMN category TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE memory_preferences ADD COLUMN scope_ref TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE memory_preferences ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE memory_preferences ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_candidates_peer_status_created_at ON memory_candidates(peer_id, status, created_at DESC)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_preferences_peer_kind_scope ON memory_preferences(peer_id, kind, scope, updated_at DESC)`)
+	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_preferences_peer_confirmed ON memory_preferences(peer_id, last_confirmed_at DESC, confidence DESC)`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_entities_peer_kind_name ON memory_entities(peer_id, kind, name)`)
 	_, _ = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_entity_edges_unique ON memory_entity_edges(peer_id, source_entity_id, target_entity_id, relation)`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_entity_edges_source ON memory_entity_edges(peer_id, source_entity_id, updated_at DESC)`)
@@ -1716,6 +1861,11 @@ func normalizeChunkOptions(opts ChunkOptions) (ChunkOptions, error) {
 	normalized := opts
 	normalized.Category = strings.TrimSpace(normalized.Category)
 	normalized.Tags = compactTags(normalized.Tags)
+	var err error
+	normalized.Provenance, err = normalizeChunkProvenance(normalized.Provenance)
+	if err != nil {
+		return ChunkOptions{}, err
+	}
 	switch normalized.RetentionClass {
 	case "":
 		normalized.RetentionClass = RetentionClassWorking
@@ -1742,6 +1892,42 @@ func normalizeChunkOptions(opts ChunkOptions) (ChunkOptions, error) {
 		return ChunkOptions{}, fmt.Errorf("expires_at must be >= 0")
 	}
 	return normalized, nil
+}
+
+func normalizeChunkProvenance(provenance ChunkProvenance) (ChunkProvenance, error) {
+	provenance.CaptureKind = strings.TrimSpace(provenance.CaptureKind)
+	provenance.CaptureReason = truncateExcerpt(strings.TrimSpace(redact.String(provenance.CaptureReason)), 160)
+	provenance.SourceSessionKey = strings.TrimSpace(provenance.SourceSessionKey)
+	provenance.SourceMessageID = strings.TrimSpace(provenance.SourceMessageID)
+	provenance.SourceRunID = strings.TrimSpace(provenance.SourceRunID)
+	provenance.SourceHook = strings.TrimSpace(provenance.SourceHook)
+	provenance.SourceCandidateID = strings.TrimSpace(provenance.SourceCandidateID)
+	provenance.SourceExcerpt = truncateExcerpt(strings.TrimSpace(redact.String(provenance.SourceExcerpt)), 160)
+	if provenance.CaptureKind == "" {
+		provenance.CaptureKind = CandidateCaptureManual
+	}
+	if provenance.Confidence == 0 {
+		provenance.Confidence = 1
+	}
+	if provenance.Confidence < 0 || provenance.Confidence > 1 {
+		return ChunkProvenance{}, fmt.Errorf("confidence must be between 0 and 1")
+	}
+	return provenance, nil
+}
+
+func candidateChunkProvenance(candidate Candidate, reviewReason string) ChunkProvenance {
+	provenance, err := normalizeChunkProvenance(ChunkProvenance{
+		CaptureKind:       candidate.CaptureKind,
+		CaptureReason:     strings.TrimSpace(reviewReason),
+		Confidence:        1,
+		SourceSessionKey:  candidate.SourceSessionKey,
+		SourceCandidateID: candidate.ID,
+		SourceExcerpt:     candidate.SourceExcerpt,
+	})
+	if err != nil {
+		return ChunkProvenance{CaptureKind: CandidateCaptureManual, Confidence: 1}
+	}
+	return provenance
 }
 
 func compactTags(tags []string) []string {
@@ -1789,11 +1975,14 @@ type rowScanner interface {
 func scanChunk(scanner rowScanner) (Chunk, error) {
 	var c Chunk
 	var tagStr string
-	err := scanner.Scan(&c.ID, &c.PeerID, &c.Content, &c.CreatedAt, &tagStr, &c.Category, &c.RetentionClass, &c.ExposurePolicy, &c.ExpiresAt)
+	err := scanner.Scan(&c.ID, &c.PeerID, &c.Content, &c.CreatedAt, &tagStr, &c.Category, &c.RetentionClass, &c.ExposurePolicy, &c.ExpiresAt, &c.CaptureKind, &c.CaptureReason, &c.Confidence, &c.SourceSessionKey, &c.SourceMessageID, &c.SourceRunID, &c.SourceHook, &c.SourceCandidateID, &c.SourceExcerpt)
 	if err != nil {
 		return Chunk{}, err
 	}
 	c.Tags = parseTags(tagStr)
+	if c.Confidence == 0 {
+		c.Confidence = 1
+	}
 	return c, nil
 }
 
@@ -1831,6 +2020,30 @@ func scanEntityRelationship(scanner rowScanner) (EntityRelationship, error) {
 	return rel, nil
 }
 
+func scanPreference(scanner rowScanner) (PreferenceRecord, error) {
+	var record PreferenceRecord
+	err := scanner.Scan(
+		&record.ID,
+		&record.PeerID,
+		&record.Kind,
+		&record.Name,
+		&record.Value,
+		&record.Category,
+		&record.Scope,
+		&record.ScopeRef,
+		&record.Confidence,
+		&record.LastConfirmedAt,
+		&record.CreatedAt,
+		&record.UpdatedAt,
+		&record.SourceSessionKey,
+		&record.SourceExcerpt,
+	)
+	if err != nil {
+		return PreferenceRecord{}, err
+	}
+	return record, nil
+}
+
 func normalizeEntityKind(kind EntityKind, allowEmpty bool) (EntityKind, error) {
 	kind = EntityKind(strings.ToLower(strings.TrimSpace(string(kind))))
 	if kind == "" && allowEmpty {
@@ -1845,6 +2058,48 @@ func normalizeEntityKind(kind EntityKind, allowEmpty bool) (EntityKind, error) {
 	default:
 		return "", fmt.Errorf("invalid entity kind %q", kind)
 	}
+}
+
+func normalizePreferenceKind(kind PreferenceKind, allowEmpty bool) (PreferenceKind, error) {
+	kind = PreferenceKind(strings.ToLower(strings.TrimSpace(string(kind))))
+	if kind == "" && allowEmpty {
+		return "", nil
+	}
+	if kind == "" {
+		kind = PreferenceKindPreference
+	}
+	switch kind {
+	case PreferenceKindPreference, PreferenceKindDecision:
+		return kind, nil
+	default:
+		return "", fmt.Errorf("invalid preference kind %q", kind)
+	}
+}
+
+func normalizePreferenceScope(scope PreferenceScope, allowEmpty bool) (PreferenceScope, error) {
+	scope = PreferenceScope(strings.ToLower(strings.TrimSpace(string(scope))))
+	if scope == "" && allowEmpty {
+		return "", nil
+	}
+	if scope == "" {
+		scope = PreferenceScopeGlobal
+	}
+	switch scope {
+	case PreferenceScopeGlobal, PreferenceScopeWorkspace, PreferenceScopeProfile, PreferenceScopeProject, PreferenceScopeTopic:
+		return scope, nil
+	default:
+		return "", fmt.Errorf("invalid preference scope %q", scope)
+	}
+}
+
+func normalizePreferenceConfidence(confidence float64, defaultValue float64) (float64, error) {
+	if confidence == 0 {
+		confidence = defaultValue
+	}
+	if confidence < 0 || confidence > 1 {
+		return 0, fmt.Errorf("confidence must be between 0 and 1")
+	}
+	return confidence, nil
 }
 
 func normalizeEntityRelation(relation string) (string, error) {
@@ -2064,7 +2319,7 @@ func loadEntityEdgeTx(ctx context.Context, tx *sql.Tx, peerID, sourceEntityID, t
 
 func (s *Store) listEntityChunks(ctx context.Context, peerID, entityID string) ([]Chunk, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT c.id, c.peer_id, c.content, c.created_at, COALESCE(c.tags,''), COALESCE(c.category,''), COALESCE(c.retention_class,?), COALESCE(c.exposure_policy,?), COALESCE(c.expires_at,0)
+		`SELECT c.id, c.peer_id, c.content, c.created_at, COALESCE(c.tags,''), COALESCE(c.category,''), COALESCE(c.retention_class,?), COALESCE(c.exposure_policy,?), COALESCE(c.expires_at,0), COALESCE(c.capture_kind,''), COALESCE(c.capture_reason,''), COALESCE(c.confidence,1.0), COALESCE(c.source_session_key,''), COALESCE(c.source_message_id,''), COALESCE(c.source_run_id,''), COALESCE(c.source_hook,''), COALESCE(c.source_candidate_id,''), COALESCE(c.source_excerpt,'')
 		   FROM memory_entity_chunks ec
 		   JOIN chunks c ON c.id = ec.chunk_id
 		  WHERE ec.entity_id = ? AND c.peer_id = ?

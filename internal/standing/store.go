@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +30,28 @@ type workspaceCacheEntry struct {
 	expiresAt time.Time
 }
 
+type Profile struct {
+	Content       string   `json:"content,omitempty"`
+	ToolProfile   string   `json:"tool_profile,omitempty"`
+	ToolsAllow    []string `json:"tools_allow,omitempty"`
+	ToolsDeny     []string `json:"tools_deny,omitempty"`
+	ResponseStyle string   `json:"response_style,omitempty"`
+	ThinkLevel    string   `json:"think_level,omitempty"`
+	VerboseMode   *bool    `json:"verbose_mode,omitempty"`
+	TraceMode     *bool    `json:"trace_mode,omitempty"`
+}
+
+type ResolvedProfile struct {
+	Name    string  `json:"name"`
+	Profile Profile `json:"profile"`
+}
+
 type Document struct {
-	PeerID    string    `json:"peer_id,omitempty"`
-	Content   string    `json:"content"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	PeerID         string             `json:"peer_id,omitempty"`
+	Content        string             `json:"content"`
+	DefaultProfile string             `json:"default_profile,omitempty"`
+	Profiles       map[string]Profile `json:"profiles,omitempty"`
+	UpdatedAt      time.Time          `json:"updated_at,omitempty"`
 }
 
 type Store struct {
@@ -87,24 +106,31 @@ func (s *Store) Save(peerID, content string) (*Document, error) {
 	if s == nil {
 		return nil, fmt.Errorf("standing store is not enabled")
 	}
-	doc := &Document{
-		PeerID:    peerID,
-		Content:   strings.TrimSpace(content),
-		UpdatedAt: time.Now().UTC(),
+	doc := &Document{PeerID: peerID, Content: content}
+	return s.SaveDocument(doc)
+}
+
+func (s *Store) SaveDocument(doc *Document) (*Document, error) {
+	if s == nil {
+		return nil, fmt.Errorf("standing store is not enabled")
 	}
+	if doc == nil {
+		return nil, fmt.Errorf("standing document is required")
+	}
+	doc = normalizeDocument(doc.PeerID, doc)
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal standing orders: %w", err)
 	}
-	tmp := s.path(peerID) + ".tmp"
+	tmp := s.path(doc.PeerID) + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return nil, fmt.Errorf("write standing orders: %w", err)
 	}
-	if err := os.Rename(tmp, s.path(peerID)); err != nil {
+	if err := os.Rename(tmp, s.path(doc.PeerID)); err != nil {
 		return nil, fmt.Errorf("rename standing orders: %w", err)
 	}
 	s.cacheMu.Lock()
-	delete(s.cache, peerID)
+	delete(s.cache, doc.PeerID)
 	s.cacheMu.Unlock()
 	return doc, nil
 }
@@ -182,10 +208,14 @@ func (m *Manager) PeerContent(peerID string) (string, error) {
 }
 
 func (m *Manager) EffectiveContent(peerID string) (string, error) {
+	return m.EffectiveContentForProfile(peerID, "")
+}
+
+func (m *Manager) EffectiveContentForProfile(peerID, activeProfile string) (string, error) {
 	if m == nil {
 		return "", nil
 	}
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 4)
 	if workspace := m.WorkspaceContent(); workspace != "" {
 		parts = append(parts, workspace)
 	}
@@ -196,11 +226,27 @@ func (m *Manager) EffectiveContent(peerID string) (string, error) {
 	if peer != "" {
 		parts = append(parts, peer)
 	}
+	resolved, err := m.ResolveProfile(peerID, activeProfile)
+	if err != nil {
+		return "", err
+	}
+	if resolved != nil {
+		if content := strings.TrimSpace(resolved.Profile.Content); content != "" {
+			parts = append(parts, content)
+		}
+		if style := strings.TrimSpace(resolved.Profile.ResponseStyle); style != "" {
+			parts = append(parts, "Active profile response style: "+style)
+		}
+	}
 	return strings.TrimSpace(strings.Join(parts, "\n\n")), nil
 }
 
 func (m *Manager) SystemMessage(peerID string) (*types.Message, error) {
-	content, err := m.EffectiveContent(peerID)
+	return m.SystemMessageForProfile(peerID, "")
+}
+
+func (m *Manager) SystemMessageForProfile(peerID, activeProfile string) (*types.Message, error) {
+	content, err := m.EffectiveContentForProfile(peerID, activeProfile)
 	if err != nil || content == "" {
 		return nil, err
 	}
@@ -209,6 +255,129 @@ func (m *Manager) SystemMessage(peerID string) (*types.Message, error) {
 		Content: "Standing orders:\n\n" + content,
 	}
 	return msg, nil
+}
+
+func (m *Manager) Document(peerID string) (*Document, error) {
+	if m == nil || m.store == nil {
+		return nil, nil
+	}
+	return m.store.Load(peerID)
+}
+
+func (m *Manager) ProfileNames(peerID string) ([]string, error) {
+	doc, err := m.Document(peerID)
+	if err != nil || doc == nil || len(doc.Profiles) == 0 {
+		return nil, err
+	}
+	names := make([]string, 0, len(doc.Profiles))
+	for name := range doc.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func (m *Manager) ResolveProfile(peerID, activeProfile string) (*ResolvedProfile, error) {
+	if m == nil || m.store == nil {
+		return nil, nil
+	}
+	doc, err := m.store.Load(peerID)
+	if err != nil || doc == nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(activeProfile)
+	if name == "" {
+		name = strings.TrimSpace(doc.DefaultProfile)
+	}
+	if name == "" {
+		return nil, nil
+	}
+	profile, ok := doc.Profiles[name]
+	if !ok {
+		return nil, fmt.Errorf("standing profile %q not found", name)
+	}
+	return &ResolvedProfile{Name: name, Profile: normalizeProfile(profile)}, nil
+}
+
+func normalizeDocument(peerID string, doc *Document) *Document {
+	normalized := &Document{
+		PeerID:         strings.TrimSpace(peerID),
+		Content:        strings.TrimSpace(doc.Content),
+		DefaultProfile: strings.TrimSpace(doc.DefaultProfile),
+		UpdatedAt:      time.Now().UTC(),
+	}
+	if normalized.PeerID == "" {
+		normalized.PeerID = strings.TrimSpace(doc.PeerID)
+	}
+	if len(doc.Profiles) > 0 {
+		normalized.Profiles = make(map[string]Profile, len(doc.Profiles))
+		for rawName, profile := range doc.Profiles {
+			name := strings.TrimSpace(rawName)
+			if name == "" {
+				continue
+			}
+			normalizedProfile := normalizeProfile(profile)
+			if normalizedProfile.isZero() {
+				continue
+			}
+			normalized.Profiles[name] = normalizedProfile
+		}
+		if len(normalized.Profiles) == 0 {
+			normalized.Profiles = nil
+		}
+	}
+	if normalized.DefaultProfile != "" {
+		if normalized.Profiles == nil {
+			normalized.DefaultProfile = ""
+		} else if _, ok := normalized.Profiles[normalized.DefaultProfile]; !ok {
+			normalized.DefaultProfile = ""
+		}
+	}
+	return normalized
+}
+
+func normalizeProfile(profile Profile) Profile {
+	profile.Content = strings.TrimSpace(profile.Content)
+	profile.ToolProfile = strings.TrimSpace(profile.ToolProfile)
+	profile.ResponseStyle = strings.TrimSpace(profile.ResponseStyle)
+	profile.ThinkLevel = strings.TrimSpace(profile.ThinkLevel)
+	profile.ToolsAllow = trimStringSlice(profile.ToolsAllow)
+	profile.ToolsDeny = trimStringSlice(profile.ToolsDeny)
+	return profile
+}
+
+func (p Profile) isZero() bool {
+	return p.Content == "" &&
+		p.ToolProfile == "" &&
+		len(p.ToolsAllow) == 0 &&
+		len(p.ToolsDeny) == 0 &&
+		p.ResponseStyle == "" &&
+		p.ThinkLevel == "" &&
+		p.VerboseMode == nil &&
+		p.TraceMode == nil
+}
+
+func trimStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	trimmed := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		trimmed = append(trimmed, value)
+	}
+	if len(trimmed) == 0 {
+		return nil
+	}
+	return trimmed
 }
 
 func safeFilename(peerID string) string {

@@ -28,11 +28,13 @@ type stubToolExecutor struct {
 	execute func(ctx context.Context, peerID string, call agent.ToolCall) (any, error)
 }
 
-func (s stubToolExecutor) ToolPrompt(peerID string) string {
+func (s stubToolExecutor) ToolPromptForRun(peerID, sessionKey, activeProfile string) string {
+	_, _, _ = peerID, sessionKey, activeProfile
 	return "use tools"
 }
 
-func (s stubToolExecutor) ToolDefinitions(peerID string) []types.Tool {
+func (s stubToolExecutor) ToolDefinitionsForRun(peerID, sessionKey, activeProfile string) []types.Tool {
+	_, _, _ = peerID, sessionKey, activeProfile
 	return nil
 }
 

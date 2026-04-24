@@ -55,3 +55,63 @@ func TestManagerEffectiveContentCombinesWorkspaceAndPeer(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+func TestManagerEffectiveContentIncludesResolvedProfile(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if _, err := store.SaveDocument(&Document{
+		PeerID:         "peer-1",
+		Content:        "Peer standing order",
+		DefaultProfile: "focus",
+		Profiles: map[string]Profile{
+			"focus": {
+				Content:       "Focus-specific standing order",
+				ResponseStyle: "Answer tersely and avoid social filler.",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	manager := NewManager(store, dir)
+	got, err := manager.EffectiveContent("peer-1")
+	if err != nil {
+		t.Fatalf("EffectiveContent: %v", err)
+	}
+	want := "Peer standing order\n\nFocus-specific standing order\n\nActive profile response style: Answer tersely and avoid social filler."
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	resolved, err := manager.ResolveProfile("peer-1", "")
+	if err != nil {
+		t.Fatalf("ResolveProfile: %v", err)
+	}
+	if resolved == nil || resolved.Name != "focus" {
+		t.Fatalf("unexpected resolved profile: %#v", resolved)
+	}
+}
+
+func TestManagerProfileNamesSorted(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if _, err := store.SaveDocument(&Document{
+		PeerID: "peer-1",
+		Profiles: map[string]Profile{
+			"travel": {Content: "Travel mode"},
+			"focus":  {Content: "Focus mode"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	names, err := NewManager(store, "").ProfileNames("peer-1")
+	if err != nil {
+		t.Fatalf("ProfileNames: %v", err)
+	}
+	if len(names) != 2 || names[0] != "focus" || names[1] != "travel" {
+		t.Fatalf("unexpected names: %#v", names)
+	}
+}

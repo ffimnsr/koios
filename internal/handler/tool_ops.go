@@ -42,6 +42,60 @@ func entityPatch(kind *string, name *string, aliases *[]string, notes *string, l
 	return patch
 }
 
+func preferencePatch(kind *string, name *string, value *string, category *string, scope *string, scopeRef *string, confidence *float64, lastConfirmedAt *int64, sourceSessionKey *string, sourceExcerpt *string) memory.PreferencePatch {
+	patch := memory.PreferencePatch{
+		Name:             name,
+		Value:            value,
+		Category:         category,
+		ScopeRef:         scopeRef,
+		Confidence:       confidence,
+		LastConfirmedAt:  lastConfirmedAt,
+		SourceSessionKey: sourceSessionKey,
+		SourceExcerpt:    sourceExcerpt,
+	}
+	if kind != nil {
+		value := memory.PreferenceKind(strings.TrimSpace(*kind))
+		patch.Kind = &value
+	}
+	if scope != nil {
+		value := memory.PreferenceScope(strings.TrimSpace(*scope))
+		patch.Scope = &value
+	}
+	return patch
+}
+
+func chunkProvenance(captureKind *string, captureReason *string, confidence *float64, sourceSessionKey *string, sourceMessageID *string, sourceRunID *string, sourceHook *string, sourceCandidateID *string, sourceExcerpt *string) memory.ChunkProvenance {
+	provenance := memory.ChunkProvenance{}
+	if captureKind != nil {
+		provenance.CaptureKind = strings.TrimSpace(*captureKind)
+	}
+	if captureReason != nil {
+		provenance.CaptureReason = strings.TrimSpace(*captureReason)
+	}
+	if confidence != nil {
+		provenance.Confidence = *confidence
+	}
+	if sourceSessionKey != nil {
+		provenance.SourceSessionKey = strings.TrimSpace(*sourceSessionKey)
+	}
+	if sourceMessageID != nil {
+		provenance.SourceMessageID = strings.TrimSpace(*sourceMessageID)
+	}
+	if sourceRunID != nil {
+		provenance.SourceRunID = strings.TrimSpace(*sourceRunID)
+	}
+	if sourceHook != nil {
+		provenance.SourceHook = strings.TrimSpace(*sourceHook)
+	}
+	if sourceCandidateID != nil {
+		provenance.SourceCandidateID = strings.TrimSpace(*sourceCandidateID)
+	}
+	if sourceExcerpt != nil {
+		provenance.SourceExcerpt = strings.TrimSpace(*sourceExcerpt)
+	}
+	return provenance
+}
+
 func (h *Handler) memorySearch(peerID, query string, limit int, ctx context.Context) (map[string]any, error) {
 	if h.memStore == nil {
 		return nil, fmt.Errorf("memory is not enabled")
@@ -60,10 +114,10 @@ func (h *Handler) memorySearch(peerID, query string, limit int, ctx context.Cont
 }
 
 func (h *Handler) memoryInsert(peerID, content string, ctx context.Context) (map[string]any, error) {
-	return h.memoryInsertWithOptions(peerID, content, nil, "", "", "", 0, ctx)
+	return h.memoryInsertWithOptions(peerID, content, nil, "", "", "", 0, memory.ChunkProvenance{}, ctx)
 }
 
-func (h *Handler) memoryInsertWithOptions(peerID, content string, tags []string, category string, retentionClass string, exposurePolicy string, expiresAt int64, ctx context.Context) (map[string]any, error) {
+func (h *Handler) memoryInsertWithOptions(peerID, content string, tags []string, category string, retentionClass string, exposurePolicy string, expiresAt int64, provenance memory.ChunkProvenance, ctx context.Context) (map[string]any, error) {
 	if h.memStore == nil {
 		return nil, fmt.Errorf("memory is not enabled")
 	}
@@ -81,6 +135,7 @@ func (h *Handler) memoryInsertWithOptions(peerID, content string, tags []string,
 		RetentionClass: memory.RetentionClass(retentionClass),
 		ExposurePolicy: memory.ExposurePolicy(exposurePolicy),
 		ExpiresAt:      expiresAt,
+		Provenance:     provenance,
 	})
 	if err != nil {
 		return nil, err
@@ -183,6 +238,87 @@ func (h *Handler) memoryStats(peerID string, ctx context.Context) (map[string]an
 		return nil, err
 	}
 	return map[string]any{"stats": stats}, nil
+}
+
+func (h *Handler) memoryPreferenceCreate(peerID string, kind string, name string, value string, category string, scope string, scopeRef string, confidence float64, lastConfirmedAt int64, sourceSessionKey string, sourceExcerpt string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	record, err := h.memStore.CreatePreference(ctx, peerID, memory.PreferenceKind(kind), name, value, category, memory.PreferenceScope(scope), scopeRef, confidence, lastConfirmedAt, sourceSessionKey, sourceExcerpt)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "preference": record}, nil
+}
+
+func (h *Handler) memoryPreferenceGet(peerID, id string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	record, err := h.memStore.GetPreference(ctx, peerID, id)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"preference": record}, nil
+}
+
+func (h *Handler) memoryPreferenceList(peerID, kind, scope string, limit int, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	records, err := h.memStore.ListPreferences(ctx, peerID, memory.PreferenceFilter{
+		Kind:  memory.PreferenceKind(kind),
+		Scope: memory.PreferenceScope(scope),
+		Limit: limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"count": len(records), "preferences": records, "kind": strings.TrimSpace(kind), "scope": strings.TrimSpace(scope)}, nil
+}
+
+func (h *Handler) memoryPreferenceUpdate(peerID, id string, patch memory.PreferencePatch, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	record, err := h.memStore.UpdatePreference(ctx, peerID, id, patch)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "preference": record}, nil
+}
+
+func (h *Handler) memoryPreferenceConfirm(peerID, id string, lastConfirmedAt int64, confidence *float64, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	record, err := h.memStore.ConfirmPreference(ctx, peerID, id, lastConfirmedAt, confidence)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "preference": record}, nil
+}
+
+func (h *Handler) memoryPreferenceDelete(peerID, id string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if err := h.memStore.DeletePreference(ctx, peerID, id); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "id": id}, nil
 }
 
 func (h *Handler) memoryCandidateCreate(peerID, content string, tags []string, category string, retentionClass string, exposurePolicy string, expiresAt int64, ctx context.Context) (map[string]any, error) {

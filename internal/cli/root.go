@@ -72,6 +72,7 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newMigrateCommand(ctx))
 	root.AddCommand(newUsageCommand(ctx))
 	root.AddCommand(newRunsCommand(ctx))
+	root.AddCommand(newBookmarkCommand(ctx))
 	root.AddCommand(newMemoryCommand(ctx))
 	root.AddCommand(newTasksCommand(ctx))
 	root.AddCommand(newCalendarCommand(ctx))
@@ -175,6 +176,7 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 					"heartbeat":           state.WorkspaceRoot != "" && state.HeartbeatEnabled,
 					"subagents":           state.WorkspaceRoot != "",
 					"memory":              state.WorkspaceRoot != "",
+					"bookmarks":           state.WorkspaceRoot != "",
 					"tasks":               state.WorkspaceRoot != "",
 					"calendar":            state.WorkspaceRoot != "",
 					"workspace":           state.WorkspaceRoot != "",

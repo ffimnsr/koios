@@ -58,21 +58,22 @@ type RetryPolicy struct {
 
 // RunRequest describes one agent turn.
 type RunRequest struct {
-	PeerID       string
-	SenderID     string
-	Scope        SessionScope
-	SessionKey   string
-	Messages     []types.Message
-	Model        string
-	Stream       bool
-	BlockStream  bool
-	MaxSteps     int
-	MaxTokens    int
-	Temperature  *float64
-	TopP         *float64
-	ToolExecutor ToolExecutor
-	EventSink    func(Event)
-	Timeout      time.Duration
+	PeerID        string
+	SenderID      string
+	Scope         SessionScope
+	SessionKey    string
+	Messages      []types.Message
+	Model         string
+	Stream        bool
+	BlockStream   bool
+	MaxSteps      int
+	MaxTokens     int
+	Temperature   *float64
+	TopP          *float64
+	ToolExecutor  ToolExecutor
+	EventSink     func(Event)
+	Timeout       time.Duration
+	ActiveProfile string
 }
 
 // EventKind identifies a lifecycle or streaming event emitted by the runtime.
@@ -179,9 +180,31 @@ type ToolCall struct {
 
 // ToolExecutor provides the runtime's tool prompt and executes tool calls.
 type ToolExecutor interface {
-	ToolPrompt(peerID string) string
-	ToolDefinitions(peerID string) []types.Tool
+	ToolPromptForRun(peerID, sessionKey, activeProfile string) string
+	ToolDefinitionsForRun(peerID, sessionKey, activeProfile string) []types.Tool
 	ExecuteTool(ctx context.Context, peerID string, call ToolCall) (any, error)
+}
+
+type toolRunContextKey struct{}
+
+type ToolRunContext struct {
+	SessionKey    string
+	ActiveProfile string
+}
+
+func WithToolRunContext(ctx context.Context, sessionKey, activeProfile string) context.Context {
+	return context.WithValue(ctx, toolRunContextKey{}, ToolRunContext{
+		SessionKey:    strings.TrimSpace(sessionKey),
+		ActiveProfile: strings.TrimSpace(activeProfile),
+	})
+}
+
+func ToolRunContextFromContext(ctx context.Context) (ToolRunContext, bool) {
+	info, ok := ctx.Value(toolRunContextKey{}).(ToolRunContext)
+	if !ok {
+		return ToolRunContext{}, false
+	}
+	return info, true
 }
 
 type toolNameNormalizer interface {
@@ -476,7 +499,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		history := rt.store.Get(sessionKey).History()
 		stepMessages := append([]types.Message(nil), workingMessages...)
 		if reqCopy.ToolExecutor != nil {
-			if toolPrompt := strings.TrimSpace(reqCopy.ToolExecutor.ToolPrompt(reqCopy.PeerID)); toolPrompt != "" {
+			if toolPrompt := strings.TrimSpace(reqCopy.ToolExecutor.ToolPromptForRun(reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile)); toolPrompt != "" {
 				stepMessages = append([]types.Message{{Role: "system", Content: toolPrompt}}, stepMessages...)
 			}
 		}
@@ -529,7 +552,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		if reqCopy.ToolExecutor != nil {
 			caps := providerCapabilitiesFor(rt.prov, built.Request.Model)
 			if caps.SupportsNativeTools || caps.Name == "" {
-				built.Request.Tools = reqCopy.ToolExecutor.ToolDefinitions(reqCopy.PeerID)
+				built.Request.Tools = reqCopy.ToolExecutor.ToolDefinitionsForRun(reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile)
 			}
 			if len(built.Request.Tools) > 0 {
 				built.Request.ToolChoice = "auto"
@@ -616,7 +639,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 							}
 							argsSummary := summarizeToolJSON(tc.Arguments)
 							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: argsSummary})
-							toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(attemptCtx, reqCopy.PeerID, tc)
+							toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(WithToolRunContext(attemptCtx, sessionKey, reqCopy.ActiveProfile), reqCopy.PeerID, tc)
 							ok := execErr == nil
 							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: summarizeToolResult(toolResult, execErr), OK: &ok})
 							if hookErr := rt.emitHook(callCtx, ops.Event{
@@ -687,7 +710,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						}
 						argsSummary := summarizeToolJSON(call.Arguments)
 						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: argsSummary})
-						toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(attemptCtx, reqCopy.PeerID, *call)
+						toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(WithToolRunContext(attemptCtx, sessionKey, reqCopy.ActiveProfile), reqCopy.PeerID, *call)
 						ok := execErr == nil
 						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolResult(toolResult, execErr), OK: &ok})
 						if hookErr := rt.emitHook(callCtx, ops.Event{
@@ -774,7 +797,7 @@ func (rt *Runtime) standingSystemMessages(req RunRequest) ([]types.Message, erro
 	if rt.standingManager == nil || req.Scope == ScopeGlobal {
 		return nil, nil
 	}
-	msg, err := rt.standingManager.SystemMessage(req.PeerID)
+	msg, err := rt.standingManager.SystemMessageForProfile(req.PeerID, req.ActiveProfile)
 	if err != nil || msg == nil {
 		return nil, err
 	}
@@ -922,6 +945,13 @@ func (rt *Runtime) persistTurn(peerID, sessionKey, model string, transcript, wor
 		Category:       "conversation",
 		RetentionClass: memory.RetentionClassArchive,
 		ExposurePolicy: memory.ExposurePolicySearchOnly,
+		Provenance: memory.ChunkProvenance{
+			CaptureKind:      memory.ChunkCaptureConversationArchive,
+			CaptureReason:    "archived conversation summary",
+			SourceSessionKey: rt.normalizeSessionKey(sessionKey),
+			Confidence:       1,
+			SourceExcerpt:    lastUserMessageContent(transcript),
+		},
 	})
 	if err != nil {
 		slog.Warn("agent: archived turn memory insert failed", "peer", peerID, "err", err)

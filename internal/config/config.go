@@ -35,6 +35,9 @@ func (c *Config) MemoryDBPath() string { return filepath.Join(c.WorkspaceRoot, "
 // TasksDBPath returns the path for the durable task SQLite database, derived from WorkspaceRoot.
 func (c *Config) TasksDBPath() string { return filepath.Join(c.WorkspaceRoot, "tasks.db") }
 
+// BookmarksDBPath returns the path for the durable bookmark SQLite database, derived from WorkspaceRoot.
+func (c *Config) BookmarksDBPath() string { return filepath.Join(c.WorkspaceRoot, "bookmarks.db") }
+
 // CalendarDBPath returns the path for the durable calendar SQLite database, derived from WorkspaceRoot.
 func (c *Config) CalendarDBPath() string { return filepath.Join(c.WorkspaceRoot, "calendar.db") }
 

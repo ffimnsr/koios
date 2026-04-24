@@ -734,13 +734,15 @@ Hook support includes `before_message`, `after_message`, `message_received`, `be
 
 ---
 
-### `standing.get` / `standing.set` / `standing.clear`
+### `standing.get` / `standing.set` / `standing.clear` / `standing.profile.*`
 
 Read or update standing orders for this peer.
 
 Standing orders are modeled after OpenClaw's persistent operating instructions:
 - If `<workspace>/STANDING_ORDERS.md` exists, it is injected as a system message on each `chat`, `agent.run`, heartbeat run, and cron `agentTurn`.
 - Peer-specific standing orders are layered on top of the workspace file.
+- Named standing profiles can layer additional instructions, tool policy overrides, and response-style toggles on top of the base standing orders.
+- The active profile is stored in session policy, can be switched manually, and can also be overridden by cron jobs or workflow agent-turn steps.
 - Peer-specific standing orders persist only when `cron.dir` is set; without it, `standing.get` is read-only and still returns any workspace-level standing orders.
 
 ```json
@@ -756,6 +758,26 @@ Standing orders are modeled after OpenClaw's persistent operating instructions:
 ```json
 {"id": "15c", "method": "standing.clear"}
 ```
+
+```json
+{"id": "15d", "method": "standing.profile.set", "params": {
+  "name": "focus",
+  "content": "Optimize for deep work. Be terse and defer non-urgent tasks.",
+  "tool_profile": "minimal",
+  "response_style": "Keep responses short and task-oriented.",
+  "make_default": true
+}}
+```
+
+```json
+{"id": "15e", "method": "standing.profile.activate", "params": {
+  "name": "focus"
+}}
+```
+
+`standing.get` returns the peer document plus profile metadata such as `default_profile`, `active_profile`, `resolved_profile`, and the defined `profiles` map.
+
+In chat, `/profile` and `/mode` provide a shortcut to list, activate, and clear the current session profile.
 
 ---
 

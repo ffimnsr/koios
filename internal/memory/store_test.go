@@ -24,7 +24,15 @@ func TestStore_InsertAndGet(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	chunk, err := s.InsertChunk(ctx, "alice", "hello world")
+	chunk, err := s.InsertChunkWithOptions(ctx, "alice", "hello world", memory.ChunkOptions{
+		Provenance: memory.ChunkProvenance{
+			CaptureKind:      memory.CandidateCaptureManual,
+			CaptureReason:    "explicitly saved",
+			Confidence:       0.9,
+			SourceSessionKey: "alice::main",
+			SourceExcerpt:    "hello world",
+		},
+	})
 	if err != nil {
 		t.Fatalf("InsertChunk: %v", err)
 	}
@@ -47,6 +55,15 @@ func TestStore_InsertAndGet(t *testing.T) {
 	}
 	if got.ExposurePolicy != memory.ExposurePolicyAuto {
 		t.Fatalf("ExposurePolicy = %q, want %q", got.ExposurePolicy, memory.ExposurePolicyAuto)
+	}
+	if got.CaptureReason != "explicitly saved" {
+		t.Fatalf("CaptureReason = %q, want explicitly saved", got.CaptureReason)
+	}
+	if got.SourceSessionKey != "alice::main" {
+		t.Fatalf("SourceSessionKey = %q, want alice::main", got.SourceSessionKey)
+	}
+	if got.Confidence != 0.9 {
+		t.Fatalf("Confidence = %v, want 0.9", got.Confidence)
 	}
 }
 
@@ -272,6 +289,8 @@ func TestStore_Stats(t *testing.T) {
 	_, _ = s.InsertChunkWithTags(ctx, "alice", "one", nil, "notes")
 	_, _ = s.InsertChunkWithTags(ctx, "alice", "two", nil, "code")
 	_, _ = s.InsertChunkWithTags(ctx, "alice", "three", nil, "notes")
+	_, _ = s.CreatePreference(ctx, "alice", memory.PreferenceKindPreference, "writing tone", "Prefer concise replies.", "style", memory.PreferenceScopeGlobal, "", 0.9, 0, "", "")
+	_, _ = s.CreatePreference(ctx, "alice", memory.PreferenceKindDecision, "deployment windows", "Deploy Tuesdays.", "ops", memory.PreferenceScopeWorkspace, "koios", 1.0, 0, "", "")
 
 	stats, err := s.Stats(ctx, "alice")
 	if err != nil {
@@ -291,6 +310,15 @@ func TestStore_Stats(t *testing.T) {
 	}
 	if stats.MilvusActive {
 		t.Fatal("MilvusActive should be false without milvus")
+	}
+	if stats.TotalPreferences != 2 {
+		t.Fatalf("TotalPreferences = %d, want 2", stats.TotalPreferences)
+	}
+	if stats.ByPreferenceKind[memory.PreferenceKindPreference] != 1 {
+		t.Fatalf("ByPreferenceKind[preference] = %d, want 1", stats.ByPreferenceKind[memory.PreferenceKindPreference])
+	}
+	if stats.ByPreferenceScope[memory.PreferenceScopeWorkspace] != 1 {
+		t.Fatalf("ByPreferenceScope[workspace] = %d, want 1", stats.ByPreferenceScope[memory.PreferenceScopeWorkspace])
 	}
 }
 
@@ -448,6 +476,12 @@ func TestStore_CandidateApproveLifecycle(t *testing.T) {
 	}
 	if chunk.Content != edited {
 		t.Fatalf("chunk content = %q, want %q", chunk.Content, edited)
+	}
+	if chunk.SourceCandidateID != candidate.ID {
+		t.Fatalf("SourceCandidateID = %q, want %q", chunk.SourceCandidateID, candidate.ID)
+	}
+	if chunk.CaptureReason != "confirmed by user" {
+		t.Fatalf("CaptureReason = %q, want confirmed by user", chunk.CaptureReason)
 	}
 	if _, err := s.EditCandidate(ctx, "alice", candidate.ID, memory.CandidatePatch{}); err == nil {
 		t.Fatal("expected reviewed candidate edit to fail")
@@ -663,5 +697,92 @@ func TestStore_EntityGraphLifecycle(t *testing.T) {
 	}
 	if len(entities) != 0 {
 		t.Fatalf("expected no entities after delete, got %d", len(entities))
+	}
+}
+
+func TestStore_PreferenceLifecycle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	record, err := s.CreatePreference(ctx, "alice", memory.PreferenceKindPreference, "writing tone", "Prefer short weekly writeups.", "style", memory.PreferenceScopeGlobal, "", 0.8, 0, "alice::main", "Prefer short weekly writeups")
+	if err != nil {
+		t.Fatalf("CreatePreference: %v", err)
+	}
+	if record.ID == "" {
+		t.Fatal("expected preference ID")
+	}
+	got, err := s.GetPreference(ctx, "alice", record.ID)
+	if err != nil {
+		t.Fatalf("GetPreference: %v", err)
+	}
+	if got.Name != "writing tone" {
+		t.Fatalf("Name = %q, want writing tone", got.Name)
+	}
+	updatedValue := "Prefer concise weekly writeups with bullets."
+	updatedConfidence := 0.95
+	scopeRef := "koios"
+	updated, err := s.UpdatePreference(ctx, "alice", record.ID, memory.PreferencePatch{
+		Value:      &updatedValue,
+		Confidence: &updatedConfidence,
+		Scope:      func() *memory.PreferenceScope { v := memory.PreferenceScopeWorkspace; return &v }(),
+		ScopeRef:   &scopeRef,
+	})
+	if err != nil {
+		t.Fatalf("UpdatePreference: %v", err)
+	}
+	if updated.Scope != memory.PreferenceScopeWorkspace {
+		t.Fatalf("Scope = %q, want workspace", updated.Scope)
+	}
+	if updated.ScopeRef != "koios" {
+		t.Fatalf("ScopeRef = %q, want koios", updated.ScopeRef)
+	}
+	decision, err := s.CreatePreference(ctx, "alice", memory.PreferenceKindDecision, "deployment windows", "Ship on Tuesdays after 18:00 UTC.", "ops", memory.PreferenceScopeWorkspace, "koios", 1.0, 0, "", "")
+	if err != nil {
+		t.Fatalf("CreatePreference decision: %v", err)
+	}
+	list, err := s.ListPreferences(ctx, "alice", memory.PreferenceFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListPreferences: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("ListPreferences count = %d, want 2", len(list))
+	}
+	if list[0].ID != decision.ID {
+		t.Fatalf("expected decision to sort first for injection/list priority, got %#v", list)
+	}
+	injection, err := s.PreferencesForInjection(ctx, "alice", 10)
+	if err != nil {
+		t.Fatalf("PreferencesForInjection: %v", err)
+	}
+	if len(injection) != 2 {
+		t.Fatalf("PreferencesForInjection count = %d, want 2", len(injection))
+	}
+	confirmedAt := time.Now().Unix() + 10
+	confirmed, err := s.ConfirmPreference(ctx, "alice", record.ID, confirmedAt, nil)
+	if err != nil {
+		t.Fatalf("ConfirmPreference: %v", err)
+	}
+	if confirmed.LastConfirmedAt != confirmedAt {
+		t.Fatalf("LastConfirmedAt = %d, want %d", confirmed.LastConfirmedAt, confirmedAt)
+	}
+	if err := s.DeletePreference(ctx, "alice", decision.ID); err != nil {
+		t.Fatalf("DeletePreference: %v", err)
+	}
+	remaining, err := s.ListPreferences(ctx, "alice", memory.PreferenceFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListPreferences remaining: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != record.ID {
+		t.Fatalf("unexpected remaining preferences: %#v", remaining)
+	}
+	if err := s.DeletePeer(ctx, "alice"); err != nil {
+		t.Fatalf("DeletePeer: %v", err)
+	}
+	remaining, err = s.ListPreferences(ctx, "alice", memory.PreferenceFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListPreferences after delete peer: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected no preferences after DeletePeer, got %#v", remaining)
 	}
 }

@@ -66,6 +66,9 @@ type Payload struct {
 	// to the agentTurn request so the LLM has conversational context.
 	// When false (the default) the turn is sent with a fresh context.
 	IncludeHistory bool `json:"include_history,omitempty"`
+	// Profile, when non-empty, activates a named standing/persona profile for
+	// this agentTurn execution.
+	Profile string `json:"profile,omitempty"`
 	// PreloadURLs are fetched just before an agentTurn executes and injected as
 	// extra context blocks. This is a best-effort lazy-load step so scheduled
 	// turns can work against fresh external content.

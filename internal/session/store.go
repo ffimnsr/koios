@@ -42,6 +42,9 @@ type SessionPolicy struct {
 	// (profile name or raw model ID). The agent runtime applies it before
 	// each turn.
 	ModelOverride string `json:"model_override,omitempty"`
+	// ActiveProfile selects a named standing/persona profile for this session.
+	// Empty falls back to the peer document's default profile.
+	ActiveProfile string `json:"active_profile,omitempty"`
 	// QueueMode controls how mid-run steering notes are applied.
 	// Valid values: steer | followup | collect
 	QueueMode string `json:"queue_mode,omitempty"`

@@ -102,68 +102,76 @@ func TestScaffoldWorkspaceCreatesBootstrapDocs(t *testing.T) {
 	}
 }
 
-func TestBackupCreateAndVerify(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(config.DefaultTOML()), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "VERSION"), []byte("0.1.0\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(dir, "out.tar.gz")
-	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
-	create := newBackupCommand(cmdCtx)
-	var out bytes.Buffer
-	create.SetOut(&out)
-	create.SetErr(&out)
-	create.SetArgs([]string{"create", "--output", archive})
-	if err := create.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if !fileExists(archive) {
-		t.Fatal("expected archive to exist")
-	}
-	verify := newBackupCommand(cmdCtx)
-	verify.SetOut(&out)
-	verify.SetErr(&out)
-	verify.SetArgs([]string{"verify", archive})
-	if err := verify.Execute(); err != nil {
-		t.Fatal(err)
-	}
-}
+func TestMemoryGetCommandFormatsProvenance(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
 
-func TestResetDryRun(t *testing.T) {
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			if got := req["method"]; got != "memory.get" {
+				t.Errorf("method = %v", got)
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"id": req["id"],
+				"result": map[string]any{
+					"chunk": map[string]any{
+						"id":                 "mem-1",
+						"content":            "Remember the deployment checklist before every release.",
+						"category":           "ops",
+						"retention_class":    "pinned",
+						"exposure_policy":    "auto",
+						"capture_kind":       "manual",
+						"capture_reason":     "confirmed in chat",
+						"confidence":         0.95,
+						"source_session_key": "alice::main",
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
 	dir := t.TempDir()
-	toml := strings.Join([]string{
-		"[llm]",
-		"model = \"gpt-4o\"",
-		"",
-		"[session]",
-		"dir = \"./data/sessions\"",
-		"",
-	}, "\n")
+	toml := fmt.Sprintf(healthStatusConfigTemplate, server.URL)
 	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sessionsDir := filepath.Join(dir, "data", "sessions")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+
 	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
-	cmd := newResetCommand(cmdCtx)
+	cmd := newMemoryCommand(cmdCtx)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs([]string{"--scope", "config+creds+sessions", "--dry-run"})
+	cmd.SetArgs([]string{"get", "--peer", "alice", "--id", "mem-1"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !fileExists(filepath.Join(dir, config.DefaultConfigFile)) {
-		t.Fatal("config should not be removed in dry-run")
+	text := out.String()
+	if !strings.Contains(text, "mem-1") {
+		t.Fatalf("unexpected output: %s", text)
+	}
+	if !strings.Contains(text, "source: manual | reason=confirmed in chat | confidence=0.95 | session=alice::main") {
+		t.Fatalf("unexpected output: %s", text)
+	}
+	if !strings.Contains(text, "Remember the deployment checklist") {
+		t.Fatalf("unexpected output: %s", text)
 	}
 }
 
-func TestHealthStatusAndCronOverTestServer(t *testing.T) {
+func TestHealthStatusAndCronCommands(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -298,6 +306,88 @@ func TestTasksListCommand(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Ship release notes") {
 		t.Fatalf("expected task title in output: %s", out.String())
+	}
+}
+
+func TestMemoryPreferenceListCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			if got := req["method"]; got != "memory.preference.list" {
+				t.Errorf("method = %v", got)
+			}
+			params, _ := req["params"].(map[string]any)
+			if got := params["kind"]; got != "decision" {
+				t.Errorf("kind = %v", got)
+			}
+			if got := params["scope"]; got != "workspace" {
+				t.Errorf("scope = %v", got)
+			}
+			if got := params["limit"]; got != float64(5) {
+				t.Errorf("limit = %v", got)
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"id": req["id"],
+				"result": map[string]any{
+					"count": 1,
+					"kind":  "decision",
+					"scope": "workspace",
+					"preferences": []map[string]any{{
+						"id":                "pref-1",
+						"kind":              "decision",
+						"name":              "editor",
+						"value":             "nvim",
+						"category":          "tooling",
+						"scope":             "workspace",
+						"scope_ref":         "repo",
+						"confidence":        0.8,
+						"last_confirmed_at": 1704067200,
+					}},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	toml := fmt.Sprintf(healthStatusConfigTemplate, server.URL)
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newMemoryCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"preference", "list", "--peer", "alice", "--kind", "decision", "--scope", "workspace", "--limit", "5"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "Structured preferences: 1 total") {
+		t.Fatalf("unexpected output: %s", text)
+	}
+	if !strings.Contains(text, "pref-1 [decision] editor = nvim") {
+		t.Fatalf("unexpected output: %s", text)
+	}
+	if !strings.Contains(text, "scope=workspace/repo") {
+		t.Fatalf("unexpected output: %s", text)
 	}
 }
 

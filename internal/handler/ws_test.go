@@ -19,6 +19,7 @@ import (
 	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
@@ -816,9 +817,11 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 
 	conn := dialWS(t, srv, "alice")
 	sendRPC(t, conn, "m1", "memory.insert", map[string]any{
-		"content":         "remember this",
-		"retention_class": "pinned",
-		"exposure_policy": "auto",
+		"content":            "remember this",
+		"retention_class":    "pinned",
+		"exposure_policy":    "auto",
+		"capture_reason":     "saved during testing",
+		"source_session_key": "alice::main",
 	})
 	msg := readUntilID(t, conn, "m1")
 	if msg.Error != nil {
@@ -829,6 +832,7 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 			ID             string `json:"id"`
 			Content        string `json:"content"`
 			RetentionClass string `json:"retention_class"`
+			CaptureReason  string `json:"capture_reason"`
 		} `json:"chunk"`
 	}
 	if err := json.Unmarshal(msg.Result, &insertRes); err != nil {
@@ -840,6 +844,9 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	if insertRes.Chunk.RetentionClass != "pinned" {
 		t.Fatalf("unexpected retention class: %q", insertRes.Chunk.RetentionClass)
 	}
+	if insertRes.Chunk.CaptureReason != "saved during testing" {
+		t.Fatalf("unexpected capture reason: %q", insertRes.Chunk.CaptureReason)
+	}
 
 	sendRPC(t, conn, "m2", "memory.get", map[string]any{"id": insertRes.Chunk.ID})
 	msg = readUntilID(t, conn, "m2")
@@ -848,9 +855,11 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	}
 	var getRes struct {
 		Chunk struct {
-			ID             string `json:"id"`
-			Content        string `json:"content"`
-			RetentionClass string `json:"retention_class"`
+			ID               string `json:"id"`
+			Content          string `json:"content"`
+			RetentionClass   string `json:"retention_class"`
+			CaptureReason    string `json:"capture_reason"`
+			SourceSessionKey string `json:"source_session_key"`
 		} `json:"chunk"`
 	}
 	if err := json.Unmarshal(msg.Result, &getRes); err != nil {
@@ -861,6 +870,12 @@ func TestWS_MemoryInsertAndGetRPC(t *testing.T) {
 	}
 	if getRes.Chunk.RetentionClass != "pinned" {
 		t.Fatalf("unexpected fetched retention class: %q", getRes.Chunk.RetentionClass)
+	}
+	if getRes.Chunk.CaptureReason != "saved during testing" {
+		t.Fatalf("unexpected fetched capture reason: %q", getRes.Chunk.CaptureReason)
+	}
+	if getRes.Chunk.SourceSessionKey != "alice::main" {
+		t.Fatalf("unexpected source session key: %q", getRes.Chunk.SourceSessionKey)
 	}
 }
 
@@ -1385,6 +1400,107 @@ func TestToolDefinitionsMessagingProfileIncludesWaitingTools(t *testing.T) {
 	}
 	if containsString(names, "exec") {
 		t.Fatalf("expected exec to remain excluded from messaging profile, got %#v", names)
+	}
+}
+
+func TestToolDefinitionsHonorActiveStandingProfile(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	standingStore, err := standing.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("standing.NewStore: %v", err)
+	}
+	if _, err := standingStore.SaveDocument(&standing.Document{
+		PeerID: "alice",
+		Profiles: map[string]standing.Profile{
+			"focus": {ToolProfile: "minimal", ToolsAllow: []string{"time.now"}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	if err := store.SetPolicy("alice", session.SessionPolicy{ActiveProfile: "focus"}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:           "test-model",
+		Timeout:         5 * time.Second,
+		StandingManager: standing.NewManager(standingStore, ""),
+		ToolPolicy:      handler.ToolPolicy{Profile: "coding"},
+	})
+	names := []string{}
+	for _, tool := range h.ToolDefinitions("alice") {
+		names = append(names, tool.Function.Name)
+	}
+	if len(names) != 1 || !containsString(names, "time.now") {
+		t.Fatalf("expected standing profile to resolve to minimal tools, got %#v", names)
+	}
+	if containsString(names, "exec") {
+		t.Fatalf("expected exec to be removed by active profile, got %#v", names)
+	}
+}
+
+func TestWSStandingProfileLifecycle(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	standingStore, err := standing.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("standing.NewStore: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:           "test-model",
+		Timeout:         5 * time.Second,
+		StandingManager: standing.NewManager(standingStore, ""),
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	conn := dialWS(t, srv, "alice")
+
+	sendRPC(t, conn, "p1", "standing.profile.set", map[string]any{
+		"name":           "focus",
+		"content":        "Focus mode instructions",
+		"tool_profile":   "minimal",
+		"response_style": "Be terse.",
+		"make_default":   true,
+	})
+	if msg := readUntilID(t, conn, "p1"); msg.Error != nil {
+		t.Fatalf("standing.profile.set error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "p2", "standing.profile.activate", map[string]any{"name": "focus"})
+	if msg := readUntilID(t, conn, "p2"); msg.Error != nil {
+		t.Fatalf("standing.profile.activate error: %#v", msg.Error)
+	}
+	if policy := store.Policy("alice"); policy.ActiveProfile != "focus" {
+		t.Fatalf("expected active profile focus, got %#v", policy)
+	}
+
+	sendRPC(t, conn, "p3", "standing.get", map[string]any{})
+	msg := readUntilID(t, conn, "p3")
+	if msg.Error != nil {
+		t.Fatalf("standing.get error: %#v", msg.Error)
+	}
+	var result struct {
+		ActiveProfile  string                      `json:"active_profile"`
+		DefaultProfile string                      `json:"default_profile"`
+		Effective      string                      `json:"effective_content"`
+		Profiles       map[string]standing.Profile `json:"profiles"`
+	}
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
+		t.Fatalf("unmarshal standing.get: %v", err)
+	}
+	if result.ActiveProfile != "focus" || result.DefaultProfile != "focus" {
+		t.Fatalf("unexpected standing profile result: %#v", result)
+	}
+	if !strings.Contains(result.Effective, "Focus mode instructions") {
+		t.Fatalf("expected effective standing content to include profile, got %q", result.Effective)
+	}
+	if _, ok := result.Profiles["focus"]; !ok {
+		t.Fatalf("expected focus profile in standing.get, got %#v", result.Profiles)
+	}
+
+	sendRPC(t, conn, "p4", "standing.profile.delete", map[string]any{"name": "focus"})
+	if msg := readUntilID(t, conn, "p4"); msg.Error != nil {
+		t.Fatalf("standing.profile.delete error: %#v", msg.Error)
 	}
 }
 

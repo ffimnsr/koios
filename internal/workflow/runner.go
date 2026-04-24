@@ -30,10 +30,10 @@ type Runner struct {
 	store      *Store
 	httpClient *http.Client
 
-	mu          sync.Mutex
-	agentRT     agentProvider
-	toolExec    agent.ToolExecutor
-	cancels     map[string]context.CancelFunc
+	mu       sync.Mutex
+	agentRT  agentProvider
+	toolExec agent.ToolExecutor
+	cancels  map[string]context.CancelFunc
 }
 
 // NewRunner creates a Runner backed by store.  Call SetAgentRuntime before
@@ -290,10 +290,11 @@ func (r *Runner) runAgentTurn(ctx context.Context, peerID string, run *Run, step
 		Messages: []types.Message{
 			{Role: "user", Content: msg},
 		},
-		Model:        model,
-		MaxSteps:     maxSteps,
-		Timeout:      timeout,
-		ToolExecutor: toolExec,
+		Model:         model,
+		MaxSteps:      maxSteps,
+		Timeout:       timeout,
+		ToolExecutor:  toolExec,
+		ActiveProfile: step.Profile,
 	}
 
 	result, err := rt.Run(ctx, req)

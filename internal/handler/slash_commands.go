@@ -7,9 +7,11 @@ package handler
 //	/think [off|minimal|low|medium|high|xhigh]
 //	/verbose [on|off]
 //	/trace   [on|off]
+//	/profile [list|use <name>|clear]
 //	/status
 //	/new | /reset
 //	/compact [status|now]
+//	/bookmark [list [label]|get <id>|search <query>|add <title> | <content> [| labels] [| reminder]|clip <start>[-<end>] [| <title>] [| labels] [| reminder]|delete <id>]
 //	/memory queue [list [status]|add <text>|edit <id> <text>|approve <id>|merge <id> <chunk-id>|reject <id> <reason>]
 //	/tasks [list [status]|queue list [status]|queue add <title>|extract <text>|queue approve <id>|queue reject <id> <reason>|assign <id> <owner>|snooze <id> <unix>|complete <id>|reopen <id>]
 //	/waiting [list [status]|add <waiting-for> | <title>|resolve <id>|reopen <id>|snooze <id> <unix>]
@@ -31,6 +33,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/briefing"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/memory"
@@ -114,6 +117,9 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 		return h.slashBoolToggle(wsc, req, arg, "trace", func(p *session.SessionPolicy, v bool) {
 			p.TraceMode = v
 		})
+	case "profile", "mode":
+		h.slashProfile(wsc, req, arg)
+		return true
 	case "status":
 		h.slashStatus(wsc, req)
 		return true
@@ -122,6 +128,9 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 		return true
 	case "compact":
 		h.slashCompact(ctx, wsc, req, arg)
+		return true
+	case "bookmark", "bookmarks":
+		h.slashBookmarks(ctx, wsc, req, arg)
 		return true
 	case "memory":
 		h.slashMemory(ctx, wsc, req, arg)
@@ -254,8 +263,15 @@ func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string
 func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	model := h.model
 	policy := h.store.Policy(wsc.peerID)
+	resolvedProfileName := ""
 	if policy.ModelOverride != "" {
 		model = policy.ModelOverride
+	}
+	if h.standingManager != nil {
+		resolved, err := h.standingManager.ResolveProfile(wsc.peerID, policy.ActiveProfile)
+		if err == nil && resolved != nil {
+			resolvedProfileName = resolved.Name
+		}
 	}
 
 	histLen := 0
@@ -275,6 +291,11 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	}
 	if policy.TraceMode {
 		sb.WriteString("Trace mode: on\n")
+	}
+	if policy.ActiveProfile != "" {
+		fmt.Fprintf(&sb, "Active profile: %s\n", policy.ActiveProfile)
+	} else if resolvedProfileName != "" {
+		fmt.Fprintf(&sb, "Active profile: %s (default)\n", resolvedProfileName)
 	}
 	if policy.QueueMode != "" {
 		fmt.Fprintf(&sb, "Queue mode: %s\n", policy.QueueMode)
@@ -300,6 +321,8 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	b, _ := json.Marshal(map[string]any{
 		"model":              model,
 		"session_messages":   histLen,
+		"active_profile":     policy.ActiveProfile,
+		"resolved_profile":   resolvedProfileName,
 		"queue_mode":         policy.QueueMode,
 		"think_level":        policy.ThinkLevel,
 		"verbose_mode":       policy.VerboseMode,
@@ -313,6 +336,83 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 		"status":         json.RawMessage(b),
 		"done":           true,
 	})
+}
+
+func (h *Handler) slashProfile(wsc *wsConn, req *rpcRequest, arg string) {
+	if h.standingManager == nil {
+		slashReply(wsc, req, "Standing profiles are not enabled.")
+		return
+	}
+	fields := strings.Fields(strings.TrimSpace(arg))
+	policy := h.store.Policy(wsc.peerID)
+	current := strings.TrimSpace(policy.ActiveProfile)
+	resolvedName := ""
+	if resolved, err := h.standingManager.ResolveProfile(wsc.peerID, current); err == nil && resolved != nil {
+		resolvedName = resolved.Name
+	}
+	if len(fields) == 0 {
+		label := "none"
+		if current != "" {
+			label = current
+		} else if resolvedName != "" {
+			label = resolvedName + " (default)"
+		}
+		slashReply(wsc, req, "Active profile: "+label)
+		return
+	}
+	switch strings.ToLower(fields[0]) {
+	case "list":
+		names, err := h.standingManager.ProfileNames(wsc.peerID)
+		if err != nil {
+			slashReply(wsc, req, "Could not load profiles: "+err.Error())
+			return
+		}
+		if len(names) == 0 {
+			slashReply(wsc, req, "No standing profiles are defined for this peer.")
+			return
+		}
+		var lines []string
+		for _, name := range names {
+			line := name
+			if current != "" && name == current {
+				line += " (active)"
+			} else if current == "" && resolvedName != "" && name == resolvedName {
+				line += " (default)"
+			}
+			lines = append(lines, line)
+		}
+		slashReply(wsc, req, "Profiles:\n- "+strings.Join(lines, "\n- "))
+		return
+	case "clear", "off", "none":
+		if err := h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+			p.ActiveProfile = ""
+		}); err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, "Session profile override cleared.")
+		return
+	case "use", "activate":
+		if len(fields) < 2 {
+			slashReply(wsc, req, "Usage: /profile use <name>")
+			return
+		}
+		arg = fields[1]
+	default:
+		arg = fields[0]
+	}
+	name := strings.TrimSpace(arg)
+	if _, err := h.standingManager.ResolveProfile(wsc.peerID, name); err != nil {
+		slashReply(wsc, req, err.Error())
+		return
+	}
+	if err := h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+		p.ActiveProfile = name
+	}); err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+		return
+	}
+	slashReply(wsc, req, "Active profile set to: "+name)
 }
 
 // ── /new | /reset ─────────────────────────────────────────────────────────────
@@ -757,8 +857,285 @@ func formatTaskCandidateOrigin(candidate tasks.Candidate) string {
 	return strings.Join(parts, " | ")
 }
 
+// ── /bookmark ──────────────────────────────────────────────────────────────
+
+func (h *Handler) slashBookmarks(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string) {
+	if h.bookmarkStore == nil {
+		slashReply(wsc, req, "Bookmarks are not enabled.")
+		return
+	}
+	rest := strings.TrimSpace(arg)
+	if rest == "" {
+		h.slashBookmarkList(ctx, wsc, req, "", false)
+		return
+	}
+	parts := strings.Fields(rest)
+	if len(parts) == 0 {
+		h.slashBookmarkList(ctx, wsc, req, "", false)
+		return
+	}
+	switch strings.ToLower(parts[0]) {
+	case "list":
+		label := ""
+		upcomingOnly := false
+		if len(parts) > 1 {
+			if strings.EqualFold(parts[1], "upcoming") {
+				upcomingOnly = true
+			} else {
+				label = parts[1]
+			}
+		}
+		h.slashBookmarkList(ctx, wsc, req, label, upcomingOnly)
+	case "get":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /bookmark get <bookmark-id>")
+			return
+		}
+		result, err := h.bookmarkGet(wsc.peerID, parts[1], ctx)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmark get error: "+err.Error())
+			return
+		}
+		bookmark, _ := result["bookmark"].(*bookmarks.Bookmark)
+		if bookmark == nil {
+			slashReply(wsc, req, "Bookmark not found.")
+			return
+		}
+		slashReply(wsc, req, formatSlashBookmark(*bookmark, true))
+	case "search":
+		query := trimLeadingFields(rest, 1)
+		if query == "" {
+			slashReply(wsc, req, "Usage: /bookmark search <query>")
+			return
+		}
+		result, err := h.bookmarkSearch(wsc.peerID, query, 10, ctx)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmark search error: "+err.Error())
+			return
+		}
+		items, _ := result["bookmarks"].([]bookmarks.Bookmark)
+		if len(items) == 0 {
+			slashReply(wsc, req, "No matching bookmarks.")
+			return
+		}
+		slashReply(wsc, req, formatSlashBookmarkList("Search results", items))
+	case "add":
+		fields := splitSlashPipeFields(trimLeadingFields(rest, 1))
+		if len(fields) < 2 {
+			slashReply(wsc, req, "Usage: /bookmark add <title> | <content> [| labels] [| reminder]")
+			return
+		}
+		labels := parseSlashLabels(fieldsAt(fields, 2))
+		reminderAt, err := parseOptionalSlashReminder(fieldsAt(fields, 3))
+		if err != nil {
+			slashReply(wsc, req, "Usage: /bookmark add <title> | <content> [| labels] [| reminder]")
+			return
+		}
+		result, err := h.bookmarkCreate(wsc.peerID, bookmarks.Input{
+			Title:            fields[0],
+			Content:          fields[1],
+			Labels:           labels,
+			ReminderAt:       reminderAt,
+			SourceKind:       bookmarks.SourceKindManual,
+			SourceSessionKey: wsc.peerID,
+		}, ctx)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmark create error: "+err.Error())
+			return
+		}
+		bookmark, _ := result["bookmark"].(*bookmarks.Bookmark)
+		if bookmark == nil {
+			slashReply(wsc, req, "Bookmark saved.")
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Saved bookmark %s.", bookmark.ID))
+	case "clip":
+		fields := splitSlashPipeFields(trimLeadingFields(rest, 1))
+		if len(fields) == 0 {
+			slashReply(wsc, req, "Usage: /bookmark clip <start>[-<end>] [| <title>] [| labels] [| reminder]")
+			return
+		}
+		startIndex, endIndex, ok := parseSlashMessageRange(fields[0])
+		if !ok {
+			slashReply(wsc, req, "Usage: /bookmark clip <start>[-<end>] [| <title>] [| labels] [| reminder]")
+			return
+		}
+		labels := parseSlashLabels(fieldsAt(fields, 2))
+		reminderAt, err := parseOptionalSlashReminder(fieldsAt(fields, 3))
+		if err != nil {
+			slashReply(wsc, req, "Usage: /bookmark clip <start>[-<end>] [| <title>] [| labels] [| reminder]")
+			return
+		}
+		result, err := h.bookmarkCaptureSession(wsc.peerID, "", "", fieldsAt(fields, 1), startIndex, endIndex, labels, reminderAt, ctx)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmark capture error: "+err.Error())
+			return
+		}
+		bookmark, _ := result["bookmark"].(*bookmarks.Bookmark)
+		if bookmark == nil {
+			slashReply(wsc, req, "Session bookmark saved.")
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Saved session bookmark %s from messages %d-%d.", bookmark.ID, bookmark.SourceStartIndex, bookmark.SourceEndIndex))
+	case "delete", "remove":
+		if len(parts) != 2 {
+			slashReply(wsc, req, "Usage: /bookmark delete <bookmark-id>")
+			return
+		}
+		if _, err := h.bookmarkDelete(wsc.peerID, parts[1], ctx); err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmark delete error: "+err.Error())
+			return
+		}
+		slashReply(wsc, req, fmt.Sprintf("Deleted bookmark %s.", parts[1]))
+	default:
+		slashReply(wsc, req, "Usage: /bookmark [list [label]|get <id>|search <query>|add <title> | <content> [| labels] [| reminder]|clip <start>[-<end>] [| <title>] [| labels] [| reminder]|delete <id>]")
+	}
+}
+
+func (h *Handler) slashBookmarkList(ctx context.Context, wsc *wsConn, req *rpcRequest, label string, upcomingOnly bool) {
+	result, err := h.bookmarkList(wsc.peerID, 10, label, upcomingOnly, ctx)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "bookmark list error: "+err.Error())
+		return
+	}
+	items, _ := result["bookmarks"].([]bookmarks.Bookmark)
+	if len(items) == 0 {
+		if upcomingOnly {
+			slashReply(wsc, req, "No upcoming bookmarks.")
+			return
+		}
+		if strings.TrimSpace(label) != "" {
+			slashReply(wsc, req, fmt.Sprintf("No bookmarks with label %q.", strings.TrimSpace(label)))
+			return
+		}
+		slashReply(wsc, req, "No bookmarks saved.")
+		return
+	}
+	labelText := "Bookmarks"
+	if strings.TrimSpace(label) != "" {
+		labelText = fmt.Sprintf("Bookmarks [%s]", strings.TrimSpace(label))
+	}
+	if upcomingOnly {
+		labelText = "Upcoming bookmarks"
+	}
+	slashReply(wsc, req, formatSlashBookmarkList(labelText, items))
+}
+
+func formatSlashBookmarkList(title string, items []bookmarks.Bookmark) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s:", title)
+	for _, item := range items {
+		fmt.Fprintf(&sb, "\n- %s %s", item.ID, item.Title)
+		meta := slashBookmarkMeta(item)
+		if meta != "" {
+			fmt.Fprintf(&sb, "\n  %s", meta)
+		}
+	}
+	return sb.String()
+}
+
+func formatSlashBookmark(item bookmarks.Bookmark, includeContent bool) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s\n%s", item.ID, item.Title)
+	if meta := slashBookmarkMeta(item); meta != "" {
+		fmt.Fprintf(&sb, "\n%s", meta)
+	}
+	if includeContent && strings.TrimSpace(item.Content) != "" {
+		fmt.Fprintf(&sb, "\n\n%s", item.Content)
+	}
+	return sb.String()
+}
+
+func slashBookmarkMeta(item bookmarks.Bookmark) string {
+	parts := make([]string, 0, 4)
+	if len(item.Labels) > 0 {
+		parts = append(parts, "labels="+strings.Join(item.Labels, ","))
+	}
+	if item.ReminderAt > 0 {
+		parts = append(parts, "reminder="+time.Unix(item.ReminderAt, 0).UTC().Format(time.RFC3339))
+	}
+	if item.SourceKind != "" {
+		parts = append(parts, "source="+item.SourceKind)
+	}
+	if item.SourceStartIndex > 0 {
+		parts = append(parts, fmt.Sprintf("messages=%d-%d", item.SourceStartIndex, item.SourceEndIndex))
+	}
+	return strings.Join(parts, " | ")
+}
+
 func parseInt64Arg(value string) (int64, error) {
 	return strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+}
+
+func parseOptionalSlashReminder(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, nil
+	}
+	if unix, err := parseInt64Arg(value); err == nil {
+		return unix, nil
+	}
+	if ts, err := time.Parse(time.RFC3339, value); err == nil {
+		return ts.Unix(), nil
+	}
+	if ts, err := time.Parse("2006-01-02", value); err == nil {
+		return ts.Unix(), nil
+	}
+	return 0, fmt.Errorf("invalid reminder")
+}
+
+func splitSlashPipeFields(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, "|")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func fieldsAt(fields []string, index int) string {
+	if index < 0 || index >= len(fields) {
+		return ""
+	}
+	return fields[index]
+}
+
+func parseSlashLabels(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
+}
+
+func parseSlashMessageRange(value string) (int, int, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, 0, false
+	}
+	if !strings.Contains(value, "-") {
+		start, err := strconv.Atoi(value)
+		if err != nil || start <= 0 {
+			return 0, 0, false
+		}
+		return start, start, true
+	}
+	parts := strings.SplitN(value, "-", 2)
+	start, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	if err != nil || start <= 0 {
+		return 0, 0, false
+	}
+	end, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil || end <= 0 {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 // ── /waiting ────────────────────────────────────────────────────────────────

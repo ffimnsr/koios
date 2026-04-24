@@ -41,7 +41,8 @@
 //	brief.generate
 //	session.history
 //	session.reset
-//	standing.get / .set / .clear
+//	bookmark.create / .capture_session / .list / .get / .search / .update / .delete
+//	standing.get / .set / .clear / .profile.set / .profile.delete / .profile.activate
 //	agent.run / .start / .get / .wait / .cancel
 //	subagent.list / .spawn / .get / .status / .kill / .steer / .transcript
 //	memory.search / .insert / .get / .list / .delete / .tag / .batch_get / .timeline / .stats
@@ -65,6 +66,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/briefing"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/eventbus"
@@ -221,6 +223,7 @@ type Handler struct {
 	model                   string
 	memStore                *memory.Store
 	taskStore               *tasks.Store
+	bookmarkStore           *bookmarks.Store
 	calendarStore           *calendar.Store
 	memTopK                 int
 	memInject               bool
@@ -286,6 +289,7 @@ type HandlerOptions struct {
 	Timeout                 time.Duration
 	MemStore                *memory.Store
 	TaskStore               *tasks.Store
+	BookmarkStore           *bookmarks.Store
 	CalendarStore           *calendar.Store
 	MemTopK                 int
 	MemInject               bool
@@ -355,6 +359,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		model:                   opts.Model,
 		memStore:                opts.MemStore,
 		taskStore:               opts.TaskStore,
+		bookmarkStore:           opts.BookmarkStore,
 		calendarStore:           opts.CalendarStore,
 		memTopK:                 topK,
 		memInject:               opts.MemInject,
@@ -741,6 +746,24 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcStandingClear(ctx, wsc, req)
+	case "standing.profile.set":
+		if h.standingManager == nil {
+			wsc.replyErr(req.ID, errCodeServer, "standing orders are not enabled")
+			return
+		}
+		h.rpcStandingProfileSet(ctx, wsc, req)
+	case "standing.profile.delete":
+		if h.standingManager == nil {
+			wsc.replyErr(req.ID, errCodeServer, "standing orders are not enabled")
+			return
+		}
+		h.rpcStandingProfileDelete(ctx, wsc, req)
+	case "standing.profile.activate":
+		if h.standingManager == nil {
+			wsc.replyErr(req.ID, errCodeServer, "standing orders are not enabled")
+			return
+		}
+		h.rpcStandingProfileActivate(ctx, wsc, req)
 
 	// ── Agent run ─────────────────────────────────────────────────────────
 	case "agent.run":
@@ -811,6 +834,42 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcMemoryTag(ctx, wsc, req)
+	case "memory.preference.create":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryPreferenceCreate(ctx, wsc, req)
+	case "memory.preference.get":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryPreferenceGet(ctx, wsc, req)
+	case "memory.preference.list":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryPreferenceList(ctx, wsc, req)
+	case "memory.preference.update":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryPreferenceUpdate(ctx, wsc, req)
+	case "memory.preference.confirm":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryPreferenceConfirm(ctx, wsc, req)
+	case "memory.preference.delete":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcMemoryPreferenceDelete(ctx, wsc, req)
 	case "memory.entity.create":
 		if h.memStore == nil {
 			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
@@ -913,6 +972,50 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcMemoryCandidateReject(ctx, wsc, req)
+
+	// ── Bookmarks ─────────────────────────────────────────────────────────
+	case "bookmark.create":
+		if h.bookmarkStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmarks are not enabled")
+			return
+		}
+		h.rpcBookmarkCreate(ctx, wsc, req)
+	case "bookmark.capture_session":
+		if h.bookmarkStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmarks are not enabled")
+			return
+		}
+		h.rpcBookmarkCaptureSession(ctx, wsc, req)
+	case "bookmark.get":
+		if h.bookmarkStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmarks are not enabled")
+			return
+		}
+		h.rpcBookmarkGet(ctx, wsc, req)
+	case "bookmark.list":
+		if h.bookmarkStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmarks are not enabled")
+			return
+		}
+		h.rpcBookmarkList(ctx, wsc, req)
+	case "bookmark.search":
+		if h.bookmarkStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmarks are not enabled")
+			return
+		}
+		h.rpcBookmarkSearch(ctx, wsc, req)
+	case "bookmark.update":
+		if h.bookmarkStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmarks are not enabled")
+			return
+		}
+		h.rpcBookmarkUpdate(ctx, wsc, req)
+	case "bookmark.delete":
+		if h.bookmarkStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "bookmarks are not enabled")
+			return
+		}
+		h.rpcBookmarkDelete(ctx, wsc, req)
 
 	// ── Tasks ─────────────────────────────────────────────────────────────
 	case "task.candidate.create":
@@ -1305,7 +1408,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		methods = append(methods, "presence.get", "presence.set")
 	}
 	if caps["standing"] {
-		methods = append(methods, "standing.get", "standing.set", "standing.clear")
+		methods = append(methods, "standing.get", "standing.set", "standing.clear", "standing.profile.set", "standing.profile.delete", "standing.profile.activate")
 	}
 	if caps["agent_runtime"] {
 		methods = append(methods,
@@ -1336,6 +1439,12 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 			"memory.list",
 			"memory.delete",
 			"memory.tag",
+			"memory.preference.create",
+			"memory.preference.get",
+			"memory.preference.list",
+			"memory.preference.update",
+			"memory.preference.confirm",
+			"memory.preference.delete",
 			"memory.entity.create",
 			"memory.entity.update",
 			"memory.entity.get",
@@ -1353,6 +1462,17 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 			"memory.candidate.approve",
 			"memory.candidate.merge",
 			"memory.candidate.reject",
+		)
+	}
+	if h.bookmarkStore != nil {
+		methods = append(methods,
+			"bookmark.create",
+			"bookmark.capture_session",
+			"bookmark.get",
+			"bookmark.list",
+			"bookmark.search",
+			"bookmark.update",
+			"bookmark.delete",
 		)
 	}
 	if caps["tasks"] {
@@ -1602,18 +1722,19 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 		}
 	}
 	runReq := agent.RunRequest{
-		PeerID:       wsc.peerID,
-		SessionKey:   wsc.peerID,
-		Messages:     p.Messages,
-		Stream:       p.Stream,
-		BlockStream:  streamCfg.BlockMode,
-		MaxSteps:     toolLoopMaxSteps,
-		MaxTokens:    p.MaxTokens,
-		Temperature:  p.Temperature,
-		TopP:         p.TopP,
-		ToolExecutor: h,
-		EventSink:    eventSink,
-		Timeout:      h.timeout,
+		PeerID:        wsc.peerID,
+		SessionKey:    wsc.peerID,
+		Messages:      p.Messages,
+		Stream:        p.Stream,
+		BlockStream:   streamCfg.BlockMode,
+		MaxSteps:      toolLoopMaxSteps,
+		MaxTokens:     p.MaxTokens,
+		Temperature:   p.Temperature,
+		TopP:          p.TopP,
+		ToolExecutor:  h,
+		EventSink:     eventSink,
+		Timeout:       h.timeout,
+		ActiveProfile: h.store.Policy(wsc.peerID).ActiveProfile,
 	}
 
 	if p.Stream {
@@ -1751,6 +1872,11 @@ func (h *Handler) rpcStandingGet(_ context.Context, wsc *wsConn, req *rpcRequest
 	workspace := ""
 	peer := ""
 	effective := ""
+	defaultProfile := ""
+	activeProfile := strings.TrimSpace(h.store.Policy(wsc.peerID).ActiveProfile)
+	profileError := ""
+	profiles := map[string]standing.Profile{}
+	var resolvedProfile *standing.ResolvedProfile
 	if h.standingManager != nil {
 		workspace = h.standingManager.WorkspaceContent()
 		var err error
@@ -1760,11 +1886,32 @@ func (h *Handler) rpcStandingGet(_ context.Context, wsc *wsConn, req *rpcRequest
 			wsc.replyErr(req.ID, errCodeServer, "error loading standing orders")
 			return
 		}
-		effective, err = h.standingManager.EffectiveContent(wsc.peerID)
+		doc, err := h.standingManager.Document(wsc.peerID)
 		if err != nil {
-			slog.Error("ws: standing effective", "peer", wsc.peerID, "error", err)
+			slog.Error("ws: standing document", "peer", wsc.peerID, "error", err)
 			wsc.replyErr(req.ID, errCodeServer, "error loading standing orders")
 			return
+		}
+		if doc != nil {
+			defaultProfile = doc.DefaultProfile
+			profiles = doc.Profiles
+		}
+		effective, err = h.standingManager.EffectiveContentForProfile(wsc.peerID, activeProfile)
+		if err != nil {
+			profileError = err.Error()
+			parts := make([]string, 0, 2)
+			if workspace != "" {
+				parts = append(parts, workspace)
+			}
+			if peer != "" {
+				parts = append(parts, peer)
+			}
+			effective = strings.TrimSpace(strings.Join(parts, "\n\n"))
+		} else {
+			resolvedProfile, err = h.standingManager.ResolveProfile(wsc.peerID, activeProfile)
+			if err != nil {
+				profileError = err.Error()
+			}
 		}
 	}
 	wsc.reply(req.ID, map[string]any{
@@ -1772,6 +1919,11 @@ func (h *Handler) rpcStandingGet(_ context.Context, wsc *wsConn, req *rpcRequest
 		"workspace_content": workspace,
 		"peer_content":      peer,
 		"effective_content": effective,
+		"default_profile":   defaultProfile,
+		"active_profile":    activeProfile,
+		"resolved_profile":  resolvedProfile,
+		"profiles":          profiles,
+		"profile_error":     profileError,
 		"writable":          h.standingManager != nil && h.standingManager.Writable(),
 	})
 }
@@ -1808,6 +1960,167 @@ func (h *Handler) rpcStandingClear(_ context.Context, wsc *wsConn, req *rpcReque
 		return
 	}
 	wsc.reply(req.ID, map[string]bool{"ok": true})
+}
+
+func (h *Handler) rpcStandingProfileSet(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	if h.standingManager == nil || !h.standingManager.Writable() {
+		wsc.replyErr(req.ID, errCodeServer, "standing order persistence is not enabled")
+		return
+	}
+	var p struct {
+		Name          string   `json:"name"`
+		Content       string   `json:"content"`
+		ToolProfile   string   `json:"tool_profile"`
+		ToolsAllow    []string `json:"tools_allow"`
+		ToolsDeny     []string `json:"tools_deny"`
+		ResponseStyle string   `json:"response_style"`
+		ThinkLevel    string   `json:"think_level"`
+		VerboseMode   *bool    `json:"verbose_mode"`
+		TraceMode     *bool    `json:"trace_mode"`
+		MakeDefault   bool     `json:"make_default"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
+		return
+	}
+	if strings.TrimSpace(p.ThinkLevel) != "" && !validThinkLevels[strings.TrimSpace(p.ThinkLevel)] {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "invalid think level")
+		return
+	}
+	doc, err := h.standingManager.Document(wsc.peerID)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "error loading standing orders")
+		return
+	}
+	if doc == nil {
+		doc = &standing.Document{PeerID: wsc.peerID}
+	}
+	if doc.Profiles == nil {
+		doc.Profiles = make(map[string]standing.Profile)
+	}
+	profile := standing.Profile{
+		Content:       p.Content,
+		ToolProfile:   p.ToolProfile,
+		ToolsAllow:    p.ToolsAllow,
+		ToolsDeny:     p.ToolsDeny,
+		ResponseStyle: p.ResponseStyle,
+		ThinkLevel:    p.ThinkLevel,
+		VerboseMode:   cloneOptionalBool(p.VerboseMode),
+		TraceMode:     cloneOptionalBool(p.TraceMode),
+	}
+	doc.Profiles[name] = profile
+	if p.MakeDefault {
+		doc.DefaultProfile = name
+	}
+	saved, err := h.standingManager.Store().SaveDocument(doc)
+	if err != nil {
+		slog.Error("ws: standing profile set", "peer", wsc.peerID, "profile", name, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "error saving standing profile")
+		return
+	}
+	wsc.reply(req.ID, map[string]any{
+		"ok":              true,
+		"profile_name":    name,
+		"profile":         saved.Profiles[name],
+		"default_profile": saved.DefaultProfile,
+	})
+}
+
+func (h *Handler) rpcStandingProfileDelete(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	if h.standingManager == nil || !h.standingManager.Writable() {
+		wsc.replyErr(req.ID, errCodeServer, "standing order persistence is not enabled")
+		return
+	}
+	var p struct {
+		Name string `json:"name"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
+		return
+	}
+	doc, err := h.standingManager.Document(wsc.peerID)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "error loading standing orders")
+		return
+	}
+	if doc == nil || doc.Profiles == nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "standing profile not found")
+		return
+	}
+	if _, ok := doc.Profiles[name]; !ok {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "standing profile not found")
+		return
+	}
+	delete(doc.Profiles, name)
+	if doc.DefaultProfile == name {
+		doc.DefaultProfile = ""
+	}
+	if _, err := h.standingManager.Store().SaveDocument(doc); err != nil {
+		slog.Error("ws: standing profile delete", "peer", wsc.peerID, "profile", name, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "error deleting standing profile")
+		return
+	}
+	if h.store.Policy(wsc.peerID).ActiveProfile == name {
+		_ = h.store.PatchPolicy(wsc.peerID, func(policy *session.SessionPolicy) {
+			policy.ActiveProfile = ""
+		})
+	}
+	wsc.reply(req.ID, map[string]any{"ok": true, "profile_name": name})
+}
+
+func (h *Handler) rpcStandingProfileActivate(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Name       string `json:"name"`
+		SessionKey string `json:"session_key,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	sessionKey := strings.TrimSpace(p.SessionKey)
+	if sessionKey == "" {
+		sessionKey = wsc.peerID
+	}
+	if sessionKey != wsc.peerID && !strings.HasPrefix(sessionKey, wsc.peerID+"::") {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "session_key is not accessible to this peer")
+		return
+	}
+	name := strings.TrimSpace(p.Name)
+	if name != "" {
+		if _, err := h.standingManager.ResolveProfile(wsc.peerID, name); err != nil {
+			wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+			return
+		}
+	}
+	if err := h.store.PatchPolicy(sessionKey, func(policy *session.SessionPolicy) {
+		policy.ActiveProfile = name
+	}); err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, map[string]any{
+		"ok":             true,
+		"session_key":    sessionKey,
+		"active_profile": name,
+	})
+}
+
+func cloneOptionalBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 // ── agent.run ─────────────────────────────────────────────────────────────────
@@ -2061,6 +2374,10 @@ func (h *Handler) rpcAgentSteer(_ context.Context, wsc *wsConn, req *rpcRequest)
 
 func (h *Handler) buildAgentRunRequest(wsc *wsConn, reqID json.RawMessage, p agentRunParams) (agent.RunRequest, error) {
 	var timeout time.Duration
+	policyKey := strings.TrimSpace(p.SessionKey)
+	if policyKey == "" {
+		policyKey = wsc.peerID
+	}
 	if p.Timeout != "" {
 		d, err := time.ParseDuration(p.Timeout)
 		if err != nil {
@@ -2079,15 +2396,16 @@ func (h *Handler) buildAgentRunRequest(wsc *wsConn, reqID json.RawMessage, p age
 	}
 
 	return agent.RunRequest{
-		PeerID:       wsc.peerID,
-		SenderID:     p.SenderID,
-		Scope:        scope,
-		SessionKey:   p.SessionKey,
-		Messages:     p.Messages,
-		Stream:       p.Stream,
-		BlockStream:  p.BlockStream != nil && *p.BlockStream,
-		MaxSteps:     p.MaxSteps,
-		ToolExecutor: h,
+		PeerID:        wsc.peerID,
+		SenderID:      p.SenderID,
+		Scope:         scope,
+		SessionKey:    p.SessionKey,
+		Messages:      p.Messages,
+		Stream:        p.Stream,
+		BlockStream:   p.BlockStream != nil && *p.BlockStream,
+		MaxSteps:      p.MaxSteps,
+		ToolExecutor:  h,
+		ActiveProfile: h.store.Policy(policyKey).ActiveProfile,
 		EventSink: func() func(agent.Event) {
 			if !p.Stream {
 				return nil
@@ -2243,18 +2561,27 @@ func (h *Handler) rpcMemorySearch(ctx context.Context, wsc *wsConn, req *rpcRequ
 
 func (h *Handler) rpcMemoryInsert(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
-		Content        string   `json:"content"`
-		Tags           []string `json:"tags"`
-		Category       string   `json:"category"`
-		RetentionClass string   `json:"retention_class"`
-		ExposurePolicy string   `json:"exposure_policy"`
-		ExpiresAt      int64    `json:"expires_at"`
+		Content           string   `json:"content"`
+		Tags              []string `json:"tags"`
+		Category          string   `json:"category"`
+		RetentionClass    string   `json:"retention_class"`
+		ExposurePolicy    string   `json:"exposure_policy"`
+		ExpiresAt         int64    `json:"expires_at"`
+		CaptureKind       *string  `json:"capture_kind"`
+		CaptureReason     *string  `json:"capture_reason"`
+		Confidence        *float64 `json:"confidence"`
+		SourceSessionKey  *string  `json:"source_session_key"`
+		SourceMessageID   *string  `json:"source_message_id"`
+		SourceRunID       *string  `json:"source_run_id"`
+		SourceHook        *string  `json:"source_hook"`
+		SourceCandidateID *string  `json:"source_candidate_id"`
+		SourceExcerpt     *string  `json:"source_excerpt"`
 	}
 	if err := decodeParams(req.Params, &p); err != nil {
 		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
 		return
 	}
-	result, err := h.memoryInsertWithOptions(wsc.peerID, p.Content, p.Tags, p.Category, p.RetentionClass, p.ExposurePolicy, p.ExpiresAt, ctx)
+	result, err := h.memoryInsertWithOptions(wsc.peerID, p.Content, p.Tags, p.Category, p.RetentionClass, p.ExposurePolicy, p.ExpiresAt, chunkProvenance(p.CaptureKind, p.CaptureReason, p.Confidence, p.SourceSessionKey, p.SourceMessageID, p.SourceRunID, p.SourceHook, p.SourceCandidateID, p.SourceExcerpt), ctx)
 	if err != nil {
 		slog.Error("ws: memory insert", "peer", wsc.peerID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "insert error: "+err.Error())
@@ -2297,6 +2624,131 @@ func (h *Handler) rpcMemoryTag(ctx context.Context, wsc *wsConn, req *rpcRequest
 	if err != nil {
 		slog.Error("ws: memory tag", "peer", wsc.peerID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "tag error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryPreferenceCreate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Kind             string  `json:"kind"`
+		Name             string  `json:"name"`
+		Value            string  `json:"value"`
+		Category         string  `json:"category"`
+		Scope            string  `json:"scope"`
+		ScopeRef         string  `json:"scope_ref"`
+		Confidence       float64 `json:"confidence"`
+		LastConfirmedAt  int64   `json:"last_confirmed_at"`
+		SourceSessionKey string  `json:"source_session_key"`
+		SourceExcerpt    string  `json:"source_excerpt"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryPreferenceCreate(wsc.peerID, p.Kind, p.Name, p.Value, p.Category, p.Scope, p.ScopeRef, p.Confidence, p.LastConfirmedAt, p.SourceSessionKey, p.SourceExcerpt, ctx)
+	if err != nil {
+		slog.Error("ws: memory preference create", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "preference create error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryPreferenceGet(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryPreferenceGet(wsc.peerID, p.ID, ctx)
+	if err != nil {
+		slog.Error("ws: memory preference get", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "preference get error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryPreferenceList(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Kind  string `json:"kind"`
+		Scope string `json:"scope"`
+		Limit int    `json:"limit"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryPreferenceList(wsc.peerID, p.Kind, p.Scope, p.Limit, ctx)
+	if err != nil {
+		slog.Error("ws: memory preference list", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "preference list error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryPreferenceUpdate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID               string   `json:"id"`
+		Kind             *string  `json:"kind"`
+		Name             *string  `json:"name"`
+		Value            *string  `json:"value"`
+		Category         *string  `json:"category"`
+		Scope            *string  `json:"scope"`
+		ScopeRef         *string  `json:"scope_ref"`
+		Confidence       *float64 `json:"confidence"`
+		LastConfirmedAt  *int64   `json:"last_confirmed_at"`
+		SourceSessionKey *string  `json:"source_session_key"`
+		SourceExcerpt    *string  `json:"source_excerpt"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryPreferenceUpdate(wsc.peerID, p.ID, preferencePatch(p.Kind, p.Name, p.Value, p.Category, p.Scope, p.ScopeRef, p.Confidence, p.LastConfirmedAt, p.SourceSessionKey, p.SourceExcerpt), ctx)
+	if err != nil {
+		slog.Error("ws: memory preference update", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "preference update error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryPreferenceConfirm(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID              string   `json:"id"`
+		LastConfirmedAt int64    `json:"last_confirmed_at"`
+		Confidence      *float64 `json:"confidence"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryPreferenceConfirm(wsc.peerID, p.ID, p.LastConfirmedAt, p.Confidence, ctx)
+	if err != nil {
+		slog.Error("ws: memory preference confirm", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "preference confirm error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcMemoryPreferenceDelete(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.memoryPreferenceDelete(wsc.peerID, p.ID, ctx)
+	if err != nil {
+		slog.Error("ws: memory preference delete", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "preference delete error: "+err.Error())
 		return
 	}
 	wsc.reply(req.ID, result)

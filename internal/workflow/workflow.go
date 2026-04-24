@@ -43,6 +43,9 @@ type Step struct {
 	// IncludeHistory, when true, prepends the peer's current main session
 	// history so the LLM has full conversational context.
 	IncludeHistory bool `json:"include_history,omitempty"`
+	// Profile, when non-empty, activates a named standing/persona profile for
+	// this agent_turn execution.
+	Profile string `json:"profile,omitempty"`
 
 	// ── webhook fields ───────────────────────────────────────────────────────
 
@@ -85,10 +88,10 @@ type Step struct {
 
 // Workflow is a reusable automation definition owned by a single peer.
 type Workflow struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	PeerID      string    `json:"peer_id"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	PeerID      string `json:"peer_id"`
 	// FirstStep is the ID of the entry-point step.
 	// Defaults to Steps[0].ID when empty.
 	FirstStep string    `json:"first_step,omitempty"`
@@ -120,12 +123,12 @@ type StepResult struct {
 
 // Run tracks the execution state of a single workflow invocation.
 type Run struct {
-	ID         string               `json:"id"`
-	WorkflowID string               `json:"workflow_id"`
-	PeerID     string               `json:"peer_id"`
-	Status     RunStatus            `json:"status"`
+	ID         string    `json:"id"`
+	WorkflowID string    `json:"workflow_id"`
+	PeerID     string    `json:"peer_id"`
+	Status     RunStatus `json:"status"`
 	// CurrentStep is the ID of the step being executed or to be executed next.
-	CurrentStep string               `json:"current_step,omitempty"`
+	CurrentStep string                `json:"current_step,omitempty"`
 	StepResults map[string]StepResult `json:"step_results"`
 	// LastOutput is the most recent completed step's output, available to
 	// subsequent steps via the "{{.Output}}" template placeholder.

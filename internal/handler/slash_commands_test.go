@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/gorilla/websocket"
@@ -60,6 +62,25 @@ func dialSlashServerWithStore(t *testing.T, store *session.Store, ownerPeerIDs [
 	t.Cleanup(srv.Close)
 	conn := dialWS(t, srv, peerID)
 	return conn, store, prov
+}
+
+func dialSlashServerWithStanding(t *testing.T, peerID string, manager *standing.Manager) (*websocket.Conn, *session.Store, *stubProvider) {
+	t.Helper()
+	store := session.NewWithOptions(session.Options{MaxMessages: 50})
+	prov := &stubProvider{response: newSlashChatResponse("LLM reply")}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	t.Cleanup(func() { coord.Stop() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:           "test-model",
+		Timeout:         5 * time.Second,
+		AgentRuntime:    rt,
+		AgentCoord:      coord,
+		StandingManager: manager,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return dialWS(t, srv, peerID), store, prov
 }
 
 func dialSlashServerWithMemory(t *testing.T, peerID string) (*websocket.Conn, *memory.Store) {
@@ -109,6 +130,30 @@ func dialSlashServerWithTasks(t *testing.T, peerID string) (*websocket.Conn, *ta
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return dialWS(t, srv, peerID), taskStore
+}
+
+func dialSlashServerWithBookmarks(t *testing.T, peerID string) (*websocket.Conn, *session.Store, *bookmarks.Store) {
+	t.Helper()
+	store := session.NewWithOptions(session.Options{MaxMessages: 50})
+	prov := &stubProvider{response: newSlashChatResponse("LLM reply")}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	t.Cleanup(func() { coord.Stop() })
+	bookmarkStore, err := bookmarks.New(filepath.Join(t.TempDir(), "bookmarks.db"))
+	if err != nil {
+		t.Fatalf("bookmarks.New: %v", err)
+	}
+	t.Cleanup(func() { _ = bookmarkStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:         "test-model",
+		Timeout:       5 * time.Second,
+		AgentRuntime:  rt,
+		AgentCoord:    coord,
+		BookmarkStore: bookmarkStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return dialWS(t, srv, peerID), store, bookmarkStore
 }
 
 func dialSlashServerWithCalendar(t *testing.T, peerID string) (*websocket.Conn, *calendar.Store) {
@@ -261,6 +306,57 @@ func TestSlashThink_Off(t *testing.T) {
 	}
 }
 
+func TestSlashBookmarkAddAndList(t *testing.T) {
+	conn, _, _ := dialSlashServerWithBookmarks(t, "bookmark-alice")
+
+	msg := sendSlashChat(t, conn, "1", "/bookmark add Sprint recap | Capture the open release work | planning,release | 1735689600")
+	got := slashAssistantText(t, msg)
+	if !strings.Contains(got, "Saved bookmark") {
+		t.Fatalf("expected bookmark save confirmation, got: %s", got)
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/bookmark list")
+	got = slashAssistantText(t, msg)
+	if !strings.Contains(got, "Sprint recap") {
+		t.Fatalf("expected bookmark title in list, got: %s", got)
+	}
+	if !strings.Contains(got, "labels=planning,release") {
+		t.Fatalf("expected labels in list, got: %s", got)
+	}
+}
+
+func TestSlashBookmarkClipAndGet(t *testing.T) {
+	conn, store, _ := dialSlashServerWithBookmarks(t, "bookmark-bob")
+	store.Append("bookmark-bob",
+		types.Message{Role: "user", Content: "Please save the launch checklist and owner assignments."},
+		types.Message{Role: "assistant", Content: "Checklist: release notes, smoke test, deploy window, rollback contact."},
+		types.Message{Role: "user", Content: "Also include the reminder to notify support."},
+	)
+
+	msg := sendSlashChat(t, conn, "1", "/bookmark clip 2-3 | Launch checklist | ops,launch")
+	got := slashAssistantText(t, msg)
+	if !strings.Contains(got, "Saved session bookmark") {
+		t.Fatalf("expected clip confirmation, got: %s", got)
+	}
+	parts := strings.Fields(got)
+	if len(parts) < 4 {
+		t.Fatalf("unexpected clip response: %s", got)
+	}
+	id := strings.TrimSuffix(parts[3], ".")
+
+	msg = sendSlashChat(t, conn, "2", "/bookmark get "+id)
+	got = slashAssistantText(t, msg)
+	if !strings.Contains(got, "Launch checklist") {
+		t.Fatalf("expected bookmark title in get response, got: %s", got)
+	}
+	if !strings.Contains(got, "messages=2-3") {
+		t.Fatalf("expected source range in get response, got: %s", got)
+	}
+	if !strings.Contains(got, "Checklist: release notes") {
+		t.Fatalf("expected clipped content in get response, got: %s", got)
+	}
+}
+
 func TestSlashVerbose(t *testing.T) {
 	conn, _, _ := dialSlashServer(t, nil, "verbose-dave")
 
@@ -297,6 +393,56 @@ func TestSlashStatus(t *testing.T) {
 	}
 	if err := json.Unmarshal(msg.Result, &result); err != nil || len(result.Status) == 0 {
 		t.Errorf("expected status field in result, got result: %s", msg.Result)
+	}
+}
+
+func TestSlashProfileActivate(t *testing.T) {
+	standingStore, err := standing.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("standing.NewStore: %v", err)
+	}
+	if _, err := standingStore.SaveDocument(&standing.Document{
+		PeerID: "profile-pam",
+		Profiles: map[string]standing.Profile{
+			"focus":  {Content: "Focus mode"},
+			"travel": {Content: "Travel mode"},
+		},
+		DefaultProfile: "travel",
+	}); err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	manager := standing.NewManager(standingStore, "")
+	conn, store, _ := dialSlashServerWithStanding(t, "profile-pam", manager)
+
+	msg := sendSlashChat(t, conn, "1", "/profile")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "travel (default)") {
+		t.Fatalf("expected default profile in response, got: %s", got)
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/profile list")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "focus") || !strings.Contains(got, "travel") {
+		t.Fatalf("expected profile list, got: %s", got)
+	}
+
+	msg = sendSlashChat(t, conn, "3", "/profile use focus")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "focus") {
+		t.Fatalf("expected activation confirmation, got: %s", got)
+	}
+	if policy := store.Policy("profile-pam"); policy.ActiveProfile != "focus" {
+		t.Fatalf("expected active profile focus, got %#v", policy)
+	}
+
+	msg = sendSlashChat(t, conn, "4", "/status")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "Active profile: focus") {
+		t.Fatalf("expected active profile in status, got: %s", got)
+	}
+
+	msg = sendSlashChat(t, conn, "5", "/profile clear")
+	if got := slashAssistantText(t, msg); !strings.Contains(strings.ToLower(got), "cleared") {
+		t.Fatalf("expected clear confirmation, got: %s", got)
+	}
+	if policy := store.Policy("profile-pam"); policy.ActiveProfile != "" {
+		t.Fatalf("expected cleared active profile, got %#v", policy)
 	}
 }
 

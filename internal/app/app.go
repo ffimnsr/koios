@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/eventbus"
@@ -62,7 +63,17 @@ func (f *compactionMemoryFlusher) FlushCompaction(ctx context.Context, peerID st
 	if checkpoint == "" {
 		return nil
 	}
-	_, err := f.store.InsertChunk(ctx, peerID, checkpoint)
+	_, err := f.store.InsertChunkWithOptions(ctx, peerID, checkpoint, memory.ChunkOptions{
+		Category:       "compaction",
+		RetentionClass: memory.RetentionClassArchive,
+		ExposurePolicy: memory.ExposurePolicySearchOnly,
+		Provenance: memory.ChunkProvenance{
+			CaptureKind:      memory.ChunkCaptureCompactionCheckpoint,
+			CaptureReason:    "checkpoint before compaction",
+			SourceSessionKey: peerID,
+			Confidence:       1,
+		},
+	})
 	return err
 }
 
@@ -143,6 +154,7 @@ func RunGateway(build BuildInfo) error {
 	}
 	var memStore *memory.Store
 	var taskStore *tasks.Store
+	var bookmarkStore *bookmarks.Store
 	var calendarStore *calendar.Store
 	{
 		var embedder memory.Embedder
@@ -184,6 +196,10 @@ func RunGateway(build BuildInfo) error {
 		store.AppendWithSource(sessionKey, ev.Source, *ev.Message)
 	})
 	taskStore, err = tasks.New(cfg.TasksDBPath())
+	if err != nil {
+		return err
+	}
+	bookmarkStore, err = bookmarks.New(cfg.BookmarksDBPath())
 	if err != nil {
 		return err
 	}
@@ -324,6 +340,7 @@ func RunGateway(build BuildInfo) error {
 		Timeout:         cfg.RequestTimeout,
 		MemStore:        memStore,
 		TaskStore:       taskStore,
+		BookmarkStore:   bookmarkStore,
 		CalendarStore:   calendarStore,
 		MemTopK:         cfg.MemoryTopK,
 		MemInject:       cfg.MemoryInject,

@@ -7,7 +7,16 @@ tags       TEXT NOT NULL DEFAULT '',
 category   TEXT NOT NULL DEFAULT '',
 retention_class TEXT NOT NULL DEFAULT 'working',
 exposure_policy TEXT NOT NULL DEFAULT 'auto',
-expires_at INTEGER NOT NULL DEFAULT 0
+expires_at INTEGER NOT NULL DEFAULT 0,
+capture_kind TEXT NOT NULL DEFAULT 'manual',
+capture_reason TEXT NOT NULL DEFAULT '',
+confidence REAL NOT NULL DEFAULT 1.0,
+source_session_key TEXT NOT NULL DEFAULT '',
+source_message_id TEXT NOT NULL DEFAULT '',
+source_run_id TEXT NOT NULL DEFAULT '',
+source_hook TEXT NOT NULL DEFAULT '',
+source_candidate_id TEXT NOT NULL DEFAULT '',
+source_excerpt TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_peer_created_at ON chunks(peer_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chunks_expires_at ON chunks(expires_at);
@@ -42,6 +51,25 @@ source_session_key TEXT NOT NULL DEFAULT '',
 source_excerpt TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_memory_candidates_peer_status_created_at ON memory_candidates(peer_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS memory_preferences (
+id TEXT PRIMARY KEY,
+peer_id TEXT NOT NULL,
+kind TEXT NOT NULL DEFAULT 'preference',
+name TEXT NOT NULL,
+value TEXT NOT NULL,
+category TEXT NOT NULL DEFAULT '',
+scope TEXT NOT NULL DEFAULT 'global',
+scope_ref TEXT NOT NULL DEFAULT '',
+confidence REAL NOT NULL DEFAULT 1.0,
+last_confirmed_at INTEGER NOT NULL DEFAULT 0,
+created_at INTEGER NOT NULL,
+updated_at INTEGER NOT NULL,
+source_session_key TEXT NOT NULL DEFAULT '',
+source_excerpt TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_memory_preferences_peer_kind_scope ON memory_preferences(peer_id, kind, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_preferences_peer_confirmed ON memory_preferences(peer_id, last_confirmed_at DESC, confidence DESC);
 
 CREATE TABLE IF NOT EXISTS memory_entities (
 id TEXT PRIMARY KEY,

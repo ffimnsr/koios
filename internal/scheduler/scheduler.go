@@ -409,7 +409,7 @@ func (s *Scheduler) runAgentTurn(ctx context.Context, job *Job) (string, error) 
 	prompt := fmt.Sprintf("[cron:%s %s] %s", job.JobID, job.Name, job.Payload.Message)
 	var messages []types.Message
 	if s.standingMgr != nil {
-		msg, err := s.standingMgr.SystemMessage(job.PeerID)
+		msg, err := s.standingMgr.SystemMessageForProfile(job.PeerID, job.Payload.Profile)
 		if err != nil {
 			return "", err
 		}
@@ -440,11 +440,12 @@ func (s *Scheduler) runAgentTurn(ctx context.Context, job *Job) (string, error) 
 		// key and do not clutter the peer's session; then append the final
 		// assistant text to the peer's session via AppendWithSource as before.
 		result, err := s.agentRuntime.Run(ctx, agent.RunRequest{
-			PeerID:       job.PeerID,
-			Scope:        agent.ScopeIsolated,
-			Messages:     messages,
-			ToolExecutor: s.toolExec,
-			Model:        s.model,
+			PeerID:        job.PeerID,
+			Scope:         agent.ScopeIsolated,
+			Messages:      messages,
+			ToolExecutor:  s.toolExec,
+			Model:         s.model,
+			ActiveProfile: job.Payload.Profile,
 		})
 		if err != nil {
 			return "", err

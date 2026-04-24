@@ -243,6 +243,51 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Per-session memory isolation vs shared global memory (namespace support)
 - [x] Auto-inject memory from multiple named sources
 
+## Tool Patches
+
+- [ ] `message.send` built-in tool for cross-channel outbound messages
+	- Notes: Provide one channel-agnostic send surface for Slack, Telegram, Discord, and future chat transports. This should reuse channel routing, sender allowlists, message chunking, and approval policy instead of letting agents call transport-specific APIs directly.
+- [ ] `task.*` built-in chat tools
+	- Notes: Expose task management directly to the agent with tools such as `task.create`, `task.list`, `task.update`, `task.complete`, and `task.extract`. Koios already has task RPC and slash-command surfaces, so this patch should reuse `internal/tasks` behavior rather than adding a parallel task model.
+- [ ] `approval.request` built-in tool
+	- Notes: Add a generic approval primitive for sensitive actions such as outbound messages, shell execution, cron creation, file deletion, and webhook calls. The tool should integrate with existing exec approval and policy hooks so all approval-gated built-ins share one lifecycle.
+- [ ] `notification.send` built-in tool
+	- Notes: Provide a local or node-backed notification surface for reminders, completed runs, cron alerts, waiting-on follow-ups, and user-visible status changes. Keep this separate from `message.send` because notifications target the owner/device, while messages target chat conversations.
+- [ ] `git.*` built-in tools for structured repository operations
+	- Notes: Add safer wrappers for common repository work such as `git.status`, `git.diff`, `git.log`, `git.branch`, `git.commit`, and `git.apply_patch`. These should produce structured outputs and enforce workspace boundaries instead of relying on raw `exec` for every git operation.
+- [ ] `code.search` and `code.symbol` built-in tools
+	- Notes: Add code-aware discovery tools for symbol lookup, definitions, callers, references, and module summaries. Prefer Atlas/LSP-backed context where available, with file-search fallback only when structural lookup is unavailable.
+- [ ] `brief.*` built-in tools for brief lifecycle management
+	- Notes: Extend `brief.generate` with tools such as `brief.preview`, `brief.save`, `brief.send`, and `brief.schedule` so daily and weekly briefs can move from generated text into saved, delivered, or scheduled workflows.
+- [ ] `contact.*` built-in tools
+	- Notes: Add contact resolution and aliasing tools such as `contact.list`, `contact.resolve`, `contact.alias`, and `contact.link_channel_identity`. This becomes important once cross-channel messaging needs stable human identity rather than raw platform IDs.
+- [ ] `inbox.*` built-in tools
+	- Notes: Add multi-channel inbox tools such as `inbox.list`, `inbox.read`, `inbox.mark_read`, `inbox.route`, and `inbox.summarize`. This should pair with multi-channel routing so agents can inspect and triage incoming messages without binding to one transport.
+- [ ] `artifact.*` built-in tools
+	- Notes: Add a structured store for generated reports, specs, plans, drafts, and reusable documents with tools such as `artifact.create`, `artifact.update`, `artifact.list`, and `artifact.get`. This gives agents a durable output surface distinct from memory, bookmarks, and workspace files.
+- [ ] `calendar.create`, `calendar.update`, and `calendar.cancel` built-in tools
+	- Notes: Koios already has agenda and calendar source tools, but mutation tools would let agents actually schedule, reschedule, and cancel events. These should require explicit approval by default when inviting others or modifying external calendars.
+- [ ] `reminder.create`, `reminder.list`, and `reminder.complete` built-in tools
+	- Notes: Add a lightweight reminder surface separate from cron. User-facing reminders should not require users or agents to model simple nudges as scheduled jobs.
+- [ ] `project.*` built-in tools
+	- Notes: Track higher-level projects separately from tasks with tools such as `project.create`, `project.list`, `project.status`, `project.link_task`, and `project.archive`. Projects should provide durable context for related tasks, decisions, artifacts, and sessions.
+- [ ] `decision.record`, `decision.list`, and `decision.search` built-in tools
+	- Notes: Add a structured registry for durable decisions such as "we chose X because Y". This is higher-signal than burying decisions in generic memory and should include provenance, timestamp, alternatives, and owner/context where available.
+- [ ] `preference.set`, `preference.get`, and `preference.list` built-in tools
+	- Notes: Store explicit user preferences with provenance, scope, confidence, and last-confirmed timestamps. This gives the runtime a more reliable behavior-shaping source than generic memory retrieval.
+- [ ] `note.create`, `note.search`, and `note.update` built-in tools
+	- Notes: Add a lightweight knowledge and draft surface distinct from bookmarks, artifacts, and long-term memory. Notes should be easy for agents to update incrementally without implying a finalized artifact.
+- [ ] `scratchpad.create`, `scratchpad.update`, `scratchpad.get`, and `scratchpad.clear` built-in tools
+	- Notes: Add ephemeral per-session working notes for long tasks. Scratchpads should help agents track intermediate reasoning and local state without polluting long-term memory, bookmarks, notes, or artifacts.
+- [ ] `plan.create`, `plan.update`, `plan.status`, and `plan.complete_step` built-in tools
+	- Notes: Add structured task plans with explicit step status, separate from durable user tasks. Plans should support in-progress agent work without implying the user has created persistent personal commitments.
+- [ ] `run.status`, `run.list`, `run.cancel`, and `run.logs` built-in tools
+	- Notes: Provide unified run introspection for agent runs, subagents, workflows, cron jobs, code execution, and background processes. This should sit on top of the run ledger rather than each subsystem exposing an incompatible status shape.
+- [ ] `usage.current`, `usage.history`, and `usage.estimate` built-in tools
+	- Notes: Expose token and cost visibility as tools, not only status text. Agents should be able to inspect current turn/session usage, summarize historical usage, and estimate cost before expensive model or workflow calls.
+- [ ] `model.list`, `model.capabilities`, and `model.route` built-in tools
+	- Notes: Let the agent inspect available models, provider capability metadata, context limits, tool support, media support, and routing policy. `model.route` should only choose or suggest routes when session policy allows model overrides.
+
 ## Tools
 
 - [x] Standard `read` tool
@@ -861,23 +906,23 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Research notes: Koios already has nearly all the plumbing needed for proactive reviews: session history, memory, cron, workflows, and usage/runs. What it lacks is a productized synthesis mode that composes these sources into stable personal rituals like morning briefs, evening shutdowns, and weekly retrospectives. The upstream repos expose status and automation, but the current searches did not surface a similarly opinionated personal review feature.
 	- Suggested Koios shape: add templated briefing workflows that gather upcoming events, stale waiting-ons, new memory candidates, recent commitments, and active projects into one bounded report with follow-up actions.
 	- References: OpenClaw `src/auto-reply/status.ts`, `docs/automation/cron-jobs.md`; PicoClaw `cmd/picoclaw/internal/status/helpers.go`, `pkg/agent/hooks.go`; IronClaw `src/agent/commands.rs`, `src/agent/routine_engine.rs`.
-- [ ] Mode-specific standing orders and persona profiles
+- [x] Mode-specific standing orders and persona profiles
 	- Research notes: Koios already has workspace-level and peer-level standing orders, which is a strong foundation, but the model is still too coarse for a personal agent that shifts between contexts such as work, home, travel, and deep-focus modes. A profile system would let the same peer activate different standing instructions, tool allowances, and response styles without forking into unrelated sessions. The comparison repos surfaced status, routing, and config profiles, but not an equally direct personal-mode system in the current search.
 	- Suggested Koios shape: support named profiles that layer on top of existing standing orders and can be activated manually, by schedule, or by workflow context.
 	- References: OpenClaw `src/config/zod-schema.agent-defaults.ts`, `src/commands/status.summary.ts`; PicoClaw `docs/configuration.md`, `pkg/config/defaults.go`; IronClaw `src/config/mod.rs`, `src/agent/commands.rs`.
-- [ ] Preference and decision registry separate from generic memory
+- [x] Preference and decision registry separate from generic memory
 	- Research notes: Not every persistent fact belongs in freeform memory search. A personal agent benefits from a higher-signal registry for stable preferences, defaults, and durable decisions such as writing tone, notification habits, travel preferences, coding conventions, and standing family logistics. The current Koios memory store can hold this content, but it does not distinguish "behavior-shaping preference" from ordinary retrieved context.
 	- Suggested Koios shape: add a structured preference store with scopes, confidence, last-confirmed timestamps, and provenance so the runtime can apply these facts predictably without over-relying on fuzzy memory retrieval.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Source-backed memory provenance and explainability
+- [x] Source-backed memory provenance and explainability
 	- Research notes: Koios currently stores the memory content itself, but personal-agent trust improves substantially when the system can answer "where did this come from?" Provenance fields such as source session, message ID, workflow run, external hook, and capture reason make later memory use safer and easier to debug. The comparison repos surfaced trace and job observability, but not a strongly personal provenance model for long-term memory in the current search.
 	- Suggested Koios shape: attach source metadata, confidence, and capture mechanism to every stored memory and expose that provenance through memory search, inspect, and review interfaces.
 	- References: OpenClaw `src/auto-reply/status.ts`, `src/commands/status.types.ts`; PicoClaw `pkg/agent/turn.go`, `pkg/agent/hooks.go`; IronClaw `crates/ironclaw_common/src/event.rs`, `src/channels/channel.rs`.
-- [ ] Conversation bookmarks and save-for-later recall
+- [x] Conversation bookmarks and save-for-later recall
 	- Research notes: There is a practical middle ground between full long-term memory insertion and leaving everything buried in session history. A bookmark primitive would let users save important messages, decisions, snippets, or plans for later recall without forcing them into the same lifecycle as extracted memory. None of the comparison repos surfaced a distinct bookmark-style feature in the current search.
 	- Suggested Koios shape: support bookmarking a message, thread segment, or workflow result with title, labels, and optional reminder date, then expose bookmarks in chat, CLI, and future dashboard views.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Personal commitments dashboard (TUI) instead of runtime-only status
+- [ ] Personal commitments dashboard (shell or TUI) instead of runtime-only status
 	- Research notes: Koios already has CLI status, health, usage, and background-run concepts, but those are operator-facing rather than life-facing. A personal agent should also have a commitments view that surfaces open tasks, waiting-ons, upcoming events, recent promises, and stale project threads. The current backlog has web UI and dashboard work, but this specific user-facing dashboard concept does not appear to be listed.
 	- Suggested Koios shape: build a dashboard oriented around commitments and personal context first, then layer runtime diagnostics beneath it rather than leading with infrastructure state.
 	- References: OpenClaw `src/commands/status.summary.ts`, `src/auto-reply/status.ts`; PicoClaw `web/README.md`, `web/frontend/src/routes/models.tsx`; IronClaw `docs/drafts/ops/api.mdx`, `src/agent/commands.rs`.

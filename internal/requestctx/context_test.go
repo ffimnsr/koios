@@ -203,6 +203,53 @@ func TestBuild_InjectsOnlyAutoExposureMemory(t *testing.T) {
 	}
 }
 
+func TestBuild_InjectsStructuredPreferencesAheadOfGenericMemory(t *testing.T) {
+	store, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+
+	_, err = store.CreatePreference(ctx, "alice", memory.PreferenceKindDecision, "deployment windows", "Prefer Tuesday deployments after 18:00 UTC.", "ops", memory.PreferenceScopeWorkspace, "koios", 0.95, 0, "alice::main", "We deploy on Tuesdays.")
+	if err != nil {
+		t.Fatalf("CreatePreference: %v", err)
+	}
+	_, err = store.InsertChunkWithOptions(ctx, "alice", "Pinned deployment preference from prior chat", memory.ChunkOptions{
+		RetentionClass: memory.RetentionClassPinned,
+	})
+	if err != nil {
+		t.Fatalf("InsertChunkWithOptions: %v", err)
+	}
+
+	built, err := Build(ctx, BuildOptions{
+		Model:        "m",
+		Messages:     []types.Message{{Role: "user", Content: "When should I deploy?"}},
+		MemoryStore:  store,
+		MemoryInject: true,
+		MemoryTopK:   5,
+		MemoryPeerID: "alice",
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !containsSubstring(built.InjectedMemory, "Stable preferences and durable decisions") {
+		t.Fatalf("expected structured preference block, got %q", built.InjectedMemory)
+	}
+	if !containsSubstring(built.InjectedMemory, "deployment windows: Prefer Tuesday deployments after 18:00 UTC.") {
+		t.Fatalf("expected structured preference content, got %q", built.InjectedMemory)
+	}
+	if !containsSubstring(built.InjectedMemory, "Pinned deployment preference from prior chat") {
+		t.Fatalf("expected generic memory block, got %q", built.InjectedMemory)
+	}
+	if strings.Index(built.InjectedMemory, "Stable preferences and durable decisions") > strings.Index(built.InjectedMemory, "Relevant context from past conversations") {
+		t.Fatalf("expected preference block before generic memory, got %q", built.InjectedMemory)
+	}
+	if built.MemoryHits != 2 {
+		t.Fatalf("MemoryHits = %d, want 2", built.MemoryHits)
+	}
+}
+
 func containsSubstring(s, want string) bool {
 	return strings.Contains(s, want)
 }

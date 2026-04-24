@@ -33,10 +33,12 @@ type stubAgent struct {
 	reply string
 	err   error
 	calls int
+	last  agent.RunRequest
 }
 
-func (s *stubAgent) Run(_ context.Context, _ agent.RunRequest) (*agent.Result, error) {
+func (s *stubAgent) Run(_ context.Context, req agent.RunRequest) (*agent.Result, error) {
 	s.calls++
+	s.last = req
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -125,6 +127,36 @@ func TestStore_CreateGetListDelete(t *testing.T) {
 	}
 }
 
+func TestRunner_AgentTurnPassesProfile(t *testing.T) {
+	store := newTestStore(t)
+	agentRT := &stubAgent{reply: "ok"}
+	runner := NewRunner(store)
+	runner.SetAgentRuntime(agentRT, nil)
+	wf, err := store.Create(Workflow{
+		Name:      "profile-wf",
+		PeerID:    "peer-1",
+		FirstStep: "step-1",
+		Steps: []Step{{
+			ID:        "step-1",
+			Kind:      StepKindAgentTurn,
+			Message:   "hello",
+			Profile:   "focus",
+			OnSuccess: "",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	run, err := runner.Start(context.Background(), wf.ID, "peer-1")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_ = waitForRun(t, store, run.ID, time.Second)
+	if agentRT.last.ActiveProfile != "focus" {
+		t.Fatalf("expected active profile focus, got %#v", agentRT.last)
+	}
+}
+
 func TestStore_DeleteNonexistent(t *testing.T) {
 	s := newTestStore(t)
 	// Delete is a no-op for missing IDs; it just saves the unchanged list.
@@ -198,9 +230,9 @@ func TestStore_ListRunsLimit(t *testing.T) {
 
 func TestEvalCondition(t *testing.T) {
 	tests := []struct {
-		cond  string
-		prev  string
-		want  bool
+		cond string
+		prev string
+		want bool
 	}{
 		{"always_true", "", true},
 		{"always_true", "anything", true},
