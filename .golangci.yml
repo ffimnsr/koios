@@ -1,13 +1,8 @@
+version: "2"
 run:
-  timeout: 10m
   tests: true
-
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-
 linters:
-  disable-all: true
+  default: none
   enable:
     - bodyclose
     - contextcheck
@@ -21,11 +16,31 @@ linters:
     - staticcheck
     - unparam
     - unused
-
-linters-settings:
-  gocyclo:
-    min-complexity: 15
-  revive:
-    rules:
-      - name: exported
-        disabled: true
+  settings:
+    gocyclo:
+      min-complexity: 15
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
