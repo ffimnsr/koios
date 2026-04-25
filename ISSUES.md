@@ -174,8 +174,8 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Trace/debug mode toggle (`/trace on|off`)
 	- Research notes: OpenClaw distinguishes `/trace` from `/verbose` and uses it specifically for plugin/debug trace lines, which is a good model for Koios. PicoClaw again leans on process-level debug logging. IronClaw has deep tracing/logging and internal trace docs, but no obvious chat-native trace toggle in the searched tree.
 	- References: OpenClaw `docs/tools/thinking.md`, `src/auto-reply/command-status-builders.ts`, `src/tui/tui-command-handlers.ts`; PicoClaw `docs/debug.md`; IronClaw `.claude/commands/trace.md`, `docs/drafts/ops/logging.mdx`.
-- [ ] Usage footer per response (token count + cost)
-	- Research notes: OpenClaw already has the exact user-facing behavior via `/usage off|tokens|full`. PicoClaw tracks usage internally on turns/providers but the current search did not show the same polished reply-footer control. IronClaw emits structured per-turn token/cost events, which is a strong reference for transport-agnostic delivery.
+- [ ] Usage footer per response (token count/usage only - as that's the only item we track)
+	- Research notes: OpenClaw already has the exact user-facing behavior via `/usage off|tokens|full`. PicoClaw tracks usage internally on turns/providers but the current search did not show the same polished reply-footer control. IronClaw emits structured per-turn token count/usage events, which is a strong reference for transport-agnostic delivery.
 	- References: OpenClaw `src/auto-reply/commands-registry.shared.ts`, `README.md`, `src/commands/status.types.ts`; PicoClaw `pkg/agent/turn.go`, `pkg/providers/types.go`; IronClaw `crates/ironclaw_common/src/event.rs`, `src/channels/channel.rs`.
 - [x] `/status` chat command (model, tokens)
 	- Research notes: OpenClaw already has a compact in-channel `/status` that includes model, token, queue, and activation data. PicoClaw has a CLI status surface today rather than a cross-channel chat command. IronClaw supports `/status` and related job/progress commands on the agent side.
@@ -284,7 +284,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] `run.status`, `run.list`, `run.cancel`, and `run.logs` built-in tools
 	- Notes: Provide unified run introspection for agent runs, subagents, workflows, cron jobs, code execution, and background processes. This should sit on top of the run ledger rather than each subsystem exposing an incompatible status shape.
 - [ ] `usage.current`, `usage.history`, and `usage.estimate` built-in tools
-	- Notes: Expose token and cost visibility as tools, not only status text. Agents should be able to inspect current turn/session usage, summarize historical usage, and estimate cost before expensive model or workflow calls.
+	- Notes: Expose token count/usage visibility as tools, not only status text. Agents should be able to inspect current turn/session usage, summarize historical usage, and estimate token count/usage before expensive model or workflow calls.
 - [ ] `model.list`, `model.capabilities`, and `model.route` built-in tools
 	- Notes: Let the agent inspect available models, provider capability metadata, context limits, tool support, media support, and routing policy. `model.route` should only choose or suggest routes when session policy allows model overrides.
 
