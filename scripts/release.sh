@@ -11,6 +11,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION_FILE="$REPO_ROOT/VERSION"
+CHANGELOG_FILE="$REPO_ROOT/CHANGELOG.md"
 OUTPUT="${1:-$REPO_ROOT/koios}"
 
 if [[ ! -f "$VERSION_FILE" ]]; then
@@ -22,6 +23,16 @@ VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "error: VERSION contains '$VERSION' which is not a valid SemVer (X.Y.Z)" >&2
+  exit 1
+fi
+
+if [[ ! -f "$CHANGELOG_FILE" ]]; then
+  echo "error: CHANGELOG file not found at $CHANGELOG_FILE" >&2
+  exit 1
+fi
+
+if ! grep -Eq "^## \[$VERSION\]( - .+)?$" "$CHANGELOG_FILE"; then
+  echo "error: CHANGELOG.md does not contain a release entry for version $VERSION" >&2
   exit 1
 fi
 
