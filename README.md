@@ -4,6 +4,8 @@ A lightweight daemon that exposes a **single WebSocket JSON-RPC control plane** 
 
 Its key feature is **per-peer session isolation**: each client is identified by the `peer_id` query parameter on the WebSocket upgrade. The daemon maintains a completely private conversation history per peer — no peer can observe or influence another's session.
 
+Project policies and contribution guidance live in [LICENSE](LICENSE), [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [SECURITY.md](SECURITY.md), and [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 ## Requirements
@@ -165,7 +167,7 @@ koios sessions reset --peer alice
 
 ## Versioning
 
-The canonical version lives in the [`VERSION`](VERSION) file at the repository root.
+The canonical version lives in the [`VERSION`](VERSION) file at the repository root. Release notes live in [`CHANGELOG.md`](CHANGELOG.md), and each release entry should match the version in `VERSION`.
 
 ### Bump the version
 
@@ -180,7 +182,7 @@ scripts/bump-version.sh minor
 scripts/bump-version.sh major
 ```
 
-The version is embedded in the binary at build time so that `GET /` reports version, git hash, and build time at runtime:
+The version is embedded in the binary at build time so that `GET /` reports version, git hash, and build time at runtime. `scripts/release.sh` also verifies that `CHANGELOG.md` already contains a matching `## [X.Y.Z]` section before it produces a release binary:
 
 ```sh
 scripts/release.sh          # builds ./koios
