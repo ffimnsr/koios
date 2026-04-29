@@ -38,6 +38,9 @@ type journalEntry struct {
 // SessionPolicy captures persisted per-session behavior toggles.
 type SessionPolicy struct {
 	ReplyBack bool `json:"reply_back,omitempty"`
+	// UsageMode controls whether visible replies append a usage footer.
+	// Valid values: off | tokens
+	UsageMode string `json:"usage_mode,omitempty"`
 	// ModelOverride, when non-empty, pins this session to a specific model
 	// (profile name or raw model ID). The agent runtime applies it before
 	// each turn.

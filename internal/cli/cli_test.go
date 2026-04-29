@@ -441,6 +441,115 @@ func TestBriefCommand(t *testing.T) {
 	}
 }
 
+func TestDashboardCommand(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/healthz":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/":
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1.0", "git_hash": "abc", "build_time": "now"})
+		case "/v1/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			method, _ := req["method"].(string)
+			var result any
+			switch method {
+			case "brief.generate":
+				result = map[string]any{
+					"ok":   true,
+					"kind": "daily",
+					"report": map[string]any{
+						"kind":         "daily",
+						"peer_id":      "alice",
+						"timezone":     "UTC",
+						"generated_at": float64(1777320000),
+						"agenda": map[string]any{
+							"events": []map[string]any{{"summary": "Design review", "start_at": float64(1777323600), "end_at": float64(1777327200)}},
+						},
+						"recent_commitments": []map[string]any{{"title": "Send draft agenda", "source_excerpt": "I’ll send the draft agenda tonight."}},
+						"active_projects":    []map[string]any{{"id": "project-1", "name": "Home office refresh", "last_seen_at": float64(1775600000), "linked_chunk_count": float64(2)}},
+						"summary":            map[string]any{"event_count": float64(1), "active_project_count": float64(1), "commitment_count": float64(1)},
+					},
+				}
+			case "task.list":
+				result = map[string]any{"tasks": []map[string]any{{"id": "task-1", "title": "Ship release notes", "status": "open", "owner": "me", "due_at": float64(1777406400)}}}
+			case "waiting.list":
+				result = map[string]any{"waiting": []map[string]any{{"id": "wait-1", "title": "Vendor quote", "status": "open", "waiting_for": "vendor", "follow_up_at": float64(1777233600)}}}
+			case "runs.list":
+				result = map[string]any{"records": []map[string]any{{"id": "run-1", "kind": "cron", "status": "running", "steps": float64(2), "tool_calls": float64(1), "queued_at": "2026-04-27T08:00:00Z", "started_at": "2026-04-27T08:00:05Z"}}}
+			default:
+				result = map[string]any{"ok": true}
+			}
+			_ = conn.WriteJSON(map[string]any{"id": req["id"], "result": result})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newDashboardCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--peer", "alice", "--timezone", "UTC", "--stale-project-days", "14"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "Commitments dashboard") {
+		t.Fatalf("unexpected dashboard output: %s", text)
+	}
+	if !strings.Contains(text, "Open tasks") || !strings.Contains(text, "Ship release notes") {
+		t.Fatalf("missing tasks in dashboard output: %s", text)
+	}
+	if !strings.Contains(text, "Waiting-ons") || !strings.Contains(text, "Vendor quote") {
+		t.Fatalf("missing waiting-ons in dashboard output: %s", text)
+	}
+	if !strings.Contains(text, "Upcoming events") || !strings.Contains(text, "Design review") {
+		t.Fatalf("missing agenda in dashboard output: %s", text)
+	}
+	if !strings.Contains(text, "Recent promises") || !strings.Contains(text, "Send draft agenda") {
+		t.Fatalf("missing commitments in dashboard output: %s", text)
+	}
+	if !strings.Contains(text, "Stale project threads") || !strings.Contains(text, "Home office refresh") {
+		t.Fatalf("missing stale project threads in dashboard output: %s", text)
+	}
+	if !strings.Contains(text, "Runtime") || !strings.Contains(text, "run-1") {
+		t.Fatalf("missing runtime section in dashboard output: %s", text)
+	}
+	if !strings.Contains(text, "Gateway: ok") {
+		t.Fatalf("missing gateway status in dashboard output: %s", text)
+	}
+
+	out.Reset()
+	cmd.SetArgs([]string{"--peer", "alice", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	jsonText := out.String()
+	if !strings.Contains(jsonText, `"open_tasks"`) || !strings.Contains(jsonText, `"stale_projects"`) {
+		t.Fatalf("unexpected dashboard json output: %s", jsonText)
+	}
+	if !strings.Contains(jsonText, `"peer_id": "alice"`) {
+		t.Fatalf("unexpected dashboard json output: %s", jsonText)
+	}
+}
+
 func TestWaitingListCommand(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

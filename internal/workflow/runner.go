@@ -3,6 +3,7 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -29,6 +31,7 @@ type agentProvider interface {
 type Runner struct {
 	store      *Store
 	httpClient *http.Client
+	ledger     *runledger.Store
 
 	mu       sync.Mutex
 	agentRT  agentProvider
@@ -59,6 +62,13 @@ func (r *Runner) SetAgentRuntime(rt agentProvider, exec agent.ToolExecutor) {
 	defer r.mu.Unlock()
 	r.agentRT = rt
 	r.toolExec = exec
+}
+
+// SetLedger wires the unified run ledger into the workflow runner.
+func (r *Runner) SetLedger(ledger *runledger.Store) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ledger = ledger
 }
 
 // Start launches a new run for workflowID owned by peerID asynchronously.
@@ -92,6 +102,7 @@ func (r *Runner) Start(ctx context.Context, workflowID, peerID string) (*Run, er
 	if err := r.store.SaveRun(run); err != nil {
 		return nil, fmt.Errorf("workflow: save initial run: %w", err)
 	}
+	r.ledgerQueued(run)
 
 	// Copy the workflow snapshot so the goroutine is not affected by future
 	// mutations to the definition.
@@ -139,6 +150,7 @@ func (r *Runner) Status(runID string) (*Run, error) {
 func (r *Runner) execute(ctx context.Context, wf *Workflow, run *Run) {
 	run.Status = RunStatusRunning
 	run.UpdatedAt = time.Now().UTC()
+	r.ledgerStarted(run)
 	if err := r.store.SaveRun(run); err != nil {
 		slog.Error("workflow runner: save run failed", "run_id", run.ID, "err", err)
 	}
@@ -157,6 +169,7 @@ func (r *Runner) execute(ctx context.Context, wf *Workflow, run *Run) {
 			run.FinishedAt = time.Now().UTC()
 			run.UpdatedAt = run.FinishedAt
 			_ = r.store.SaveRun(run)
+			r.ledgerFinished(run)
 			slog.Info("workflow run cancelled", "run_id", run.ID, "workflow_id", run.WorkflowID)
 			return
 		default:
@@ -167,6 +180,7 @@ func (r *Runner) execute(ctx context.Context, wf *Workflow, run *Run) {
 			run.FinishedAt = time.Now().UTC()
 			run.UpdatedAt = run.FinishedAt
 			_ = r.store.SaveRun(run)
+			r.ledgerFinished(run)
 			slog.Info("workflow run completed", "run_id", run.ID, "workflow_id", run.WorkflowID)
 			return
 		}
@@ -178,6 +192,7 @@ func (r *Runner) execute(ctx context.Context, wf *Workflow, run *Run) {
 			run.FinishedAt = time.Now().UTC()
 			run.UpdatedAt = run.FinishedAt
 			_ = r.store.SaveRun(run)
+			r.ledgerFinished(run)
 			slog.Error("workflow run failed: step not found",
 				"run_id", run.ID, "step", run.CurrentStep)
 			return
@@ -204,6 +219,7 @@ func (r *Runner) execute(ctx context.Context, wf *Workflow, run *Run) {
 					run.FinishedAt = time.Now().UTC()
 					run.UpdatedAt = run.FinishedAt
 					_ = r.store.SaveRun(run)
+					r.ledgerFinished(run)
 					slog.Info("workflow run cancelled", "run_id", run.ID, "workflow_id", run.WorkflowID)
 					return
 				}
@@ -212,6 +228,7 @@ func (r *Runner) execute(ctx context.Context, wf *Workflow, run *Run) {
 				run.FinishedAt = time.Now().UTC()
 				run.UpdatedAt = run.FinishedAt
 				_ = r.store.SaveRun(run)
+				r.ledgerFinished(run)
 				slog.Error("workflow run failed", "run_id", run.ID, "step", step.ID,
 					"err", res.Error)
 				return
@@ -228,7 +245,72 @@ func (r *Runner) execute(ctx context.Context, wf *Workflow, run *Run) {
 	run.FinishedAt = time.Now().UTC()
 	run.UpdatedAt = run.FinishedAt
 	_ = r.store.SaveRun(run)
+	r.ledgerFinished(run)
 	slog.Error("workflow run exceeded max iterations", "run_id", run.ID)
+}
+
+func (r *Runner) ledgerQueued(run *Run) {
+	if r.ledger == nil {
+		return
+	}
+	request, _ := json.Marshal(map[string]any{
+		"workflow_id": run.WorkflowID,
+	})
+	model := ""
+	r.mu.Lock()
+	if r.agentRT != nil {
+		model = r.agentRT.Model()
+	}
+	r.mu.Unlock()
+	_ = r.ledger.Add(runledger.Record{
+		ID:         run.ID,
+		Kind:       runledger.KindWorkflow,
+		PeerID:     run.PeerID,
+		SessionKey: run.PeerID,
+		Model:      model,
+		Status:     runledger.StatusQueued,
+		Request:    request,
+		QueuedAt:   run.StartedAt,
+	})
+}
+
+func (r *Runner) ledgerStarted(run *Run) {
+	if r.ledger == nil {
+		return
+	}
+	startedAt := time.Now().UTC()
+	_ = r.ledger.Update(run.ID, func(rec *runledger.Record) {
+		rec.Status = runledger.StatusRunning
+		rec.StartedAt = &startedAt
+	})
+}
+
+func (r *Runner) ledgerFinished(run *Run) {
+	if r.ledger == nil {
+		return
+	}
+	result, _ := json.Marshal(run)
+	status := runledger.StatusCompleted
+	switch run.Status {
+	case RunStatusRunning, RunStatusPending:
+		status = runledger.StatusRunning
+	case RunStatusCompleted:
+		status = runledger.StatusCompleted
+	case RunStatusCancelled:
+		status = runledger.StatusCanceled
+	default:
+		status = runledger.StatusErrored
+	}
+	finishedAt := run.FinishedAt
+	_ = r.ledger.Update(run.ID, func(rec *runledger.Record) {
+		rec.Status = status
+		rec.Error = run.Error
+		rec.Steps = len(run.StepResults)
+		rec.Result = result
+		if !finishedAt.IsZero() {
+			rec.FinishedAt = &finishedAt
+		}
+	})
 }
 
 // executeStep dispatches one step and returns its result.

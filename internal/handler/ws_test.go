@@ -231,6 +231,15 @@ func readResultFromFrames(t *testing.T, frames []rpcMsg, id string) rpcMsg {
 	return rpcMsg{}
 }
 
+func contains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 func TestWS_MissingPeerID(t *testing.T) {
@@ -1826,6 +1835,189 @@ func TestExecuteTool_SystemRunUsesApprovalPolicy(t *testing.T) {
 	}
 }
 
+func TestExecuteTool_TaskTools(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	defer taskStore.Close()
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:     "test-model",
+		Timeout:   5 * time.Second,
+		TaskStore: taskStore,
+		ToolPolicy: handler.ToolPolicy{
+			Profile: "coding",
+		},
+	})
+
+	names := []string{}
+	for _, tool := range h.ToolDefinitions("alice") {
+		names = append(names, tool.Function.Name)
+	}
+	for _, want := range []string{"task.create", "task.extract", "task.list", "task.update", "task.complete", "approval.request"} {
+		if !contains(names, want) {
+			t.Fatalf("expected tool definition %q, got %#v", want, names)
+		}
+	}
+
+	createdAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "task.create",
+		Arguments: json.RawMessage(`{"title":"Book venue","details":"Confirm with ops","owner":"alice"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(task.create): %v", err)
+	}
+	createdRaw, _ := json.Marshal(createdAny)
+	var created struct {
+		Task struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+			Owner  string `json:"owner"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(createdRaw, &created); err != nil {
+		t.Fatalf("unmarshal task.create result: %v", err)
+	}
+	if created.Task.ID == "" || created.Task.Status != string(tasks.TaskStatusOpen) || created.Task.Owner != "alice" {
+		t.Fatalf("unexpected task.create result: %#v", createdAny)
+	}
+
+	updatedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "task.update",
+		Arguments: json.RawMessage(`{"id":"` + created.Task.ID + `","owner":"finance"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(task.update): %v", err)
+	}
+	updatedRaw, _ := json.Marshal(updatedAny)
+	var updated struct {
+		Task struct {
+			Owner string `json:"owner"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(updatedRaw, &updated); err != nil {
+		t.Fatalf("unmarshal task.update result: %v", err)
+	}
+	if updated.Task.Owner != "finance" {
+		t.Fatalf("expected updated owner finance, got %#v", updatedAny)
+	}
+
+	listAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "task.list",
+		Arguments: json.RawMessage(`{"status":"open"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(task.list): %v", err)
+	}
+	listRaw, _ := json.Marshal(listAny)
+	var listed struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(listRaw, &listed); err != nil {
+		t.Fatalf("unmarshal task.list result: %v", err)
+	}
+	if listed.Count != 1 {
+		t.Fatalf("expected one open task, got %#v", listAny)
+	}
+
+	completedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "task.complete",
+		Arguments: json.RawMessage(`{"id":"` + created.Task.ID + `"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(task.complete): %v", err)
+	}
+	completedRaw, _ := json.Marshal(completedAny)
+	var completed struct {
+		Task struct {
+			Status string `json:"status"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(completedRaw, &completed); err != nil {
+		t.Fatalf("unmarshal task.complete result: %v", err)
+	}
+	if completed.Task.Status != string(tasks.TaskStatusCompleted) {
+		t.Fatalf("expected completed task status, got %#v", completedAny)
+	}
+
+	extractedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "task.extract",
+		Arguments: json.RawMessage(`{"text":"Remember to send the deck and book travel."}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(task.extract): %v", err)
+	}
+	extractedRaw, _ := json.Marshal(extractedAny)
+	var extracted struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(extractedRaw, &extracted); err != nil {
+		t.Fatalf("unmarshal task.extract result: %v", err)
+	}
+	if extracted.Count != 1 {
+		t.Fatalf("expected one extracted task candidate, got %#v", extractedAny)
+	}
+}
+
+func TestWS_ApprovalRequestFlow(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{Model: "test-model", Timeout: 5 * time.Second})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	requestedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "approval.request",
+		Arguments: json.RawMessage(`{"kind":"file_delete","action":"Delete build cache","summary":"Remove generated cache"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(approval.request): %v", err)
+	}
+	requestedRaw, _ := json.Marshal(requestedAny)
+	var requested struct {
+		Status   string `json:"status"`
+		Approval struct {
+			ID string `json:"id"`
+		} `json:"approval"`
+	}
+	if err := json.Unmarshal(requestedRaw, &requested); err != nil {
+		t.Fatalf("unmarshal approval.request result: %v", err)
+	}
+	if requested.Status != "approval_required" || requested.Approval.ID == "" {
+		t.Fatalf("expected approval_required result, got %#v", requestedAny)
+	}
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "a1", "approval.pending", map[string]any{})
+	msg := readUntilID(t, conn, "a1")
+	if msg.Error != nil {
+		t.Fatalf("approval.pending rpc error: %#v", msg.Error)
+	}
+	if !strings.Contains(string(msg.Result), requested.Approval.ID) {
+		t.Fatalf("expected approval id in pending result, got %s", string(msg.Result))
+	}
+
+	sendRPC(t, conn, "a2", "approval.approve", map[string]any{"id": requested.Approval.ID})
+	msg = readUntilID(t, conn, "a2")
+	if msg.Error != nil {
+		t.Fatalf("approval.approve rpc error: %#v", msg.Error)
+	}
+	var approved struct {
+		Status   string `json:"status"`
+		Approval struct {
+			ID string `json:"id"`
+		} `json:"approval"`
+	}
+	if err := json.Unmarshal(msg.Result, &approved); err != nil {
+		t.Fatalf("unmarshal approval.approve result: %v", err)
+	}
+	if approved.Status != "approved" || approved.Approval.ID != requested.Approval.ID {
+		t.Fatalf("unexpected approval.approve result: %#v", approved)
+	}
+}
+
 func TestExecuteTool_SessionsTools(t *testing.T) {
 	store := session.New(20)
 	gate := make(chan struct{})
@@ -2985,6 +3177,86 @@ func TestWS_Chat_VerboseModeIncludesInlineToolSummary(t *testing.T) {
 	history := store.Get("verbose-peer").History()
 	if len(history) != 2 || history[1].Content != "It is done." {
 		t.Fatalf("expected persisted history to keep the plain assistant reply, got %#v", history)
+	}
+}
+
+func TestWS_Chat_UsageFooterEnabled(t *testing.T) {
+	prov := &stubProvider{
+		response: &types.ChatResponse{
+			Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "Done."}}},
+			Usage:   types.Usage{PromptTokens: 4, CompletionTokens: 6, TotalTokens: 10},
+		},
+	}
+	srv, store := newTestServer(t, prov)
+	if err := store.SetPolicy("usage-footer-peer", session.SessionPolicy{UsageMode: "tokens"}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	conn := dialWS(t, srv, "usage-footer-peer")
+
+	sendRPC(t, conn, "usage1", "chat", map[string]any{
+		"messages": []types.Message{{Role: "user", Content: "hello"}},
+	})
+	msg := readUntilID(t, conn, "usage1")
+	var result types.ChatResponse
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(result.Choices) == 0 {
+		t.Fatalf("expected at least one chat choice, got %#v", result)
+	}
+	assistantText := result.Choices[0].Message.Content
+	if !strings.Contains(assistantText, "Done.") {
+		t.Fatalf("expected assistant text in reply, got %q", assistantText)
+	}
+	if !strings.Contains(assistantText, "Usage: 4 prompt, 6 completion, 10 total tokens") {
+		t.Fatalf("expected usage footer in reply, got %q", assistantText)
+	}
+	if result.Usage.TotalTokens != 10 {
+		t.Fatalf("unexpected usage payload: %#v", result.Usage)
+	}
+	if history := store.Get("usage-footer-peer").History(); len(history) != 2 || history[1].Content != "Done." {
+		t.Fatalf("expected persisted assistant message to remain footer-free, got %#v", history)
+	}
+}
+
+func TestExecuteTool_SessionPatchUsageMode(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{response: &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	reg, err := subagent.NewRegistry("")
+	if err != nil {
+		t.Fatalf("subagent.NewRegistry: %v", err)
+	}
+	subrt := subagent.NewRuntime(rt, store, reg, nil, 4)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   agent.NewCoordinator(rt),
+		SubRuntime:   subrt,
+	})
+
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.patch",
+		Arguments: json.RawMessage(`{"session_key":"alice::sender::bob","usage_mode":"full"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.patch usage_mode): %v", err)
+	}
+	var patchRes struct {
+		OK         bool   `json:"ok"`
+		SessionKey string `json:"session_key"`
+		UsageMode  string `json:"usage_mode"`
+	}
+	raw, _ := json.Marshal(result)
+	if err := json.Unmarshal(raw, &patchRes); err != nil {
+		t.Fatalf("unmarshal session.patch result: %v", err)
+	}
+	if !patchRes.OK || patchRes.SessionKey != "alice::sender::bob" || patchRes.UsageMode != "tokens" {
+		t.Fatalf("unexpected session.patch result: %#v", patchRes)
+	}
+	if store.Policy("alice::sender::bob").UsageMode != "tokens" {
+		t.Fatal("expected patched usage_mode policy on target session")
 	}
 }
 

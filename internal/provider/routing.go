@@ -319,6 +319,7 @@ func buildProfileMap(cfg *config.Config) map[string]modelEntry {
 			APIKey:         p.APIKey,
 			BaseURL:        p.BaseURL,
 			Model:          p.Model,
+			LLMIdleTimeout: cfg.LLMIdleTimeout,
 			RequestTimeout: cfg.RequestTimeout,
 		}
 		if profileCfg.Provider == "" {

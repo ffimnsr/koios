@@ -6,13 +6,30 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/types"
 )
+
+var errStreamIdleTimeout = errors.New("llm stream idle timeout")
+
+type streamIdleTimeoutError struct {
+	timeout time.Duration
+}
+
+func (e *streamIdleTimeoutError) Error() string {
+	return fmt.Sprintf("llm stream idle timeout after %s", e.timeout)
+}
+
+func (e *streamIdleTimeoutError) Is(target error) bool {
+	return target == errStreamIdleTimeout
+}
 
 type transportHooks struct {
 	name         string
@@ -75,11 +92,12 @@ func New(cfg *config.Config) (Provider, error) {
 			base = "https://api.openai.com"
 		}
 		return &openAIProvider{
-			client:  client,
-			apiKey:  cfg.APIKey,
-			baseURL: stripV1(base),
-			model:   cfg.Model,
-			hooks:   openAICompatibleHooks("openai"),
+			client:      client,
+			apiKey:      cfg.APIKey,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("openai"),
 		}, nil
 
 	case "openrouter":
@@ -89,11 +107,12 @@ func New(cfg *config.Config) (Provider, error) {
 		}
 		// OpenRouter exposes an OpenAI-compatible endpoint, so re-use that impl.
 		return &openAIProvider{
-			client:  client,
-			apiKey:  cfg.APIKey,
-			baseURL: stripV1(base),
-			model:   cfg.Model,
-			hooks:   openAICompatibleHooks("openrouter"),
+			client:      client,
+			apiKey:      cfg.APIKey,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("openrouter"),
 		}, nil
 
 	case "anthropic":
@@ -102,11 +121,12 @@ func New(cfg *config.Config) (Provider, error) {
 			base = "https://api.anthropic.com"
 		}
 		return &anthropicProvider{
-			client:  client,
-			apiKey:  cfg.APIKey,
-			baseURL: stripV1(base),
-			model:   cfg.Model,
-			hooks:   anthropicHooks(),
+			client:      client,
+			apiKey:      cfg.APIKey,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       anthropicHooks(),
 		}, nil
 
 	case "nvidia":
@@ -116,11 +136,12 @@ func New(cfg *config.Config) (Provider, error) {
 			base = "https://integrate.api.nvidia.com/v1"
 		}
 		return &openAIProvider{
-			client:  client,
-			apiKey:  cfg.APIKey,
-			baseURL: stripV1(base),
-			model:   cfg.Model,
-			hooks:   openAICompatibleHooks("nvidia"),
+			client:      client,
+			apiKey:      cfg.APIKey,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("nvidia"),
 		}, nil
 
 	default:
@@ -132,4 +153,58 @@ func New(cfg *config.Config) (Provider, error) {
 // root URL and openAIProvider can always append "/v1/chat/completions" safely.
 func stripV1(base string) string {
 	return strings.TrimSuffix(strings.TrimRight(base, "/"), "/v1")
+}
+
+func newStreamContext(parent context.Context) (context.Context, context.CancelCauseFunc) {
+	return context.WithCancelCause(parent)
+}
+
+func startStreamIdleWatchdog(ctx context.Context, timeout time.Duration, cancel context.CancelCauseFunc) (func(), func()) {
+	if timeout <= 0 {
+		return func() {}, func() {}
+	}
+	resetCh := make(chan struct{}, 1)
+	stopCh := make(chan struct{})
+	var once sync.Once
+	go func() {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopCh:
+				return
+			case <-resetCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(timeout)
+			case <-timer.C:
+				cancel(&streamIdleTimeoutError{timeout: timeout})
+				return
+			}
+		}
+	}()
+	return func() {
+			select {
+			case resetCh <- struct{}{}:
+			default:
+			}
+		}, func() {
+			once.Do(func() { close(stopCh) })
+		}
+}
+
+func wrapStreamReadError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return fmt.Errorf("reading stream: %w", cause)
+	}
+	return fmt.Errorf("reading stream: %w", err)
 }

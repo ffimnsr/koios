@@ -167,6 +167,73 @@ func TestBackgroundProcessStop(t *testing.T) {
 	}
 }
 
+func TestBackgroundProcessStartUsesApprovalLifecycle(t *testing.T) {
+	store := session.New(10)
+	wsStore, err := workspace.New(t.TempDir(), true, 1<<20)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	ledger, err := runledger.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("runledger.New: %v", err)
+	}
+	t.Cleanup(func() { _ = ledger.Close() })
+	h := NewHandler(store, noopProvider{}, HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		RunLedger:      ledger,
+		ExecConfig: ExecConfig{
+			Enabled:      true,
+			ApprovalMode: "always",
+		},
+		BackgroundProcessConfig: BackgroundProcessConfig{
+			Enabled: true,
+		},
+	})
+
+	requestedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "process.start",
+		Arguments: json.RawMessage(`{"command":"printf 'hello approval'"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(process.start approval): %v", err)
+	}
+	requestedRaw, _ := json.Marshal(requestedAny)
+	var requested struct {
+		Status   string `json:"status"`
+		Approval struct {
+			ID string `json:"id"`
+		} `json:"approval"`
+	}
+	if err := json.Unmarshal(requestedRaw, &requested); err != nil {
+		t.Fatalf("unmarshal approval request: %v", err)
+	}
+	if requested.Status != "approval_required" || requested.Approval.ID == "" {
+		t.Fatalf("expected approval_required result, got %#v", requestedAny)
+	}
+
+	approvedAny, err := h.approvePendingAction(context.Background(), "alice", requested.Approval.ID, nil)
+	if err != nil {
+		t.Fatalf("approvePendingAction(process.start): %v", err)
+	}
+	approvedRaw, _ := json.Marshal(approvedAny)
+	var approved struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(approvedRaw, &approved); err != nil {
+		t.Fatalf("unmarshal approved start result: %v", err)
+	}
+	if approved.ID == "" || approved.Status != string(runledger.StatusRunning) {
+		t.Fatalf("unexpected approved start result: %#v", approvedAny)
+	}
+	rec := waitForBackgroundProcessRecord(t, ledger, approved.ID)
+	if rec.Status != runledger.StatusCompleted {
+		t.Fatalf("expected completed approved process, got %#v", rec)
+	}
+}
+
 func TestBackgroundProcessToolDefinitions(t *testing.T) {
 	store := session.New(10)
 	wsStore, err := workspace.New(t.TempDir(), true, 1<<20)

@@ -379,6 +379,25 @@ func TestSlashTrace(t *testing.T) {
 	}
 }
 
+func TestSlashUsage_SetAndQuery(t *testing.T) {
+	conn, _, _ := dialSlashServer(t, nil, "usage-alice")
+
+	msg := sendSlashChat(t, conn, "1", "/usage tokens")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "tokens") {
+		t.Fatalf("expected tokens confirmation, got: %s", got)
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/usage")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "tokens") {
+		t.Fatalf("expected persisted tokens mode, got: %s", got)
+	}
+
+	msg = sendSlashChat(t, conn, "3", "/usage full")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "tokens") {
+		t.Fatalf("expected full alias to map to tokens, got: %s", got)
+	}
+}
+
 func TestSlashStatus(t *testing.T) {
 	conn, _, _ := dialSlashServer(t, nil, "status-frank")
 

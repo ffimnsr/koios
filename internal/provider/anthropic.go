@@ -22,11 +22,12 @@ const anthropicVersion = "2023-06-01"
 const defaultMaxTokens = 4096
 
 type anthropicProvider struct {
-	client  *http.Client
-	apiKey  string
-	baseURL string
-	model   string
-	hooks   transportHooks
+	client      *http.Client
+	apiKey      string
+	baseURL     string
+	model       string
+	idleTimeout time.Duration
+	hooks       transportHooks
 }
 
 func (p *anthropicProvider) Capabilities(string) types.ProviderCapabilities {
@@ -268,6 +269,8 @@ func (p *anthropicProvider) Complete(ctx context.Context, req *types.ChatRequest
 }
 
 func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
+	streamCtx, cancel := newStreamContext(ctx)
+	defer cancel(nil)
 	model := p.model
 	if req.Model != "" {
 		model = req.Model
@@ -280,7 +283,7 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost,
 		p.baseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
@@ -300,6 +303,8 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 
 	setSSEHeaders(w)
 	flusher, _ := w.(http.Flusher)
+	touch, stop := startStreamIdleWatchdog(streamCtx, p.idleTimeout, cancel)
+	defer stop()
 
 	// Convert Anthropic SSE events to OpenAI SSE format in real-time.
 	var (
@@ -311,6 +316,7 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
+		touch()
 		line := scanner.Text()
 
 		// SSE event lines: "event: <type>" or "data: <json>"
@@ -372,7 +378,7 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 	}
 
 	if err := scanner.Err(); err != nil {
-		return sb.String(), fmt.Errorf("reading stream: %w", err)
+		return sb.String(), wrapStreamReadError(streamCtx, err)
 	}
 	return sb.String(), nil
 }

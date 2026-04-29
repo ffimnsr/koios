@@ -24,6 +24,7 @@ const (
 	KindAgent         RunKind = "agent"
 	KindSubagent      RunKind = "subagent"
 	KindOrchestrator  RunKind = "orchestrator"
+	KindWorkflow      RunKind = "workflow"
 	KindCron          RunKind = "cron"
 	KindCodeExecution RunKind = "code_execution"
 	KindProcess       RunKind = "background_process"

@@ -10,11 +10,9 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ffimnsr/koios/internal/sandbox"
-	"github.com/google/uuid"
 )
 
 type ExecConfig struct {
@@ -42,23 +40,6 @@ type execParams struct {
 	Command string `json:"command"`
 	Workdir string `json:"workdir,omitempty"`
 	Timeout int    `json:"timeout_seconds,omitempty"`
-}
-
-type pendingExec struct {
-	ID        string    `json:"id"`
-	PeerID    string    `json:"peer_id"`
-	Command   string    `json:"command"`
-	Workdir   string    `json:"workdir"`
-	Timeout   int       `json:"timeout_seconds"`
-	Reason    string    `json:"reason"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-type execApprovalStore struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	pending map[string]pendingExec
 }
 
 var dangerousExecPatterns = []struct {
@@ -109,84 +90,6 @@ func normalizeExecConfig(cfg ExecConfig) ExecConfig {
 	return cfg
 }
 
-func newExecApprovalStore(ttl time.Duration) *execApprovalStore {
-	return &execApprovalStore{
-		ttl:     ttl,
-		pending: make(map[string]pendingExec),
-	}
-}
-
-func (s *execApprovalStore) create(peerID, command, workdir string, timeout time.Duration, reason string) pendingExec {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked()
-	now := time.Now().UTC()
-	item := pendingExec{
-		ID:        uuid.NewString(),
-		PeerID:    peerID,
-		Command:   command,
-		Workdir:   workdir,
-		Timeout:   int(timeout / time.Second),
-		Reason:    reason,
-		CreatedAt: now,
-		ExpiresAt: now.Add(s.ttl),
-	}
-	s.pending[item.ID] = item
-	return item
-}
-
-func (s *execApprovalStore) list(peerID string) []pendingExec {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked()
-	out := make([]pendingExec, 0, len(s.pending))
-	for _, item := range s.pending {
-		if item.PeerID == peerID {
-			out = append(out, item)
-		}
-	}
-	return out
-}
-
-func (s *execApprovalStore) take(peerID, id string) (pendingExec, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked()
-	item, ok := s.pending[id]
-	if !ok {
-		return pendingExec{}, fmt.Errorf("approval %s not found", id)
-	}
-	if item.PeerID != peerID {
-		return pendingExec{}, fmt.Errorf("approval %s does not belong to peer", id)
-	}
-	delete(s.pending, id)
-	return item, nil
-}
-
-func (s *execApprovalStore) reject(peerID, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pruneLocked()
-	item, ok := s.pending[id]
-	if !ok {
-		return fmt.Errorf("approval %s not found", id)
-	}
-	if item.PeerID != peerID {
-		return fmt.Errorf("approval %s does not belong to peer", id)
-	}
-	delete(s.pending, id)
-	return nil
-}
-
-func (s *execApprovalStore) pruneLocked() {
-	now := time.Now().UTC()
-	for id, item := range s.pending {
-		if !item.ExpiresAt.After(now) {
-			delete(s.pending, id)
-		}
-	}
-}
-
 func (h *Handler) runExecTool(ctx context.Context, peerID string, p execParams) (map[string]any, error) {
 	if !h.execConfig.Enabled {
 		return nil, fmt.Errorf("exec tool is disabled")
@@ -214,11 +117,17 @@ func (h *Handler) runExecTool(ctx context.Context, peerID string, p execParams) 
 		return nil, err
 	}
 	if reason, ok := h.execNeedsApproval(command); ok {
-		approval := h.execApprovals.create(peerID, command, absWorkdir, timeout, reason)
-		return map[string]any{
-			"status":   "approval_required",
-			"approval": approval,
-		}, nil
+		return h.requestApproval(peerID, pendingApproval{
+			Kind:    "shell_execution",
+			Action:  "exec",
+			Summary: command,
+			Reason:  reason,
+			Command: command,
+			Workdir: absWorkdir,
+			Timeout: int(timeout / time.Second),
+		}, func(runCtx context.Context, approvedPeerID string, approval pendingApproval) (map[string]any, error) {
+			return h.executeCommand(runCtx, approvedPeerID, approval.Command, approval.Workdir, time.Duration(approval.Timeout)*time.Second)
+		}), nil
 	}
 	return h.executeCommand(ctx, peerID, command, absWorkdir, timeout)
 }
@@ -321,16 +230,7 @@ func detectDangerousExec(command string) (string, bool) {
 }
 
 func (h *Handler) executeApprovedExec(ctx context.Context, peerID, approvalID string) (map[string]any, error) {
-	item, err := h.execApprovals.take(peerID, approvalID)
-	if err != nil {
-		return nil, err
-	}
-	result, err := h.executeCommand(ctx, peerID, item.Command, item.Workdir, time.Duration(item.Timeout)*time.Second)
-	if err != nil {
-		return nil, err
-	}
-	result["approval_id"] = item.ID
-	return result, nil
+	return h.approvePendingAction(ctx, peerID, approvalID, shellApprovalFilter)
 }
 
 func (h *Handler) executeCommand(ctx context.Context, peerID, command, workdir string, timeout time.Duration) (map[string]any, error) {
@@ -458,7 +358,7 @@ func (h *Handler) rpcExec(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 }
 
 func (h *Handler) rpcExecPending(_ context.Context, wsc *wsConn, req *rpcRequest) {
-	wsc.reply(req.ID, map[string]any{"pending": h.execApprovals.list(wsc.peerID)})
+	wsc.reply(req.ID, map[string]any{"pending": h.approvals.list(wsc.peerID, shellApprovalFilter)})
 }
 
 func (h *Handler) rpcExecApprove(ctx context.Context, wsc *wsConn, req *rpcRequest) {
@@ -493,7 +393,7 @@ func (h *Handler) rpcExecReject(_ context.Context, wsc *wsConn, req *rpcRequest)
 		wsc.replyErr(req.ID, errCodeInvalidParams, "id is required")
 		return
 	}
-	if err := h.execApprovals.reject(wsc.peerID, p.ID); err != nil {
+	if err := h.rejectPendingAction(wsc.peerID, p.ID, shellApprovalFilter); err != nil {
 		wsc.replyErr(req.ID, errCodeServer, err.Error())
 		return
 	}
@@ -504,5 +404,5 @@ func (h *Handler) execPromptHint() string {
 	if h.execConfig.ApprovalMode == "never" || h.execConfig.ApprovalMode == "off" {
 		return ""
 	}
-	return "Dangerous shell commands may return status=approval_required instead of running; wait for a human approval via the RPC API instead of retrying."
+	return "Dangerous shell commands may return status=approval_required instead of running; wait for a human approval via the approval or exec RPC APIs instead of retrying."
 }

@@ -78,6 +78,7 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newCalendarCommand(ctx))
 	root.AddCommand(newWaitingCommand(ctx))
 	root.AddCommand(newBriefCommand(ctx))
+	root.AddCommand(newDashboardCommand(ctx))
 	root.AddCommand(newModelCommand(ctx))
 	root.AddCommand(newHostCommand(ctx))
 	return root

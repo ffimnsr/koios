@@ -49,6 +49,7 @@
 //	task.candidate.create / .extract / .list / .edit / .approve / .reject
 //	task.list / .get / .update / .assign / .snooze / .complete / .reopen
 //	waiting.create / .list / .get / .update / .snooze / .resolve / .reopen
+//	approval.pending / .approve / .reject
 //	cron.list / .create / .get / .update / .delete / .trigger / .runs
 //	runs.list / .get
 //	heartbeat.get / .set / .wake
@@ -221,6 +222,7 @@ type Handler struct {
 	provider                llmProvider
 	timeout                 time.Duration
 	model                   string
+	modelCatalog            ModelCatalog
 	memStore                *memory.Store
 	taskStore               *tasks.Store
 	bookmarkStore           *bookmarks.Store
@@ -242,7 +244,7 @@ type Handler struct {
 	execConfig              ExecConfig
 	codeExecutionConfig     CodeExecutionConfig
 	backgroundProcessConfig BackgroundProcessConfig
-	execApprovals           *execApprovalStore
+	approvals               *approvalStore
 	allowedOrigins          []string // empty = allow all
 	hooks                   *ops.Manager
 	presence                *presence.Manager
@@ -286,6 +288,7 @@ type Handler struct {
 // HandlerOptions holds all optional subsystem references.
 type HandlerOptions struct {
 	Model                   string
+	ModelCatalog            ModelCatalog
 	Timeout                 time.Duration
 	MemStore                *memory.Store
 	TaskStore               *tasks.Store
@@ -357,6 +360,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		provider:                prov,
 		timeout:                 timeout,
 		model:                   opts.Model,
+		modelCatalog:            opts.ModelCatalog,
 		memStore:                opts.MemStore,
 		taskStore:               opts.TaskStore,
 		bookmarkStore:           opts.BookmarkStore,
@@ -394,7 +398,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		codeExecutionRuns:       make(map[string]context.CancelFunc),
 		backgroundProcesses:     make(map[string]*managedBackgroundProcess),
 		clients:                 make(map[*wsConn]struct{}),
-		execApprovals:           newExecApprovalStore(execCfg.ApprovalTTL),
+		approvals:               newApprovalStore(execCfg.ApprovalTTL),
 		idempotency:             newIdempotencyStore(idempotencyTTL),
 	}
 	if h.presence != nil {
@@ -1242,6 +1246,12 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcExec(ctx, wsc, req)
+	case "approval.pending":
+		h.rpcApprovalPending(ctx, wsc, req)
+	case "approval.approve":
+		h.rpcApprovalApprove(ctx, wsc, req)
+	case "approval.reject":
+		h.rpcApprovalReject(ctx, wsc, req)
 	case "exec.pending":
 		h.rpcExecPending(ctx, wsc, req)
 	case "exec.approve":
@@ -1510,6 +1520,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 	if caps["workspace"] {
 		methods = append(methods, "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete")
 	}
+	methods = append(methods, "approval.pending", "approval.approve", "approval.reject")
 	if caps["exec"] {
 		methods = append(methods, "exec", "exec.pending", "exec.approve", "exec.reject")
 	}
@@ -3899,10 +3910,31 @@ func (h *Handler) userVisibleReply(peerID string, result *agent.Result) (string,
 			}
 		}
 	}
+	if footer := renderUsageFooter(policy.UsageMode, result.Usage); footer != "" {
+		if strings.TrimSpace(visibleText) == "" {
+			visibleText = footer
+		} else {
+			visibleText += "\n\n" + footer
+		}
+	}
 	if visibleResp != nil && len(visibleResp.Choices) > 0 {
 		visibleResp.Choices[0].Message.Content = visibleText
 	}
 	return visibleText, visibleResp
+}
+
+func renderUsageFooter(mode string, usage types.Usage) string {
+	if strings.TrimSpace(mode) == "" {
+		return ""
+	}
+	if usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Usage: %d prompt, %d completion, %d total tokens",
+		usage.PromptTokens,
+		usage.CompletionTokens,
+		usage.TotalTokens,
+	)
 }
 
 func (h *Handler) renderVerboseToolSummary(peerID string, events []agent.Event) string {

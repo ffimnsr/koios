@@ -730,6 +730,147 @@ var toolDefs = []toolDef{
 		available: func(h *Handler) bool { return h.memStore != nil },
 	},
 	{
+		name:        "task.create",
+		description: "Create a durable task immediately by reusing the existing candidate review flow and auto-approving it in one step.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":              map[string]any{"type": "string"},
+				"details":            map[string]any{"type": "string"},
+				"owner":              map[string]any{"type": "string"},
+				"due_at":             map[string]any{"type": "integer"},
+				"source_session_key": map[string]any{"type": "string"},
+				"source_excerpt":     map[string]any{"type": "string"},
+			},
+			"required":             []string{"title"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"title":"Book venue","details":"Confirm capacity with ops","owner":"alice","due_at":0}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "task.extract",
+		description: "Extract one or more task candidates from freeform text and queue them for review using the existing task extraction flow.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"text":               map[string]any{"type": "string"},
+				"capture_kind":       map[string]any{"type": "string", "enum": []string{"manual", "external_extract", "auto_turn_extract"}},
+				"source_session_key": map[string]any{"type": "string"},
+				"source_excerpt":     map[string]any{"type": "string"},
+			},
+			"required":             []string{"text"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"text":"Remember to send the agenda and book travel."}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "task.list",
+		description: "List tasks for this peer, optionally filtered by status.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit":  map[string]any{"type": "integer"},
+				"status": map[string]any{"type": "string", "enum": []string{"open", "snoozed", "completed", "all"}},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"status":"open","limit":20}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "task.get",
+		description: "Fetch one task by id.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"task-id"}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "task.update",
+		description: "Edit an existing task.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":           map[string]any{"type": "string"},
+				"title":        map[string]any{"type": "string"},
+				"details":      map[string]any{"type": "string"},
+				"owner":        map[string]any{"type": "string"},
+				"due_at":       map[string]any{"type": "integer"},
+				"snooze_until": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"task-id","owner":"finance","snooze_until":0}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "task.assign",
+		description: "Assign a task to a specific owner.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":    map[string]any{"type": "string"},
+				"owner": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id", "owner"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"task-id","owner":"ops"}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "task.snooze",
+		description: "Snooze a task until a Unix timestamp.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":    map[string]any{"type": "string"},
+				"until": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id", "until"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"task-id","until":1735689600}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "task.complete",
+		description: "Mark a task as completed.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"task-id"}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
+		name:        "task.reopen",
+		description: "Reopen a completed or snoozed task.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"task-id"}`,
+		available: func(h *Handler) bool { return h.taskStore != nil },
+	},
+	{
 		name:        "waiting.create",
 		description: "Create a waiting-on record for a delegated ask, unanswered message, or follow-up deadline.",
 		parameters: mustJSONSchema(map[string]any{
@@ -1423,13 +1564,14 @@ var toolDefs = []toolDef{
 	},
 	{
 		name:        "session.patch",
-		description: "Update persisted policy for a session owned by this peer. Supports reply_back, model_override, queue_mode, and streaming controls.",
+		description: "Update persisted policy for a session owned by this peer. Supports reply_back, usage footer mode, model_override, queue_mode, and streaming controls.",
 		parameters: mustJSONSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"session_key":        map[string]any{"type": "string"},
 				"run_id":             map[string]any{"type": "string"},
 				"reply_back":         map[string]any{"type": "boolean"},
+				"usage_mode":         map[string]any{"type": "string", "enum": []string{"off", "tokens", "full"}, "description": "Visible reply footer mode. full is accepted as an alias for tokens until richer usage telemetry exists."},
 				"model_override":     map[string]any{"type": "string", "description": "Pin this session to a specific model profile name or model ID. Empty string clears the override."},
 				"active_profile":     map[string]any{"type": "string", "description": "Activate a named standing/persona profile for this session. Empty string clears the session override and falls back to the peer default profile."},
 				"queue_mode":         map[string]any{"type": "string", "enum": []string{"steer", "followup", "collect"}, "description": "How mid-run steering notes are applied."},
@@ -1440,6 +1582,8 @@ var toolDefs = []toolDef{
 			"anyOf": []map[string]any{
 				{"required": []string{"run_id", "reply_back"}},
 				{"required": []string{"session_key", "reply_back"}},
+				{"required": []string{"run_id", "usage_mode"}},
+				{"required": []string{"session_key", "usage_mode"}},
 				{"required": []string{"run_id", "model_override"}},
 				{"required": []string{"session_key", "model_override"}},
 				{"required": []string{"run_id", "active_profile"}},
@@ -1455,7 +1599,7 @@ var toolDefs = []toolDef{
 			},
 			"additionalProperties": false,
 		}),
-		argHint:   `{"session_key":"peer::sender::alice","reply_back":true,"model_override":"gpt4","active_profile":"focus","queue_mode":"steer","block_stream":true,"stream_chunk_chars":160,"stream_coalesce_ms":75}`,
+		argHint:   `{"session_key":"peer::sender::alice","reply_back":true,"usage_mode":"tokens","model_override":"gpt4","active_profile":"focus","queue_mode":"steer","block_stream":true,"stream_chunk_chars":160,"stream_coalesce_ms":75}`,
 		available: func(h *Handler) bool { return h.agentRuntime != nil && h.agentCoord != nil },
 	},
 	{
@@ -1471,6 +1615,23 @@ var toolDefs = []toolDef{
 			"additionalProperties": false,
 		}),
 		argHint: `{"title":"Koios","message":"Build finished successfully"}`,
+	},
+	{
+		name:        "approval.request",
+		description: "Create a pending human approval request for a sensitive action so it can share the same approval lifecycle as approval-gated built-ins.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":     map[string]any{"type": "string"},
+				"action":   map[string]any{"type": "string"},
+				"summary":  map[string]any{"type": "string"},
+				"reason":   map[string]any{"type": "string"},
+				"metadata": map[string]any{"type": "object"},
+			},
+			"required":             []string{"action"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"kind":"file_delete","action":"Delete generated artifacts","summary":"Remove stale build outputs","reason":"Clear derived files before regeneration","metadata":{"path":"build/"}}`,
 	},
 	{
 		name:        "system.run",
@@ -1623,6 +1784,144 @@ var toolDefs = []toolDef{
 		available: func(h *Handler) bool {
 			return h.runLedger != nil && h.workspaceStore != nil && h.backgroundProcessConfig.Enabled
 		},
+	},
+	{
+		name:        "run.list",
+		description: "List recent unified run-ledger records for this peer across agent, subagent, workflow, cron, code execution, and background process runs.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":   map[string]any{"type": "string"},
+				"status": map[string]any{"type": "string"},
+				"limit":  map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"kind":"workflow","status":"running","limit":20}`,
+		available: func(h *Handler) bool { return h.runLedger != nil },
+	},
+	{
+		name:        "run.status",
+		description: "Fetch one unified run-ledger record by id with decoded request and result payloads when available.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"run-id"}`,
+		available: func(h *Handler) bool { return h.runLedger != nil },
+	},
+	{
+		name:        "run.cancel",
+		description: "Cancel a running unified run when the underlying subsystem supports cancellation.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"run-id"}`,
+		available: func(h *Handler) bool { return h.runLedger != nil },
+	},
+	{
+		name:        "run.logs",
+		description: "Fetch logs or equivalent execution detail for a unified run, including stdout/stderr tails, workflow step results, or session transcripts when available.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":           map[string]any{"type": "string"},
+				"max_bytes":    map[string]any{"type": "integer"},
+				"max_messages": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"run-id","max_bytes":4096,"max_messages":50}`,
+		available: func(h *Handler) bool { return h.runLedger != nil },
+	},
+	{
+		name:        "usage.current",
+		description: "Return the current cumulative token usage for this peer or another owned peer id.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"peer_id": map[string]any{"type": "string"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{}`,
+	},
+	{
+		name:        "usage.history",
+		description: "List cumulative usage history across peers/sessions seen by this gateway runtime.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"limit":20}`,
+	},
+	{
+		name:        "usage.estimate",
+		description: "Estimate prompt and total token usage for a prospective request using the current request-building pipeline and a lightweight JSON-size heuristic.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"text":                       map[string]any{"type": "string"},
+				"messages":                   map[string]any{"type": "array"},
+				"session_key":                map[string]any{"type": "string"},
+				"model":                      map[string]any{"type": "string"},
+				"include_history":            map[string]any{"type": "boolean"},
+				"include_tools":              map[string]any{"type": "boolean"},
+				"expected_completion_tokens": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"text":"Summarize this file","include_history":true,"include_tools":true,"expected_completion_tokens":300}`,
+	},
+	{
+		name:        "model.list",
+		description: "List configured models, profiles, fallback chain, and routing metadata exposed to the runtime.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}),
+		argHint: `{}`,
+	},
+	{
+		name:        "model.capabilities",
+		description: "Inspect provider capability metadata for the current model or a requested profile/model name.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"model":       map[string]any{"type": "string"},
+				"session_key": map[string]any{"type": "string"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"model":"lightweight"}`,
+	},
+	{
+		name:        "model.route",
+		description: "Suggest which configured model route would be selected for a prompt, including session override and lightweight-routing policy.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"text":        map[string]any{"type": "string"},
+				"model":       map[string]any{"type": "string"},
+				"session_key": map[string]any{"type": "string"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"text":"What time is it?","session_key":"alice"}`,
 	},
 	{
 		name:        "web_search",
@@ -2496,6 +2795,118 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.memoryEntityUnrelate(peerID, args.SourceID, args.TargetID, args.Relation, ctx)
+	case "task.create":
+		var args struct {
+			Title            string `json:"title"`
+			Details          string `json:"details"`
+			Owner            string `json:"owner"`
+			DueAt            int64  `json:"due_at"`
+			SourceSessionKey string `json:"source_session_key"`
+			SourceExcerpt    string `json:"source_excerpt"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		sourceSessionKey := strings.TrimSpace(args.SourceSessionKey)
+		if sourceSessionKey == "" {
+			sourceSessionKey = agent.CurrentSessionKey(ctx)
+		}
+		if sourceSessionKey == "" {
+			sourceSessionKey = peerID
+		}
+		return h.taskCreate(peerID, tasks.CandidateInput{
+			Title:   args.Title,
+			Details: args.Details,
+			Owner:   args.Owner,
+			DueAt:   args.DueAt,
+		}, tasks.CandidateProvenance{
+			CaptureKind:      tasks.CandidateCaptureManual,
+			SourceSessionKey: sourceSessionKey,
+			SourceExcerpt:    args.SourceExcerpt,
+		}, ctx)
+	case "task.extract":
+		var args struct {
+			Text             string `json:"text"`
+			CaptureKind      string `json:"capture_kind"`
+			SourceSessionKey string `json:"source_session_key"`
+			SourceExcerpt    string `json:"source_excerpt"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		captureKind := strings.TrimSpace(args.CaptureKind)
+		if captureKind == "" {
+			captureKind = tasks.CandidateCaptureExternalExtract
+		}
+		return h.taskCandidateExtract(peerID, args.Text, tasks.CandidateProvenance{
+			CaptureKind:      captureKind,
+			SourceSessionKey: strings.TrimSpace(args.SourceSessionKey),
+			SourceExcerpt:    args.SourceExcerpt,
+		}, ctx)
+	case "task.list":
+		var args struct {
+			Limit  int    `json:"limit"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.taskList(peerID, args.Limit, args.Status, ctx)
+	case "task.get":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.taskGet(peerID, args.ID, ctx)
+	case "task.update":
+		var args struct {
+			ID          string  `json:"id"`
+			Title       *string `json:"title"`
+			Details     *string `json:"details"`
+			Owner       *string `json:"owner"`
+			DueAt       *int64  `json:"due_at"`
+			SnoozeUntil *int64  `json:"snooze_until"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.taskUpdate(peerID, args.ID, taskPatch(args.Title, args.Details, args.Owner, args.DueAt, args.SnoozeUntil), ctx)
+	case "task.assign":
+		var args struct {
+			ID    string `json:"id"`
+			Owner string `json:"owner"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.taskAssign(peerID, args.ID, args.Owner, ctx)
+	case "task.snooze":
+		var args struct {
+			ID    string `json:"id"`
+			Until int64  `json:"until"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.taskSnooze(peerID, args.ID, args.Until, ctx)
+	case "task.complete":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.taskComplete(peerID, args.ID, ctx)
+	case "task.reopen":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.taskReopen(peerID, args.ID, ctx)
 	case "waiting.create":
 		var args struct {
 			Title            string `json:"title"`
@@ -2980,6 +3391,7 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			SessionKey       string  `json:"session_key"`
 			RunID            string  `json:"run_id"`
 			ReplyBack        *bool   `json:"reply_back"`
+			UsageMode        *string `json:"usage_mode"`
 			ModelOverride    *string `json:"model_override"`
 			ActiveProfile    *string `json:"active_profile"`
 			QueueMode        *string `json:"queue_mode"`
@@ -2990,7 +3402,7 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		if args.ReplyBack == nil && args.ModelOverride == nil && args.ActiveProfile == nil && args.QueueMode == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
+		if args.ReplyBack == nil && args.UsageMode == nil && args.ModelOverride == nil && args.ActiveProfile == nil && args.QueueMode == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
 			return nil, fmt.Errorf("at least one policy field is required")
 		}
 		targetSessionKey := strings.TrimSpace(args.SessionKey)
@@ -3013,6 +3425,13 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		policy := h.store.Policy(targetSessionKey)
 		if args.ReplyBack != nil {
 			policy.ReplyBack = *args.ReplyBack
+		}
+		if args.UsageMode != nil {
+			mode, ok := normalizeUsageMode(*args.UsageMode)
+			if !ok {
+				return nil, fmt.Errorf("usage_mode must be one of: off, tokens, full")
+			}
+			policy.UsageMode = mode
 		}
 		if args.ModelOverride != nil {
 			policy.ModelOverride = strings.TrimSpace(*args.ModelOverride)
@@ -3062,6 +3481,9 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 		if args.ReplyBack != nil {
 			result["reply_back"] = *args.ReplyBack
 		}
+		if args.UsageMode != nil {
+			result["usage_mode"] = usageModeLabel(policy.UsageMode)
+		}
 		if args.ModelOverride != nil {
 			result["model_override"] = policy.ModelOverride
 		}
@@ -3090,6 +3512,32 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.runSystemNotifyTool(ctx, args.Title, args.Message)
+	case "approval.request":
+		var args struct {
+			Kind     string         `json:"kind"`
+			Action   string         `json:"action"`
+			Summary  string         `json:"summary"`
+			Reason   string         `json:"reason"`
+			Metadata map[string]any `json:"metadata"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		action := strings.TrimSpace(args.Action)
+		if action == "" {
+			return nil, fmt.Errorf("action is required")
+		}
+		summary := strings.TrimSpace(args.Summary)
+		if summary == "" {
+			summary = action
+		}
+		return h.requestApproval(peerID, pendingApproval{
+			Kind:     strings.TrimSpace(args.Kind),
+			Action:   action,
+			Summary:  summary,
+			Reason:   args.Reason,
+			Metadata: args.Metadata,
+		}, nil), nil
 	case "system.run":
 		var args execParams
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
@@ -3377,6 +3825,116 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.backgroundProcessLogs(peerID, args.ID, args.MaxBytes)
+	case "run.list":
+		var args struct {
+			Kind   string `json:"kind"`
+			Status string `json:"status"`
+			Limit  int    `json:"limit"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		return h.listRuns(peerID, args.Kind, args.Status, args.Limit)
+	case "run.status":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runStatus(peerID, args.ID)
+	case "run.cancel":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.cancelRun(peerID, args.ID)
+	case "run.logs":
+		var args struct {
+			ID          string `json:"id"`
+			MaxBytes    int    `json:"max_bytes"`
+			MaxMessages int    `json:"max_messages"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runLogs(peerID, args.ID, args.MaxBytes, args.MaxMessages)
+	case "usage.current":
+		var args struct {
+			PeerID string `json:"peer_id"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		if strings.TrimSpace(args.PeerID) == "" {
+			args.PeerID = peerID
+		}
+		return h.usageCurrent(strings.TrimSpace(args.PeerID)), nil
+	case "usage.history":
+		var args struct {
+			Limit int `json:"limit"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		return h.usageHistory(args.Limit), nil
+	case "usage.estimate":
+		var args struct {
+			Text                     string          `json:"text"`
+			Messages                 []types.Message `json:"messages"`
+			SessionKey               string          `json:"session_key"`
+			Model                    string          `json:"model"`
+			IncludeHistory           *bool           `json:"include_history"`
+			IncludeTools             *bool           `json:"include_tools"`
+			ExpectedCompletionTokens int             `json:"expected_completion_tokens"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		includeHistory := args.IncludeHistory != nil && *args.IncludeHistory
+		includeTools := true
+		if args.IncludeTools != nil {
+			includeTools = *args.IncludeTools
+		}
+		return h.usageEstimate(ctx, peerID, args.Messages, args.Text, args.SessionKey, args.Model, includeHistory, includeTools, args.ExpectedCompletionTokens)
+	case "model.list":
+		return h.listModels(), nil
+	case "model.capabilities":
+		var args struct {
+			Model      string `json:"model"`
+			SessionKey string `json:"session_key"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		if strings.TrimSpace(args.SessionKey) == "" {
+			args.SessionKey = peerID
+		}
+		return h.modelCapabilities(peerID, args.Model, args.SessionKey)
+	case "model.route":
+		var args struct {
+			Text       string `json:"text"`
+			Model      string `json:"model"`
+			SessionKey string `json:"session_key"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		return h.routeModel(peerID, args.Text, args.Model, args.SessionKey)
 	default:
 		// Dispatch to MCP manager for mcp__{server}__{tool} style names.
 		if h.mcpManager != nil {

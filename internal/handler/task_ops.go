@@ -27,6 +27,22 @@ func taskPatch(title *string, details *string, owner *string, dueAt *int64, snoo
 	}
 }
 
+func (h *Handler) taskCreate(peerID string, input tasks.CandidateInput, provenance tasks.CandidateProvenance, ctx context.Context) (map[string]any, error) {
+	if h.taskStore == nil {
+		return nil, fmt.Errorf("tasks are not enabled")
+	}
+	provenance = normalizeTaskCandidateProvenance(provenance)
+	candidate, err := h.taskStore.QueueCandidateWithProvenance(ctx, peerID, input, provenance)
+	if err != nil {
+		return nil, err
+	}
+	approved, task, err := h.taskStore.ApproveCandidate(ctx, peerID, candidate.ID, tasks.CandidatePatch{}, "created directly by tool")
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "candidate": approved, "task": task}, nil
+}
+
 func (h *Handler) taskCandidateCreate(peerID string, input tasks.CandidateInput, ctx context.Context) (map[string]any, error) {
 	if h.taskStore == nil {
 		return nil, fmt.Errorf("tasks are not enabled")

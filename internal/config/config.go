@@ -82,11 +82,12 @@ type MCPServerConfig struct {
 
 // Config holds all runtime configuration loaded from koios.config.toml.
 type Config struct {
-	ListenAddr string
-	Provider   string
-	APIKey     string
-	Model      string
-	BaseURL    string
+	ListenAddr     string
+	Provider       string
+	APIKey         string
+	Model          string
+	BaseURL        string
+	LLMIdleTimeout time.Duration
 
 	// DefaultProfile, when set, names the ModelProfile to use as the primary
 	// LLM. Its Provider/APIKey/Model/BaseURL override the flat [llm] fields.
@@ -221,6 +222,7 @@ type fileConfig struct {
 	LLM struct {
 		// DefaultProfile selects a named profile as the primary LLM.
 		DefaultProfile string `toml:"default_profile"`
+		IdleTimeout    string `toml:"idle_timeout"`
 		// Legacy flat fields — kept for backward compatibility.
 		Provider         string         `toml:"provider"`
 		APIKey           string         `toml:"api_key"`
@@ -347,6 +349,7 @@ func Default() *Config {
 		ListenAddr:                    ":8080",
 		Provider:                      "openai",
 		Model:                         "gpt-4o",
+		LLMIdleTimeout:                30 * time.Second,
 		MaxSessionMessages:            100,
 		RequestTimeout:                2 * time.Minute,
 		SessionRetention:              0,
@@ -555,6 +558,7 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 	var b strings.Builder
 	if len(cfg.ModelProfiles) > 0 || cfg.DefaultProfile != "" {
 		b.WriteString("[llm]\n")
+		b.WriteString("idle_timeout = " + strconv.Quote(cfg.LLMIdleTimeout.String()) + "\n")
 		if cfg.DefaultProfile != "" {
 			b.WriteString("default_profile = " + strconv.Quote(cfg.DefaultProfile) + "\n")
 		}
@@ -588,7 +592,8 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 		if strings.TrimSpace(cfg.BaseURL) != "" {
 			baseURLLine = "base_url = " + strconv.Quote(cfg.BaseURL)
 		}
-		b.WriteString(fmt.Sprintf("[llm]\nprovider = %s\nmodel = %s\n%s\n%s\n\n",
+		b.WriteString(fmt.Sprintf("[llm]\nidle_timeout = %s\nprovider = %s\nmodel = %s\n%s\n%s\n\n",
+			strconv.Quote(cfg.LLMIdleTimeout.String()),
 			strconv.Quote(cfg.Provider),
 			strconv.Quote(cfg.Model),
 			apiKeyLine,
@@ -646,6 +651,11 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	// Apply legacy flat LLM fields first; default_profile overrides them below.
 	if src.LLM.Provider != "" {
 		dst.Provider = src.LLM.Provider
+	}
+	if src.LLM.IdleTimeout != "" {
+		if d, err := time.ParseDuration(src.LLM.IdleTimeout); err == nil && d >= 0 {
+			dst.LLMIdleTimeout = d
+		}
 	}
 	if src.LLM.APIKey != "" {
 		dst.APIKey = src.LLM.APIKey
@@ -1027,6 +1037,9 @@ func ParseDailyResetMinutes(raw string) (int, error) {
 func validate(cfg *Config) error {
 	if cfg.Model == "" {
 		return fmt.Errorf("llm.model is required")
+	}
+	if cfg.LLMIdleTimeout < 0 {
+		return fmt.Errorf("llm.idle_timeout must be >= 0")
 	}
 	switch cfg.Provider {
 	case "openai", "anthropic", "openrouter", "nvidia":

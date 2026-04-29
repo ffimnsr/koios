@@ -330,6 +330,7 @@ func RunGateway(build BuildInfo) error {
 			return fmt.Errorf("workflow store: %w", wfErr)
 		}
 		workflowRunner = workflow.NewRunner(wfStore)
+		workflowRunner.SetLedger(runLedger)
 		slog.Info("workflow engine started", "dir", cfg.WorkflowDir())
 	}
 
@@ -337,7 +338,27 @@ func RunGateway(build BuildInfo) error {
 	orchRuntime.SetLedger(runledger.NewOrchestratorAdapter(runLedger))
 
 	wsHandler := handler.NewHandler(store, prov, handler.HandlerOptions{
-		Model:           cfg.Model,
+		Model: cfg.Model,
+		ModelCatalog: handler.ModelCatalog{
+			Provider:                 cfg.Provider,
+			BaseURL:                  cfg.BaseURL,
+			DefaultProfile:           cfg.DefaultProfile,
+			LightweightModel:         cfg.LightweightModel,
+			FallbackModels:           append([]string(nil), cfg.FallbackModels...),
+			LightweightWordThreshold: 15,
+			Profiles: func() []handler.ModelProfileInfo {
+				profiles := make([]handler.ModelProfileInfo, 0, len(cfg.ModelProfiles))
+				for _, p := range cfg.ModelProfiles {
+					profiles = append(profiles, handler.ModelProfileInfo{
+						Name:     p.Name,
+						Provider: p.Provider,
+						BaseURL:  p.BaseURL,
+						Model:    p.Model,
+					})
+				}
+				return profiles
+			}(),
+		},
 		Timeout:         cfg.RequestTimeout,
 		MemStore:        memStore,
 		TaskStore:       taskStore,

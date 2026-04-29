@@ -86,7 +86,11 @@ func (p *managedBackgroundProcess) wasStopRequested() bool {
 	return p.stopRequested
 }
 
-func (h *Handler) startBackgroundProcess(_ context.Context, peerID string, p backgroundProcessStartParams) (map[string]any, error) {
+func (h *Handler) startBackgroundProcess(ctx context.Context, peerID string, p backgroundProcessStartParams) (map[string]any, error) {
+	return h.startBackgroundProcessWithContext(ctx, peerID, p)
+}
+
+func (h *Handler) startBackgroundProcessWithContext(ctx context.Context, peerID string, p backgroundProcessStartParams) (map[string]any, error) {
 	if !h.backgroundProcessConfig.Enabled {
 		return nil, fmt.Errorf("process tool is disabled")
 	}
@@ -101,8 +105,24 @@ func (h *Handler) startBackgroundProcess(_ context.Context, peerID string, p bac
 		return nil, fmt.Errorf("command is required")
 	}
 	if reason, blocked := h.execNeedsApproval(command); blocked {
-		return nil, fmt.Errorf("process start blocked by exec approval policy: %s", reason)
+		return h.requestApproval(peerID, pendingApproval{
+			Kind:    "shell_execution",
+			Action:  "process.start",
+			Summary: command,
+			Reason:  reason,
+			Command: command,
+			Workdir: strings.TrimSpace(p.Workdir),
+		}, func(runCtx context.Context, approvedPeerID string, approval pendingApproval) (map[string]any, error) {
+			return h.startBackgroundProcessUnchecked(runCtx, approvedPeerID, backgroundProcessStartParams{
+				Command: approval.Command,
+				Workdir: approval.Workdir,
+			})
+		}), nil
 	}
+	return h.startBackgroundProcessUnchecked(ctx, peerID, p)
+}
+
+func (h *Handler) startBackgroundProcessUnchecked(_ context.Context, peerID string, p backgroundProcessStartParams) (map[string]any, error) {
 	h.backgroundProcessesMu.Lock()
 	active := 0
 	for _, proc := range h.backgroundProcesses {
@@ -145,7 +165,7 @@ func (h *Handler) startBackgroundProcess(_ context.Context, peerID string, p bac
 		return nil, fmt.Errorf("create stderr log: %w", err)
 	}
 	requestPayload, err := json.Marshal(map[string]any{
-		"command":     command,
+		"command":     p.Command,
 		"workdir":     workdir,
 		"stdout_path": stdoutRel,
 		"stderr_path": stderrRel,
@@ -169,7 +189,7 @@ func (h *Handler) startBackgroundProcess(_ context.Context, peerID string, p bac
 		_ = stderrFile.Close()
 		return nil, err
 	}
-	shell, args := shellCommand(command)
+	shell, args := shellCommand(p.Command)
 	cmd := exec.Command(shell, args...)
 	cmd.Dir = absWorkdir
 	cmd.Stdout = stdoutFile
@@ -196,7 +216,7 @@ func (h *Handler) startBackgroundProcess(_ context.Context, peerID string, p bac
 	proc := &managedBackgroundProcess{
 		id:         id,
 		peerID:     peerID,
-		command:    command,
+		command:    p.Command,
 		workdir:    workdir,
 		stdoutPath: stdoutRel,
 		stderrPath: stderrRel,
@@ -219,7 +239,7 @@ func (h *Handler) startBackgroundProcess(_ context.Context, peerID string, p bac
 		"id":          id,
 		"kind":        string(runledger.KindProcess),
 		"status":      string(runledger.StatusRunning),
-		"command":     command,
+		"command":     p.Command,
 		"workdir":     workdir,
 		"pid":         proc.pid(),
 		"active":      true,

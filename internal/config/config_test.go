@@ -10,6 +10,7 @@ import (
 
 func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg := Default()
+	cfg.LLMIdleTimeout = 42 * time.Second
 	cfg.AgentRetryStatusCodes = []int{429, 500, 503}
 	cfg.ToolsAllow = []string{"read", "write"}
 	cfg.ToolsDeny = []string{"exec"}
@@ -18,6 +19,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg.ExecIsolationEnabled = true
 	cfg.ExecIsolationPaths = []ExecIsolationPath{{Source: "/tmp/src", Target: "/mnt/src", Mode: "ro"}}
 	encoded := EncodeTOML(cfg, false)
+	if !strings.Contains(encoded, "idle_timeout = \"42s\"") {
+		t.Fatalf("expected idle_timeout in encoded config, got:\n%s", encoded)
+	}
 	if !strings.Contains(encoded, "retry_status_codes = [429, 500, 503]") {
 		t.Fatalf("expected retry_status_codes array in encoded config, got:\n%s", encoded)
 	}
@@ -45,6 +49,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	if len(loaded.AgentRetryStatusCodes) != 3 || loaded.AgentRetryStatusCodes[0] != 429 || loaded.AgentRetryStatusCodes[1] != 500 || loaded.AgentRetryStatusCodes[2] != 503 {
 		t.Fatalf("unexpected retry_status_codes after round-trip: %#v", loaded.AgentRetryStatusCodes)
 	}
+	if loaded.LLMIdleTimeout != 42*time.Second {
+		t.Fatalf("unexpected llm.idle_timeout after round-trip: %s", loaded.LLMIdleTimeout)
+	}
 	if len(loaded.ToolsAllow) != 2 || loaded.ToolsAllow[0] != "read" || loaded.ToolsAllow[1] != "write" {
 		t.Fatalf("unexpected tools.allow after round-trip: %#v", loaded.ToolsAllow)
 	}
@@ -69,6 +76,39 @@ func TestValidateRejectsInvalidCodeExecutionLimits(t *testing.T) {
 	err := validate(cfg)
 	if err == nil || !strings.Contains(err.Error(), "tools.code_execution.max_timeout") {
 		t.Fatalf("expected code_execution timeout validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsNegativeLLMIdleTimeout(t *testing.T) {
+	cfg := Default()
+	cfg.LLMIdleTimeout = -1 * time.Second
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "llm.idle_timeout") {
+		t.Fatalf("expected llm idle timeout validation error, got %v", err)
+	}
+}
+
+func TestLoadFromPathParsesLLMIdleTimeout(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "koios.config.toml")
+	content := `
+[llm]
+idle_timeout = "11s"
+provider = "openai"
+model = "gpt-4o"
+
+[workspace]
+root = "./workspace"
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadFromPath(path)
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+	if cfg.LLMIdleTimeout != 11*time.Second {
+		t.Fatalf("unexpected llm idle timeout: %s", cfg.LLMIdleTimeout)
 	}
 }
 

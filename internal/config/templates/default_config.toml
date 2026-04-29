@@ -9,6 +9,9 @@ allowed_origins = []
 [llm]
 # default_profile selects a named [[llm.profiles]] entry as the primary LLM.
 # When set, the profile's provider/api_key/model/base_url are used.
+idle_timeout = "30s"
+# idle_timeout cancels a streaming response if the provider stops sending bytes.
+# Set to "0s" to disable the stall watchdog.
 default_profile = "default"
 # lightweight_model is used for simple/short queries (≤15 words).
 # lightweight_model = ""

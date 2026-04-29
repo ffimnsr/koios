@@ -9,16 +9,18 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ffimnsr/koios/internal/types"
 )
 
 type openAIProvider struct {
-	client  *http.Client
-	apiKey  string
-	baseURL string
-	model   string
-	hooks   transportHooks
+	client      *http.Client
+	apiKey      string
+	baseURL     string
+	model       string
+	idleTimeout time.Duration
+	hooks       transportHooks
 }
 
 func (p *openAIProvider) Capabilities(string) types.ProviderCapabilities {
@@ -62,6 +64,8 @@ func (p *openAIProvider) Complete(ctx context.Context, req *types.ChatRequest) (
 }
 
 func (p *openAIProvider) CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
+	streamCtx, cancel := newStreamContext(ctx)
+	defer cancel(nil)
 	if req.Model == "" {
 		req.Model = p.model
 	}
@@ -72,7 +76,7 @@ func (p *openAIProvider) CompleteStream(ctx context.Context, req *types.ChatRequ
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost,
 		p.baseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
@@ -92,10 +96,13 @@ func (p *openAIProvider) CompleteStream(ctx context.Context, req *types.ChatRequ
 
 	setSSEHeaders(w)
 	flusher, _ := w.(http.Flusher)
+	touch, stop := startStreamIdleWatchdog(streamCtx, p.idleTimeout, cancel)
+	defer stop()
 
 	var sb strings.Builder
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
+		touch()
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
@@ -123,7 +130,7 @@ func (p *openAIProvider) CompleteStream(ctx context.Context, req *types.ChatRequ
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return sb.String(), fmt.Errorf("reading stream: %w", err)
+		return sb.String(), wrapStreamReadError(streamCtx, err)
 	}
 	return sb.String(), nil
 }

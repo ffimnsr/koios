@@ -5,6 +5,7 @@ package handler
 // Supported commands (parsed from the last user message, case-insensitive):
 //
 //	/think [off|minimal|low|medium|high|xhigh]
+//	/usage   [off|tokens|full]
 //	/verbose [on|off]
 //	/trace   [on|off]
 //	/profile [list|use <name>|clear]
@@ -109,6 +110,8 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 	switch name {
 	case "think":
 		return h.slashThink(wsc, req, arg)
+	case "usage":
+		return h.slashUsage(wsc, req, arg)
 	case "verbose":
 		return h.slashBoolToggle(wsc, req, arg, "verbose", func(p *session.SessionPolicy, v bool) {
 			p.VerboseMode = v
@@ -212,6 +215,47 @@ func (h *Handler) slashThink(wsc *wsConn, req *rpcRequest, arg string) bool {
 	return true
 }
 
+// ── /usage ───────────────────────────────────────────────────────────────────
+
+func normalizeUsageMode(arg string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "", "off":
+		return "", true
+	case "tokens", "full":
+		return "tokens", true
+	default:
+		return "", false
+	}
+}
+
+func usageModeLabel(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return "off"
+	}
+	return mode
+}
+
+func (h *Handler) slashUsage(wsc *wsConn, req *rpcRequest, arg string) bool {
+	if strings.TrimSpace(arg) == "" {
+		policy := h.store.Policy(wsc.peerID)
+		slashReply(wsc, req, fmt.Sprintf("Usage footer: %s", usageModeLabel(policy.UsageMode)))
+		return true
+	}
+	mode, ok := normalizeUsageMode(arg)
+	if !ok {
+		slashReply(wsc, req, "Usage: /usage [off|tokens|full]")
+		return true
+	}
+	if err := h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+		p.UsageMode = mode
+	}); err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+		return true
+	}
+	slashReply(wsc, req, fmt.Sprintf("Usage footer: %s", usageModeLabel(mode)))
+	return true
+}
+
 // ── /verbose and /trace (bool toggles) ───────────────────────────────────────
 
 func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string, apply func(*session.SessionPolicy, bool)) bool {
@@ -292,6 +336,9 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	if policy.TraceMode {
 		sb.WriteString("Trace mode: on\n")
 	}
+	if policy.UsageMode != "" {
+		fmt.Fprintf(&sb, "Usage footer: %s\n", policy.UsageMode)
+	}
 	if policy.ActiveProfile != "" {
 		fmt.Fprintf(&sb, "Active profile: %s\n", policy.ActiveProfile)
 	} else if resolvedProfileName != "" {
@@ -325,6 +372,7 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 		"resolved_profile":   resolvedProfileName,
 		"queue_mode":         policy.QueueMode,
 		"think_level":        policy.ThinkLevel,
+		"usage_mode":         usageModeLabel(policy.UsageMode),
 		"verbose_mode":       policy.VerboseMode,
 		"trace_mode":         policy.TraceMode,
 		"block_stream":       policy.BlockStream,
