@@ -43,6 +43,7 @@ Thumbs.db
 /data/
 
 koios.config.toml
+koios.config.backup.toml
 /workspace/
 
 # Atlas Context

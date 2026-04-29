@@ -522,6 +522,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			MemoryLCMWindow:   rt.memLCMWindow,
 			MemoryNamespaces:  rt.memNamespaces,
 			IdentityDir:       rt.identityDir,
+			PeerID:            reqCopy.PeerID,
 		})
 		if err != nil {
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Step: step, Error: err.Error()})
@@ -618,6 +619,10 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 					result.SuppressedReply = true
 					result.SuppressionToken = token
 				}
+				// Tool calls are handled after the provider attempt completes, so they
+				// must inherit the run-scoped context rather than the provider-attempt
+				// context, which is canceled immediately after invoke returns.
+				toolExecCtx := WithToolRunContext(callCtx, sessionKey, reqCopy.ActiveProfile)
 				if reqCopy.ToolExecutor != nil && resp != nil {
 					if toolCalls := nativeToolCalls(resp); len(toolCalls) > 0 {
 						toolLoopAborted := false
@@ -639,7 +644,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 							}
 							argsSummary := summarizeToolJSON(tc.Arguments)
 							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: argsSummary})
-							toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(WithToolRunContext(attemptCtx, sessionKey, reqCopy.ActiveProfile), reqCopy.PeerID, tc)
+							toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(toolExecCtx, reqCopy.PeerID, tc)
 							ok := execErr == nil
 							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: summarizeToolResult(toolResult, execErr), OK: &ok})
 							if hookErr := rt.emitHook(callCtx, ops.Event{
@@ -710,7 +715,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						}
 						argsSummary := summarizeToolJSON(call.Arguments)
 						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: argsSummary})
-						toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(WithToolRunContext(attemptCtx, sessionKey, reqCopy.ActiveProfile), reqCopy.PeerID, *call)
+						toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(toolExecCtx, reqCopy.PeerID, *call)
 						ok := execErr == nil
 						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolResult(toolResult, execErr), OK: &ok})
 						if hookErr := rt.emitHook(callCtx, ops.Event{

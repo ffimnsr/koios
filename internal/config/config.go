@@ -29,31 +29,35 @@ func (c *Config) WorkflowDir() string { return filepath.Join(c.WorkspaceRoot, "w
 // from WorkspaceRoot.
 func (c *Config) RunsDir() string { return filepath.Join(c.WorkspaceRoot, "runs") }
 
+// DBDir returns the path where durable SQLite databases are stored, derived
+// from WorkspaceRoot.
+func (c *Config) DBDir() string { return filepath.Join(c.WorkspaceRoot, "db") }
+
 // MemoryDBPath returns the path for the long-term memory SQLite database, derived from WorkspaceRoot.
-func (c *Config) MemoryDBPath() string { return filepath.Join(c.WorkspaceRoot, "memory.db") }
+func (c *Config) MemoryDBPath() string { return filepath.Join(c.DBDir(), "memory.db") }
 
 // TasksDBPath returns the path for the durable task SQLite database, derived from WorkspaceRoot.
-func (c *Config) TasksDBPath() string { return filepath.Join(c.WorkspaceRoot, "tasks.db") }
+func (c *Config) TasksDBPath() string { return filepath.Join(c.DBDir(), "tasks.db") }
 
 // BookmarksDBPath returns the path for the durable bookmark SQLite database, derived from WorkspaceRoot.
-func (c *Config) BookmarksDBPath() string { return filepath.Join(c.WorkspaceRoot, "bookmarks.db") }
+func (c *Config) BookmarksDBPath() string { return filepath.Join(c.DBDir(), "bookmarks.db") }
 
 // CalendarDBPath returns the path for the durable calendar SQLite database, derived from WorkspaceRoot.
-func (c *Config) CalendarDBPath() string { return filepath.Join(c.WorkspaceRoot, "calendar.db") }
+func (c *Config) CalendarDBPath() string { return filepath.Join(c.DBDir(), "calendar.db") }
 
 // NotesDBPath returns the path for the durable notes SQLite database, derived from WorkspaceRoot.
-func (c *Config) NotesDBPath() string { return filepath.Join(c.WorkspaceRoot, "notes.db") }
+func (c *Config) NotesDBPath() string { return filepath.Join(c.DBDir(), "notes.db") }
 
 // PlansDBPath returns the path for the durable plans SQLite database, derived from WorkspaceRoot.
-func (c *Config) PlansDBPath() string { return filepath.Join(c.WorkspaceRoot, "plans.db") }
+func (c *Config) PlansDBPath() string { return filepath.Join(c.DBDir(), "plans.db") }
 
 // ProjectsDBPath returns the path for the durable projects SQLite database, derived from WorkspaceRoot.
-func (c *Config) ProjectsDBPath() string { return filepath.Join(c.WorkspaceRoot, "projects.db") }
+func (c *Config) ProjectsDBPath() string { return filepath.Join(c.DBDir(), "projects.db") }
 
-func (c *Config) ArtifactsDBPath() string   { return filepath.Join(c.WorkspaceRoot, "artifacts.db") }
-func (c *Config) DecisionsDBPath() string   { return filepath.Join(c.WorkspaceRoot, "decisions.db") }
-func (c *Config) PreferencesDBPath() string { return filepath.Join(c.WorkspaceRoot, "preferences.db") }
-func (c *Config) RemindersDBPath() string   { return filepath.Join(c.WorkspaceRoot, "reminders.db") }
+func (c *Config) ArtifactsDBPath() string   { return filepath.Join(c.DBDir(), "artifacts.db") }
+func (c *Config) DecisionsDBPath() string   { return filepath.Join(c.DBDir(), "decisions.db") }
+func (c *Config) PreferencesDBPath() string { return filepath.Join(c.DBDir(), "preferences.db") }
+func (c *Config) RemindersDBPath() string   { return filepath.Join(c.DBDir(), "reminders.db") }
 
 const (
 	// DefaultConfigFile is the default runtime config path in the repo root.

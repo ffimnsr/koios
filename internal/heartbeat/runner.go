@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/types"
+	"github.com/ffimnsr/koios/internal/workspace"
 )
 
 // provider is the minimal interface the Runner needs from an LLM backend.
@@ -259,7 +259,7 @@ func (r *Runner) buildHeartbeatMessages(peerID, prompt string) []types.Message {
 			msgs = append(msgs, *msg)
 		}
 	}
-	if instructions := r.loadHeartbeatInstructions(); instructions != "" {
+	if instructions := r.loadHeartbeatInstructions(peerID); instructions != "" {
 		msgs = append(msgs, types.Message{
 			Role:    "system",
 			Content: "HEARTBEAT.md\n\n" + instructions,
@@ -270,15 +270,21 @@ func (r *Runner) buildHeartbeatMessages(peerID, prompt string) []types.Message {
 	return msgs
 }
 
-func (r *Runner) loadHeartbeatInstructions() string {
+func (r *Runner) loadHeartbeatInstructions(peerID string) string {
 	if strings.TrimSpace(r.workspaceDir) == "" {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join(r.workspaceDir, "HEARTBEAT.md"))
-	if err != nil {
-		return ""
+	for _, path := range workspace.PeerDocumentLookupPaths(r.workspaceDir, peerID, "HEARTBEAT.md") {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		content := strings.TrimSpace(string(data))
+		if content != "" {
+			return content
+		}
 	}
-	return strings.TrimSpace(string(data))
+	return ""
 }
 
 // isHeartbeatOK returns true when the reply should be silently discarded:

@@ -947,10 +947,10 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 		return h.planCreate(peerID, plans.Input{Title: args.Title, Description: args.Description, Steps: args.Steps}, ctx)
 	case "plan.update":
 		var args struct {
-			ID          string            `json:"id"`
-			Title       *string           `json:"title"`
-			Description *string           `json:"description"`
-			Status      *string           `json:"status"`
+			ID          string             `json:"id"`
+			Title       *string            `json:"title"`
+			Description *string            `json:"description"`
+			Status      *string            `json:"status"`
 			Steps       *[]plans.StepInput `json:"steps"`
 		}
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
@@ -1009,9 +1009,9 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 		return h.projectStatus(peerID, args.ID, ctx)
 	case "project.update":
 		var args struct {
-			ID          string   `json:"id"`
-			Title       *string  `json:"title"`
-			Description *string  `json:"description"`
+			ID          string    `json:"id"`
+			Title       *string   `json:"title"`
+			Description *string   `json:"description"`
 			Labels      *[]string `json:"labels"`
 		}
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {

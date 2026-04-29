@@ -48,19 +48,34 @@ func newModelListCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			}
 
 			var models []modelInfo
-			// Primary / default.
-			defaultRole := "default"
+			defaultProfileName := ""
 			if cfg.DefaultProfile != "" {
-				defaultRole = "default (" + cfg.DefaultProfile + ")"
+				for _, p := range cfg.ModelProfiles {
+					if p.Name != cfg.DefaultProfile {
+						continue
+					}
+					defaultProfileName = p.Name
+					models = append(models, modelInfo{
+						Name:      p.Name,
+						Provider:  cfg.Provider,
+						Model:     cfg.Model,
+						BaseURL:   cfg.BaseURL,
+						IsDefault: true,
+						Role:      "profile (default)",
+					})
+					break
+				}
 			}
-			models = append(models, modelInfo{
-				Name:      "default",
-				Provider:  cfg.Provider,
-				Model:     cfg.Model,
-				BaseURL:   cfg.BaseURL,
-				IsDefault: true,
-				Role:      defaultRole,
-			})
+			if defaultProfileName == "" {
+				models = append(models, modelInfo{
+					Name:      "default",
+					Provider:  cfg.Provider,
+					Model:     cfg.Model,
+					BaseURL:   cfg.BaseURL,
+					IsDefault: true,
+					Role:      "default",
+				})
+			}
 			// Lightweight model.
 			if cfg.LightweightModel != "" {
 				models = append(models, modelInfo{
@@ -73,6 +88,9 @@ func newModelListCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			}
 			// Named profiles.
 			for _, p := range cfg.ModelProfiles {
+				if p.Name == defaultProfileName {
+					continue
+				}
 				models = append(models, modelInfo{
 					Name:     p.Name,
 					Provider: p.Provider,

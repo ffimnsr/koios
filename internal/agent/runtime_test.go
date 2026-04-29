@@ -528,6 +528,99 @@ func TestRuntime_DisablesNativeToolsWhenProviderDoesNotSupportThem(t *testing.T)
 	}
 }
 
+func TestRuntime_XMLToolExecutionUsesLiveRunContext(t *testing.T) {
+	store := session.New(20)
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: `<tool_call>{"name":"time.now","arguments":{}}</tool_call>`}}}}, nil
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		MaxSteps: 2,
+		Messages: []types.Message{{Role: "user", Content: "what time is it?"}},
+		ToolExecutor: stubToolExecutor{execute: func(ctx context.Context, _ string, call agent.ToolCall) (any, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			toolCtx, ok := agent.ToolRunContextFromContext(ctx)
+			if !ok {
+				t.Fatal("expected tool run context on XML tool execution")
+			}
+			if toolCtx.SessionKey == "" {
+				t.Fatal("expected non-empty session key on XML tool execution")
+			}
+			if call.Name != "time.now" {
+				t.Fatalf("tool name = %q", call.Name)
+			}
+			return map[string]string{"utc": "2026-04-29T00:00:00Z"}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", callCount)
+	}
+}
+
+func TestRuntime_NativeToolExecutionUsesLiveRunContext(t *testing.T) {
+	store := session.New(20)
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+					ID:   "call-1",
+					Type: "function",
+					Function: types.ToolCallFunctionRef{
+						Name:      "time.now",
+						Arguments: `{}`,
+					},
+				}}}}}}, nil
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		MaxSteps: 2,
+		Messages: []types.Message{{Role: "user", Content: "what time is it?"}},
+		ToolExecutor: stubToolExecutor{execute: func(ctx context.Context, _ string, call agent.ToolCall) (any, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			toolCtx, ok := agent.ToolRunContextFromContext(ctx)
+			if !ok {
+				t.Fatal("expected tool run context on native tool execution")
+			}
+			if toolCtx.SessionKey == "" {
+				t.Fatal("expected non-empty session key on native tool execution")
+			}
+			if call.Name != "time.now" {
+				t.Fatalf("tool name = %q", call.Name)
+			}
+			return map[string]string{"utc": "2026-04-29T00:00:00Z"}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", callCount)
+	}
+}
+
 func containsAll(s string, parts ...string) bool {
 	for _, part := range parts {
 		if !strings.Contains(s, part) {

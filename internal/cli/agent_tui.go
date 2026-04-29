@@ -198,8 +198,8 @@ func (m *agentTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport()
 		return m, nil
 	case agentEventMsg:
-		if kind, ok := msg["kind"].(string); ok {
-			m.lines = append(m.lines, chatLine{at: time.Now(), role: "meta", content: "event: " + kind})
+		if content := formatAgentEvent(msg); content != "" {
+			m.lines = append(m.lines, chatLine{at: time.Now(), role: "meta", content: content})
 			m.syncViewport()
 		}
 		return m, nil
@@ -296,6 +296,72 @@ func (m *agentTUIModel) renderLine(line chatLine) (string, string) {
 		return errStyle.Render("-!-"), errStyle.Render(line.content)
 	default:
 		return metaStyle.Render("-*-"), metaStyle.Render(line.content)
+	}
+}
+
+func formatAgentEvent(event map[string]any) string {
+	kind, _ := event["kind"].(string)
+	if strings.TrimSpace(kind) == "" {
+		return ""
+	}
+	parts := []string{"event:", kind}
+	toolName := firstEventString(event, "tool_name", "message")
+	if toolName != "" && (kind == "tool_call" || kind == "tool_result") {
+		parts = append(parts, toolName)
+	}
+	if step, ok := eventInt(event["step"]); ok && kind != "tool_call" && kind != "tool_result" {
+		parts = append(parts, fmt.Sprintf("step=%d", step))
+	}
+	if kind == "tool_result" {
+		if ok, exists := eventBool(event["ok"]); exists {
+			if ok {
+				parts = append(parts, "ok")
+			} else {
+				parts = append(parts, "error")
+			}
+		}
+	}
+	if summary, _ := event["summary"].(string); strings.TrimSpace(summary) != "" {
+		parts = append(parts, "-", summary)
+	}
+	if toolName == "" && kind != "tool_call" && kind != "tool_result" {
+		if message, _ := event["message"].(string); strings.TrimSpace(message) != "" {
+			parts = append(parts, "-", message)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func firstEventString(event map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, _ := event[key].(string); strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func eventInt(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int32:
+		return int(typed), true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	default:
+		return 0, false
+	}
+}
+
+func eventBool(value any) (bool, bool) {
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	default:
+		return false, false
 	}
 }
 

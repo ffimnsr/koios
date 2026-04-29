@@ -61,6 +61,122 @@ func TestToolDefinitionsHonorPolicy(t *testing.T) {
 	}
 }
 
+func TestToolPromptRequiresExactFullToolNames(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	t.Cleanup(func() { _ = taskStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:     "test-model",
+		Timeout:   5 * time.Second,
+		MemStore:  memStore,
+		TaskStore: taskStore,
+		ToolPolicy: handler.ToolPolicy{
+			Profile: "coding",
+		},
+	})
+
+	prompt := h.ToolPrompt("alice")
+	for _, want := range []string{
+		"Use the exact full tool name exactly as listed",
+		"use task.create not create",
+		"memory.insert not insert",
+		"cron.list not list",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got %q", want, prompt)
+		}
+	}
+}
+
+func TestExecuteToolInfersBareTaskCreateAlias(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
+	if err != nil {
+		t.Fatalf("tasks.New: %v", err)
+	}
+	t.Cleanup(func() { _ = taskStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:     "test-model",
+		Timeout:   5 * time.Second,
+		TaskStore: taskStore,
+		ToolPolicy: handler.ToolPolicy{
+			Profile: "coding",
+		},
+	})
+
+	createdAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "create",
+		Arguments: json.RawMessage(`{"title":"Book venue","details":"Confirm with ops","owner":"alice"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(create->task.create): %v", err)
+	}
+	createdRaw, _ := json.Marshal(createdAny)
+	var created struct {
+		Task struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+			Owner  string `json:"owner"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(createdRaw, &created); err != nil {
+		t.Fatalf("unmarshal create alias result: %v", err)
+	}
+	if created.Task.ID == "" || created.Task.Status != string(tasks.TaskStatusOpen) || created.Task.Owner != "alice" {
+		t.Fatalf("unexpected create alias result: %#v", createdAny)
+	}
+}
+
+func TestExecuteToolInfersBareMemoryInsertAlias(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:    "test-model",
+		Timeout:  5 * time.Second,
+		MemStore: memStore,
+		ToolPolicy: handler.ToolPolicy{
+			Profile: "coding",
+		},
+	})
+
+	insertedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "insert",
+		Arguments: json.RawMessage(`{"content":"Remember margin trading ships today","category":"tasks","tags":["deadline"]}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(insert->memory.insert): %v", err)
+	}
+	insertedRaw, _ := json.Marshal(insertedAny)
+	var inserted struct {
+		OK    bool `json:"ok"`
+		Chunk struct {
+			ID      string `json:"id"`
+			Content string `json:"content"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(insertedRaw, &inserted); err != nil {
+		t.Fatalf("unmarshal insert alias result: %v", err)
+	}
+	if !inserted.OK || inserted.Chunk.ID == "" || inserted.Chunk.Content != "Remember margin trading ships today" {
+		t.Fatalf("unexpected insert alias result: %#v", insertedAny)
+	}
+}
+
 func TestToolDefinitionsHonorCodeExecutionPolicy(t *testing.T) {
 	store := session.New(10)
 	prov := &stubProvider{response: &types.ChatResponse{}}

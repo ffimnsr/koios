@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,7 +17,12 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/ffimnsr/koios/internal/app"
+	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/config"
+	"github.com/ffimnsr/koios/internal/scheduler"
+	"github.com/ffimnsr/koios/internal/tasks"
+	"github.com/ffimnsr/koios/internal/workflow"
+	"github.com/ffimnsr/koios/internal/workspace"
 )
 
 func TestResolveRepoState(t *testing.T) {
@@ -54,6 +60,9 @@ func TestResolveRepoState(t *testing.T) {
 	if state.RequestTimeout != 45*time.Second {
 		t.Fatalf("request timeout = %s", state.RequestTimeout)
 	}
+	if got, want := state.memoryDBPath(), filepath.Join(dir, "workspace/db/memory.db"); got != want {
+		t.Fatalf("memory db path = %q want %q", got, want)
+	}
 }
 
 func TestSetupCreatesEnvFromSample(t *testing.T) {
@@ -69,6 +78,245 @@ func TestSetupCreatesEnvFromSample(t *testing.T) {
 	if !fileExists(filepath.Join(dir, config.DefaultConfigFile)) {
 		t.Fatal("expected koios.config.toml to be created")
 	}
+	for _, path := range expectedWorkspaceDBPaths(dir) {
+		if !fileExists(path) {
+			t.Fatalf("expected %s to be created by init", path)
+		}
+	}
+	for _, name := range []string{"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md", "BOOTSTRAP.md", "TOOLS.md", "HEARTBEAT.md"} {
+		if !fileExists(filepath.Join(dir, "workspace", "peers", workspace.DefaultPeerID, name)) {
+			t.Fatalf("expected %s to be created by init", name)
+		}
+	}
+}
+
+func TestInitCanSkipWorkspaceScaffolding(t *testing.T) {
+	dir := t.TempDir()
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newInitCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--no-setup"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !fileExists(filepath.Join(dir, config.DefaultConfigFile)) {
+		t.Fatal("expected koios.config.toml to be created")
+	}
+	for _, path := range expectedWorkspaceDBPaths(dir) {
+		if !fileExists(path) {
+			t.Fatalf("expected %s to be created by init --no-setup", path)
+		}
+	}
+	if fileExists(filepath.Join(dir, "workspace", "peers", workspace.DefaultPeerID, "AGENTS.md")) {
+		t.Fatal("expected init --no-setup to skip workspace scaffolding")
+	}
+}
+
+func TestInitWizardRewritesExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(strings.Join([]string{
+		"[server]",
+		"listen_addr = \":8080\"",
+		"request_timeout = \"30s\"",
+		"",
+		"[llm]",
+		"provider = \"openai\"",
+		"model = \"old-model\"",
+		"api_key = \"old-key\"",
+		"",
+		"[session]",
+		"dir = \"./data/sessions\"",
+		"",
+		"[cron]",
+		"dir = \"./data/cron\"",
+		"",
+		"[agent]",
+		"dir = \"./data/agents\"",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newInitCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetIn(strings.NewReader(strings.Join([]string{
+		"new-key",
+		"new-model",
+		"anthropic",
+		":9191",
+		"./wizard-workspace",
+	}, "\n") + "\n"))
+	cmd.SetArgs([]string{"--wizard", "--no-setup"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "llm.provider [openai]:") {
+		t.Fatalf("expected provider prompt to show current config value\n%s", out.String())
+	}
+	for _, unwanted := range []string{"session.dir", "cron.dir", "agent.dir"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Fatalf("did not expect %s prompt\n%s", unwanted, out.String())
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, config.DefaultConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"provider = \"anthropic\"",
+		"model = \"new-model\"",
+		"api_key = \"new-key\"",
+		"listen_addr = \":9191\"",
+		"root = \"./wizard-workspace\"",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected config to contain %q\n%s", want, content)
+		}
+	}
+	for _, unwanted := range []string{"dir = \"./data/wizard-sessions\"", "dir = \"./data/wizard-cron\"", "dir = \"./data/wizard-agents\""} {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("did not expect config to contain %q\n%s", unwanted, content)
+		}
+	}
+}
+
+func TestInitWizardBlankOptionalAPIKeyRetainsExistingValue(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(strings.Join([]string{
+		"[server]",
+		"listen_addr = \":8080\"",
+		"request_timeout = \"30s\"",
+		"",
+		"[llm]",
+		"provider = \"openai\"",
+		"model = \"old-model\"",
+		"api_key = \"old-key\"",
+		"",
+		"[session]",
+		"dir = \"./data/sessions\"",
+		"",
+		"[cron]",
+		"dir = \"./data/cron\"",
+		"",
+		"[agent]",
+		"dir = \"./data/agents\"",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newInitCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetIn(strings.NewReader(strings.Join([]string{
+		"",
+		"new-model",
+		"anthropic",
+		":9191",
+		"./wizard-workspace",
+	}, "\n") + "\n"))
+	cmd.SetArgs([]string{"--wizard", "--no-setup"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, config.DefaultConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "api_key = \"old-key\"") {
+		t.Fatalf("expected blank api_key prompt to retain existing value\n%s", content)
+	}
+	if !strings.Contains(content, "model = \"new-model\"") {
+		t.Fatalf("expected later wizard prompts to continue after blank api_key\n%s", content)
+	}
+}
+
+func TestInitWizardNonInteractiveUsesExistingValues(t *testing.T) {
+	dir := t.TempDir()
+	initial := strings.Join([]string{
+		"[server]",
+		"listen_addr = \":8087\"",
+		"request_timeout = \"30s\"",
+		"",
+		"[llm]",
+		"provider = \"openai\"",
+		"model = \"existing-model\"",
+		"api_key = \"existing-key\"",
+		"",
+		"[session]",
+		"dir = \"./data/sessions\"",
+		"",
+		"[cron]",
+		"dir = \"./data/cron\"",
+		"",
+		"[agent]",
+		"dir = \"./data/agents\"",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newInitCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetArgs([]string{"--wizard", "--non-interactive", "--no-setup"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, config.DefaultConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		"provider = \"openai\"",
+		"model = \"existing-model\"",
+		"api_key = \"existing-key\"",
+		"listen_addr = \":8087\"",
+		"root = \"./workspace\"",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected config to contain %q\n%s", want, content)
+		}
+	}
+}
+
+func expectedWorkspaceDBPaths(root string) []string {
+	return []string{
+		filepath.Join(root, "workspace", "db", "memory.db"),
+		filepath.Join(root, "workspace", "db", "tasks.db"),
+		filepath.Join(root, "workspace", "db", "bookmarks.db"),
+		filepath.Join(root, "workspace", "db", "calendar.db"),
+		filepath.Join(root, "workspace", "db", "notes.db"),
+		filepath.Join(root, "workspace", "db", "plans.db"),
+		filepath.Join(root, "workspace", "db", "projects.db"),
+		filepath.Join(root, "workspace", "db", "artifacts.db"),
+		filepath.Join(root, "workspace", "db", "decisions.db"),
+		filepath.Join(root, "workspace", "db", "preferences.db"),
+		filepath.Join(root, "workspace", "db", "reminders.db"),
+	}
 }
 
 func TestScaffoldWorkspaceCreatesBootstrapDocs(t *testing.T) {
@@ -77,10 +325,13 @@ func TestScaffoldWorkspaceCreatesBootstrapDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, subdir := range []string{"sessions", "cron", "agents", "memory"} {
+	for _, subdir := range []string{"sessions", "cron", "agents", "memory", "db", "peers"} {
 		if info, err := os.Stat(filepath.Join(root, subdir)); err != nil || !info.IsDir() {
 			t.Fatalf("expected subdir %q to exist, err=%v", subdir, err)
 		}
+	}
+	if info, err := os.Stat(filepath.Join(root, "peers", workspace.DefaultPeerID)); err != nil || !info.IsDir() {
+		t.Fatalf("expected default peer subdir to exist, err=%v", err)
 	}
 
 	files := []string{
@@ -93,7 +344,7 @@ func TestScaffoldWorkspaceCreatesBootstrapDocs(t *testing.T) {
 		"HEARTBEAT.md",
 	}
 	for _, name := range files {
-		data, err := os.ReadFile(filepath.Join(root, name))
+		data, err := os.ReadFile(filepath.Join(root, "peers", workspace.DefaultPeerID, name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
@@ -101,6 +352,250 @@ func TestScaffoldWorkspaceCreatesBootstrapDocs(t *testing.T) {
 			t.Fatalf("%s should not be empty", name)
 		}
 	}
+}
+
+func TestModelListDeduplicatesSelectedDefaultProfile(t *testing.T) {
+	dir := t.TempDir()
+	toml := strings.Join([]string{
+		"[server]",
+		"listen_addr = \":8080\"",
+		"request_timeout = \"30s\"",
+		"",
+		"[llm]",
+		"default_profile = \"default\"",
+		"idle_timeout = \"30s\"",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
+		"provider = \"nvidia\"",
+		"model = \"moonshotai/kimi-k2-instruct\"",
+		"api_key = \"test-key\"",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newModelCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--json", "list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	var payload struct {
+		Count        int    `json:"count"`
+		DefaultModel string `json:"default_model"`
+		Models       []struct {
+			Name      string `json:"name"`
+			Provider  string `json:"provider"`
+			Model     string `json:"model"`
+			IsDefault bool   `json:"is_default"`
+			Role      string `json:"role"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal output: %v\n%s", err, out.String())
+	}
+	if payload.Count != 1 {
+		t.Fatalf("count = %d want 1", payload.Count)
+	}
+	if payload.DefaultModel != "moonshotai/kimi-k2-instruct" {
+		t.Fatalf("default_model = %q", payload.DefaultModel)
+	}
+	if len(payload.Models) != 1 {
+		t.Fatalf("models len = %d want 1", len(payload.Models))
+	}
+	if got := payload.Models[0]; got.Name != "default" || got.Role != "profile (default)" || !got.IsDefault {
+		t.Fatalf("unexpected model entry: %+v", got)
+	}
+}
+
+func TestCompletionSuggestsKnownPeers(t *testing.T) {
+	dir := writeCompletionConfig(t, config.Default())
+	for _, peer := range []string{"alice", "bob"} {
+		if err := os.MkdirAll(filepath.Join(dir, "workspace", "peers", peer), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "workspace", "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workspace", "sessions", "charlie.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	suggestions := completionSuggestions(t, dir, "tasks", "list", "--peer", "")
+	for _, expected := range []string{"alice", "bob", "charlie"} {
+		if !containsString(suggestions, expected) {
+			t.Fatalf("expected peer completion %q in %v", expected, suggestions)
+		}
+	}
+}
+
+func TestCompletionSuggestsEnumFlags(t *testing.T) {
+	dir := writeCompletionConfig(t, config.Default())
+
+	resetScopes := completionSuggestions(t, dir, "reset", "--scope", "")
+	for _, expected := range []string{"config", "config+creds+sessions", "full"} {
+		if !containsString(resetScopes, expected) {
+			t.Fatalf("expected reset scope %q in %v", expected, resetScopes)
+		}
+	}
+
+	taskStatuses := completionSuggestions(t, dir, "tasks", "list", "--status", "")
+	for _, expected := range []string{"open", "snoozed", "completed", "all"} {
+		if !containsString(taskStatuses, expected) {
+			t.Fatalf("expected task status %q in %v", expected, taskStatuses)
+		}
+	}
+
+	agendaScopes := completionSuggestions(t, dir, "calendar", "agenda", "--scope", "")
+	for _, expected := range []string{"today", "this_week", "next_conflict"} {
+		if !containsString(agendaScopes, expected) {
+			t.Fatalf("expected agenda scope %q in %v", expected, agendaScopes)
+		}
+	}
+}
+
+func TestCompletionSuggestsCronAndWorkflowIDs(t *testing.T) {
+	dir := writeCompletionConfig(t, config.Default())
+	cronStore, err := scheduler.NewJobStore(filepath.Join(dir, "workspace", "cron"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cronStore.Add(&scheduler.Job{JobID: "cron-1", PeerID: "alice", Name: "daily sync", Schedule: scheduler.Schedule{Kind: scheduler.KindEvery, EveryMs: 60000}, Payload: scheduler.Payload{Kind: scheduler.PayloadAgentTurn, Message: "sync"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	workflowStore, err := workflow.NewStore(filepath.Join(dir, "workspace", "workflows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf, err := workflowStore.Create(workflow.Workflow{PeerID: "alice", Name: "Deploy", Steps: []workflow.Step{{ID: "step-1", Kind: workflow.StepKindAgentTurn, Message: "deploy"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workflowStore.SaveRun(&workflow.Run{ID: "run-1", WorkflowID: wf.ID, PeerID: "alice", Status: workflow.RunStatusRunning}); err != nil {
+		t.Fatal(err)
+	}
+
+	cronIDs := completionSuggestions(t, dir, "cron", "delete", "--peer", "alice", "")
+	if !containsString(cronIDs, "cron-1") {
+		t.Fatalf("expected cron completion in %v", cronIDs)
+	}
+	workflowRunIDs := completionSuggestions(t, dir, "workflow", "status", "--peer", "alice", "")
+	if !containsString(workflowRunIDs, "run-1") {
+		t.Fatalf("expected workflow run completion in %v", workflowRunIDs)
+	}
+}
+
+func TestCompletionSuggestsTaskCalendarAndModelValues(t *testing.T) {
+	cfg := config.Default()
+	cfg.ModelProfiles = []config.ModelProfile{{Name: "reasoning", Provider: "anthropic", Model: "claude-sonnet"}}
+	cfg.FallbackModels = []string{"gpt-4.1-mini"}
+	cfg.LightweightModel = "gpt-4.1-nano"
+	dir := writeCompletionConfig(t, cfg)
+
+	taskStore, err := tasks.New(filepath.Join(dir, "workspace", "db", "tasks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taskStore.Close()
+	candidate, err := taskStore.QueueCandidate(context.Background(), "alice", tasks.CandidateInput{Title: "Review PR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, createdTask, err := taskStore.ApproveCandidate(context.Background(), "alice", candidate.ID, tasks.CandidatePatch{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calendarStore, err := calendar.New(filepath.Join(dir, "workspace", "db", "calendar.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer calendarStore.Close()
+	source, err := calendarStore.CreateSource(context.Background(), "alice", calendar.SourceInput{Name: "Team", URL: "https://example.com/team.ics"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	taskIDs := completionSuggestions(t, dir, "tasks", "complete", "--peer", "alice", "--id", "")
+	if !containsString(taskIDs, createdTask.ID) {
+		t.Fatalf("expected task ID completion %q in %v", createdTask.ID, taskIDs)
+	}
+	calendarIDs := completionSuggestions(t, dir, "calendar", "remove", "--peer", "alice", "--id", "")
+	if !containsString(calendarIDs, source.ID) {
+		t.Fatalf("expected calendar source completion %q in %v", source.ID, calendarIDs)
+	}
+	models := completionSuggestions(t, dir, "model", "set", "")
+	for _, expected := range []string{"reasoning", "gpt-4o", "gpt-4.1-nano", "gpt-4.1-mini"} {
+		if !containsString(models, expected) {
+			t.Fatalf("expected model completion %q in %v", expected, models)
+		}
+	}
+}
+
+func writeCompletionConfig(t *testing.T, cfg *config.Config) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfgCopy := *cfg
+	cfgCopy.WorkspaceRoot = "./workspace"
+	if err := os.MkdirAll(filepath.Join(dir, "workspace", "db"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(config.EncodeTOML(&cfgCopy, false)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func completionSuggestions(t *testing.T, dir string, args ...string) []string {
+	t.Helper()
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chdir(prevWD); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	}()
+	root := NewRootCommand(app.BuildInfo{Version: "test"}, func(app.BuildInfo) error { return nil })
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs(append([]string{"__completeNoDesc"}, args...))
+	if err := root.Execute(); err != nil {
+		t.Fatalf("complete %v: %v\n%s", args, err, out.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	outLines := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ":") || strings.HasPrefix(line, "Completion ended with directive") {
+			continue
+		}
+		outLines = append(outLines, line)
+	}
+	return outLines
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestMemoryGetCommandFormatsProvenance(t *testing.T) {
@@ -1058,10 +1553,13 @@ func TestDoctorRepairCreatesConfigAndStateDirs(t *testing.T) {
 		filepath.Join(dir, "workspace", "sessions"),
 		filepath.Join(dir, "workspace", "cron"),
 		filepath.Join(dir, "workspace", "agents"),
+		filepath.Join(dir, "workspace", "peers"),
+		filepath.Join(dir, "workspace", "peers", workspace.DefaultPeerID),
+		filepath.Join(dir, "workspace", "db"),
 		filepath.Join(dir, "workspace", "workflows"),
 		filepath.Join(dir, "workspace", "runs"),
-		filepath.Join(dir, "workspace", "AGENTS.md"),
-		filepath.Join(dir, "workspace", "BOOTSTRAP.md"),
+		filepath.Join(dir, "workspace", "peers", workspace.DefaultPeerID, "AGENTS.md"),
+		filepath.Join(dir, "workspace", "peers", workspace.DefaultPeerID, "BOOTSTRAP.md"),
 	} {
 		if strings.HasSuffix(path, ".md") {
 			if !fileExists(path) {
@@ -1073,10 +1571,15 @@ func TestDoctorRepairCreatesConfigAndStateDirs(t *testing.T) {
 			t.Fatalf("expected %s to exist after repair", path)
 		}
 	}
+	for _, path := range expectedWorkspaceDBPaths(dir) {
+		if !fileExists(path) {
+			t.Fatalf("expected %s to exist after repair", path)
+		}
+	}
 	if !strings.Contains(out.String(), `"created workspace starter doc:`) {
 		t.Fatalf("expected workspace doc creation in repair output: %s", out.String())
 	}
-	if !strings.Contains(out.String(), `"repairs": 14`) {
+	if !strings.Contains(out.String(), `"repairs": 27`) {
 		t.Fatalf("unexpected doctor output: %s", out.String())
 	}
 	if !strings.Contains(out.String(), `"created koios.config.toml"`) {

@@ -207,7 +207,11 @@ func TestConfigStore_ListPeerIDs(t *testing.T) {
 
 func TestBuildHeartbeatMessages_UsesSessionHistoryAndHeartbeatFile(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "HEARTBEAT.md"), []byte("Check inbox\nReview calendar\n"), 0o644); err != nil {
+	peerDir := filepath.Join(dir, "peers", "default")
+	if err := os.MkdirAll(peerDir, 0o755); err != nil {
+		t.Fatalf("mkdir default peer dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(peerDir, "HEARTBEAT.md"), []byte("Check inbox\nReview calendar\n"), 0o644); err != nil {
 		t.Fatalf("write HEARTBEAT.md: %v", err)
 	}
 
@@ -231,6 +235,18 @@ func TestBuildHeartbeatMessages_UsesSessionHistoryAndHeartbeatFile(t *testing.T)
 	}
 	if msgs[3].Role != "user" || msgs[3].Content != "Check if anything needs attention." {
 		t.Fatalf("unexpected prompt message: %#v", msgs[3])
+	}
+}
+
+func TestBuildHeartbeatMessages_FallsBackToLegacyRootHeartbeatFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "HEARTBEAT.md"), []byte("Legacy heartbeat\n"), 0o644); err != nil {
+		t.Fatalf("write legacy HEARTBEAT.md: %v", err)
+	}
+	r := New(noopProvider{}, session.New(10), nil, 30*time.Minute, time.Minute, dir, nil)
+	msgs := r.buildHeartbeatMessages("peer-1", "Check if anything needs attention.")
+	if len(msgs) == 0 || msgs[0].Content != "HEARTBEAT.md\n\nLegacy heartbeat" {
+		t.Fatalf("unexpected heartbeat instructions: %#v", msgs)
 	}
 }
 

@@ -14,7 +14,6 @@ model = %s
 
 [session]
 max_messages = 100
-dir = %s
 prune_keep_tool_messages = 8
 
 [compaction]
@@ -28,7 +27,6 @@ inject = false
 top_k = 3
 
 [cron]
-dir = %s
 max_concurrent = 1
 
 [heartbeat]
@@ -36,7 +34,6 @@ enabled = true
 every = "30m"
 
 [agent]
-dir = %s
 max_children = 4
 retry_attempts = 3
 retry_initial_backoff = "500ms"

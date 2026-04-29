@@ -23,6 +23,12 @@ Generate a starter config:
 koios init
 ```
 
+This writes `koios.config.toml`, creates the local workspace/state directories,
+bootstraps the local SQLite state databases, and scaffolds the workspace starter
+documents such as `AGENTS.md`, `SOUL.md`, and `BOOTSTRAP.md`. Use
+`koios init --no-setup` if you only want the config, directories, and database
+files without the workspace documents.
+
 If you already have an older config format, migrate it in place:
 
 ```sh

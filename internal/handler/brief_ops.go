@@ -183,4 +183,3 @@ func (h *Handler) briefSchedule(peerID string, name string, opts briefing.Option
 	}
 	return map[string]any{"ok": true, "job_id": job.JobID, "name": job.Name}, nil
 }
-

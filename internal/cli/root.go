@@ -2,6 +2,7 @@ package cli
 
 import (
 	"archive/tar"
+	"bufio"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	"github.com/ffimnsr/koios/internal/app"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/scheduler"
+	"github.com/ffimnsr/koios/internal/workspace"
 )
 
 type runGatewayFunc func(app.BuildInfo) error
@@ -81,6 +83,7 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newDashboardCommand(ctx))
 	root.AddCommand(newModelCommand(ctx))
 	root.AddCommand(newHostCommand(ctx))
+	configureCLICompletions(root, ctx)
 	return root
 }
 
@@ -228,35 +231,44 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 func newInitCommand(ctx *commandContext) *cobra.Command {
 	var wizard bool
 	var nonInteractive bool
-	var setup bool
+	setup := true
+	var skipSetup bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Generate koios.config.toml and state directories",
+		Short: "Generate koios.config.toml, state directories, and workspace starter docs",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if skipSetup {
+				setup = false
+			}
 			state, err := ctx.state()
 			if err != nil {
 				return err
 			}
-			if !state.ConfigExists {
-				if wizard {
-					content, err := initWizard(cmd, state)
-					if err != nil {
-						return err
-					}
-					if err := os.WriteFile(state.ConfigPath, []byte(content), 0o600); err != nil {
-						return err
-					}
-				} else {
-					if err := os.WriteFile(state.ConfigPath, []byte(config.DefaultTOML()), 0o600); err != nil {
-						return err
-					}
+			configWritten := false
+			if wizard {
+				content, err := initWizard(cmd, state, !nonInteractive)
+				if err != nil {
+					return err
 				}
+				if err := os.WriteFile(state.ConfigPath, []byte(content), 0o600); err != nil {
+					return err
+				}
+				configWritten = true
+			} else if !state.ConfigExists {
+				if err := os.WriteFile(state.ConfigPath, []byte(config.DefaultTOML()), 0o600); err != nil {
+					return err
+				}
+				configWritten = true
 			}
 			state, err = ctx.state()
 			if err != nil {
 				return err
 			}
 			created := state.createStateDirs()
+			dbsCreated, err := bootstrapWorkspaceDBs(state)
+			if err != nil {
+				return err
+			}
 			if setup {
 				if err := scaffoldWorkspace(state.Config.WorkspaceRoot, false); err != nil {
 					return err
@@ -265,12 +277,17 @@ func newInitCommand(ctx *commandContext) *cobra.Command {
 			result := map[string]any{
 				"config_created": fileExists(state.ConfigPath),
 				"config_path":    state.ConfigPath,
+				"config_written": configWritten,
 				"dirs_created":   created,
+				"dbs_created":    dbsCreated,
 				"next_steps": []string{
 					"edit koios.config.toml with your provider credentials",
 					"run koios doctor to validate the setup",
 					"run koios serve to start the gateway",
 				},
+			}
+			if wizard {
+				result["mode"] = "wizard"
 			}
 			if wizard && nonInteractive {
 				result["mode"] = "wizard-non-interactive"
@@ -280,7 +297,8 @@ func newInitCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&wizard, "wizard", false, "run interactive init")
-	cmd.Flags().BoolVar(&setup, "setup", false, "scaffold workspace identity files after config is written")
+	cmd.Flags().BoolVar(&setup, "setup", true, "scaffold workspace identity files after config is written")
+	cmd.Flags().BoolVar(&skipSetup, "no-setup", false, "skip scaffolding workspace identity files")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "disable prompts and use defaults")
 	return cmd
 }
@@ -979,6 +997,7 @@ func statePaths(state *repoState) map[string]string {
 		"sessionDir":  state.sessionDir(),
 		"cronDir":     state.cronDir(),
 		"agentDir":    state.agentDir(),
+		"peersDir":    state.peersDir(),
 		"workflowDir": state.workflowDir(),
 		"runsDir":     state.runsDir(),
 		"memoryDB":    state.memoryDBPath(),
@@ -1219,20 +1238,41 @@ func gitStatus(cwd string) (map[string]any, error) {
 	return status, nil
 }
 
-func initWizard(cmd *cobra.Command, state *repoState) (string, error) {
+func initWizard(cmd *cobra.Command, state *repoState, interactive bool) (string, error) {
+	reader := bufio.NewReader(cmd.InOrStdin())
+	fallback := func(value, defaultValue string) string {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+		return defaultValue
+	}
+	displayWorkspaceRoot := func() string {
+		root := strings.TrimSpace(state.Config.WorkspaceRoot)
+		if root == "" {
+			return config.Default().WorkspaceRoot
+		}
+		if filepath.IsAbs(root) && strings.TrimSpace(state.Root) != "" {
+			rel, err := filepath.Rel(state.Root, root)
+			if err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+				return "./" + filepath.ToSlash(rel)
+			}
+		}
+		return filepath.ToSlash(root)
+	}
 	prompt := func(label, fallback string) (string, error) {
+		if !interactive {
+			return fallback, nil
+		}
 		fmt.Fprintf(cmd.OutOrStdout(), "%s", label)
 		if fallback != "" {
 			fmt.Fprintf(cmd.OutOrStdout(), " [%s]", fallback)
 		}
 		fmt.Fprint(cmd.OutOrStdout(), ": ")
-		var value string
-		if _, err := fmt.Fscanln(cmd.InOrStdin(), &value); err != nil {
-			if errors.Is(err, io.EOF) {
-				return fallback, nil
-			}
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
 			return "", err
 		}
+		value := strings.TrimSpace(line)
 		if strings.TrimSpace(value) == "" {
 			return fallback, nil
 		}
@@ -1242,31 +1282,19 @@ func initWizard(cmd *cobra.Command, state *repoState) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	model, err := prompt("llm.model", state.Model)
+	model, err := prompt("llm.model", fallback(state.Model, config.Default().Model))
 	if err != nil {
 		return "", err
 	}
-	provider, err := prompt("llm.provider", "openai")
+	provider, err := prompt("llm.provider", fallback(state.Provider, config.Default().Provider))
 	if err != nil {
 		return "", err
 	}
-	listenAddr, err := prompt("server.listen_addr", state.ListenAddr)
+	listenAddr, err := prompt("server.listen_addr", fallback(state.ListenAddr, config.Default().ListenAddr))
 	if err != nil {
 		return "", err
 	}
-	sessionDir, err := prompt("session.dir", "./data/sessions")
-	if err != nil {
-		return "", err
-	}
-	cronDir, err := prompt("cron.dir", "./data/cron")
-	if err != nil {
-		return "", err
-	}
-	agentDir, err := prompt("agent.dir", "./data/agents")
-	if err != nil {
-		return "", err
-	}
-	workspaceRoot, err := prompt("workspace.root", "./workspace")
+	workspaceRoot, err := prompt("workspace.root", displayWorkspaceRoot())
 	if err != nil {
 		return "", err
 	}
@@ -1279,9 +1307,6 @@ func initWizard(cmd *cobra.Command, state *repoState) (string, error) {
 		strconv.Quote(provider),
 		strconv.Quote(model),
 		apiKeyLine,
-		strconv.Quote(sessionDir),
-		strconv.Quote(cronDir),
-		strconv.Quote(agentDir),
 		strconv.Quote(workspaceRoot),
 	), nil
 }
@@ -1300,7 +1325,7 @@ func scaffoldWorkspace(root string, force bool) error {
 	if root == "" {
 		return fmt.Errorf("workspace.root is not configured")
 	}
-	subdirs := []string{"sessions", "cron", "agents", "memory"}
+	subdirs := []string{"sessions", "cron", "agents", "memory", "db", "peers", filepath.Join("peers", workspace.DefaultPeerID)}
 	for _, sub := range subdirs {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return fmt.Errorf("creating %s/: %w", sub, err)
@@ -1319,7 +1344,7 @@ func scaffoldWorkspace(root string, force bool) error {
 		{name: "HEARTBEAT.md", content: scaffoldHeartbeatTemplate},
 	}
 	for _, tpl := range templates {
-		path := filepath.Join(root, tpl.name)
+		path := filepath.Join(workspace.DefaultPeerRoot(root), tpl.name)
 		if !force {
 			if _, err := os.Stat(path); err == nil {
 				continue // already exists, skip

@@ -215,6 +215,34 @@ max_processes_per_peer = 3
 	}
 }
 
+func TestDatabasePathsUseWorkspaceDBDir(t *testing.T) {
+	cfg := Default()
+	cfg.WorkspaceRoot = "/tmp/koios-workspace"
+
+	if got, want := cfg.DBDir(), "/tmp/koios-workspace/db"; got != want {
+		t.Fatalf("DBDir() = %q want %q", got, want)
+	}
+
+	checks := map[string]string{
+		"MemoryDBPath":      cfg.MemoryDBPath(),
+		"TasksDBPath":       cfg.TasksDBPath(),
+		"BookmarksDBPath":   cfg.BookmarksDBPath(),
+		"CalendarDBPath":    cfg.CalendarDBPath(),
+		"NotesDBPath":       cfg.NotesDBPath(),
+		"PlansDBPath":       cfg.PlansDBPath(),
+		"ProjectsDBPath":    cfg.ProjectsDBPath(),
+		"ArtifactsDBPath":   cfg.ArtifactsDBPath(),
+		"DecisionsDBPath":   cfg.DecisionsDBPath(),
+		"PreferencesDBPath": cfg.PreferencesDBPath(),
+		"RemindersDBPath":   cfg.RemindersDBPath(),
+	}
+	for name, path := range checks {
+		if got, want := filepath.Dir(path), cfg.DBDir(); got != want {
+			t.Fatalf("%s() dir = %q want %q", name, got, want)
+		}
+	}
+}
+
 func TestValidateRejectsInvalidProcessLimits(t *testing.T) {
 	cfg := Default()
 	cfg.ProcessLogTailBytes = 0

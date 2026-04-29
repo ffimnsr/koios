@@ -89,4 +89,3 @@ func (h *Handler) calendarCancel(peerID, id string, ctx context.Context) (map[st
 	}
 	return map[string]any{"ok": true, "event": event}, nil
 }
-

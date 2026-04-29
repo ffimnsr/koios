@@ -103,10 +103,86 @@ func buildCompactionMemoryCheckpoint(messages []types.Message) string {
 	return strings.TrimSpace(sb.String())
 }
 
+func migrateWorkspaceDatabases(cfg *config.Config) error {
+	if cfg == nil || strings.TrimSpace(cfg.WorkspaceRoot) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(cfg.DBDir(), 0o755); err != nil {
+		return fmt.Errorf("create workspace db dir: %w", err)
+	}
+	pairs := [][2]string{
+		{filepath.Join(cfg.WorkspaceRoot, "memory.db"), cfg.MemoryDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "tasks.db"), cfg.TasksDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "bookmarks.db"), cfg.BookmarksDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "calendar.db"), cfg.CalendarDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "notes.db"), cfg.NotesDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "plans.db"), cfg.PlansDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "projects.db"), cfg.ProjectsDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "artifacts.db"), cfg.ArtifactsDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "decisions.db"), cfg.DecisionsDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "preferences.db"), cfg.PreferencesDBPath()},
+		{filepath.Join(cfg.WorkspaceRoot, "reminders.db"), cfg.RemindersDBPath()},
+	}
+	for _, pair := range pairs {
+		if err := migrateWorkspaceDatabaseFile(pair[0], pair[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migrateWorkspaceDatabaseFile(oldPath, newPath string) error {
+	if strings.TrimSpace(oldPath) == "" || strings.TrimSpace(newPath) == "" || oldPath == newPath {
+		return nil
+	}
+	oldInfo, err := os.Stat(oldPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat legacy db %s: %w", oldPath, err)
+	}
+	if oldInfo.IsDir() {
+		return nil
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat target db %s: %w", newPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return fmt.Errorf("create target db dir for %s: %w", newPath, err)
+	}
+	for _, suffix := range []string{"", "-shm", "-wal"} {
+		from := oldPath + suffix
+		to := newPath + suffix
+		if err := renameIfExists(from, to); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renameIfExists(from, to string) error {
+	if _, err := os.Stat(from); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", from, err)
+	}
+	if err := os.Rename(from, to); err != nil {
+		return fmt.Errorf("rename %s to %s: %w", from, to, err)
+	}
+	return nil
+}
+
 // RunGateway loads configuration, starts the Koios gateway, and blocks until shutdown.
 func RunGateway(build BuildInfo) error {
 	cfg, err := config.Load()
 	if err != nil {
+		return err
+	}
+	if err := migrateWorkspaceDatabases(cfg); err != nil {
 		return err
 	}
 	logLevel := setupLogger(cfg)

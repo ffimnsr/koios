@@ -17,6 +17,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/mcp"
+	"github.com/ffimnsr/koios/internal/workspace"
 )
 
 type doctorSummary struct {
@@ -85,13 +86,12 @@ func collectDoctorFindings(ctx context.Context, state *repoState, deep bool) ([]
 func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
 	findings := []doctorFinding{}
 	if state.WorkspaceRoot != "" && dirExists(state.WorkspaceRoot) {
-		for _, doc := range doctorWorkspaceDocs() {
-			path := filepath.Join(state.WorkspaceRoot, doc)
+		for _, path := range doctorWorkspaceDocPaths(state.WorkspaceRoot) {
 			if !fileExists(path) {
 				findings = append(findings, doctorFinding{
 					Level:      "warn",
 					Key:        "workspace.doc",
-					Message:    fmt.Sprintf("workspace starter document is missing: %s", doc),
+					Message:    fmt.Sprintf("workspace starter document is missing: %s", filepath.Base(path)),
 					Path:       path,
 					Hint:       "run koios doctor --repair to scaffold missing workspace documents",
 					Repairable: true,
@@ -247,6 +247,11 @@ func applyDoctorRepairs(state *repoState, force bool) ([]string, error) {
 	}
 	repairs = append(repairs, configRepairs...)
 	repairs = append(repairs, mapPaths(state.createStateDirs(), "created directory: ")...)
+	dbRepairs, err := bootstrapWorkspaceDBs(state)
+	if err != nil {
+		return nil, err
+	}
+	repairs = append(repairs, mapPaths(dbRepairs, "initialized database: ")...)
 	workspaceRepairs, err := repairDoctorWorkspace(state)
 	if err != nil {
 		return nil, err
@@ -516,8 +521,7 @@ func repairDoctorWorkspace(state *repoState) ([]string, error) {
 		return nil, nil
 	}
 	missingDocs := make([]string, 0)
-	for _, doc := range doctorWorkspaceDocs() {
-		path := filepath.Join(state.WorkspaceRoot, doc)
+	for _, path := range doctorWorkspaceDocPaths(state.WorkspaceRoot) {
 		if !fileExists(path) {
 			missingDocs = append(missingDocs, path)
 		}
@@ -536,7 +540,27 @@ func repairDoctorWorkspace(state *repoState) ([]string, error) {
 }
 
 func doctorWorkspaceDocs() []string {
-	return []string{"AGENTS.md", "SOUL.md", "USER.md", "IDENTITY.md", "BOOTSTRAP.md", "TOOLS.md", "HEARTBEAT.md"}
+	return workspace.PeerDocumentNames()
+
+}
+
+func doctorWorkspaceDocPaths(root string) []string {
+	paths := make([]string, 0, len(doctorWorkspaceDocs()))
+	defaultRoot := workspace.DefaultPeerRoot(root)
+	for _, doc := range doctorWorkspaceDocs() {
+		defaultPath := filepath.Join(defaultRoot, doc)
+		if fileExists(defaultPath) {
+			paths = append(paths, defaultPath)
+			continue
+		}
+		legacyPath := filepath.Join(root, doc)
+		if fileExists(legacyPath) {
+			paths = append(paths, legacyPath)
+			continue
+		}
+		paths = append(paths, defaultPath)
+	}
+	return paths
 }
 
 func cloneDoctorConfig(state *repoState) *config.Config {

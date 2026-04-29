@@ -49,3 +49,17 @@ func TestAgentTUIScrollPreservesViewportUntilFollowResumes(t *testing.T) {
 		t.Fatal("expected viewport to stay pinned to bottom after follow mode resumes")
 	}
 }
+
+func TestAgentTUIFormatsToolEvents(t *testing.T) {
+	m := newAgentTUIModel(nil, agentOptions{Peer: "peer-1", Scope: "main"})
+
+	m.Update(agentEventMsg{"kind": "tool_call", "tool_name": "read_file", "summary": "path=/tmp/demo.txt"})
+	if got := m.lines[len(m.lines)-1].content; got != "event: tool_call read_file - path=/tmp/demo.txt" {
+		t.Fatalf("tool call event = %q", got)
+	}
+
+	m.Update(agentEventMsg{"kind": "tool_result", "tool_name": "read_file", "ok": true, "summary": "212 bytes"})
+	if got := m.lines[len(m.lines)-1].content; got != "event: tool_result read_file ok - 212 bytes" {
+		t.Fatalf("tool result event = %q", got)
+	}
+}

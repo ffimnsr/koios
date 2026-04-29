@@ -193,12 +193,13 @@ func (s *repoState) validate() []doctorFinding {
 		findings = append(findings, doctorFinding{Level: "error", Key: "workspace.root", Message: "workspace.root must not be empty", Path: s.ConfigPath})
 	}
 	dirs := map[string]string{
-		"workspace.root": s.WorkspaceRoot,
-		"session.dir":    s.sessionDir(),
-		"cron.dir":       s.cronDir(),
-		"agent.dir":      s.agentDir(),
-		"workflow.dir":   s.workflowDir(),
-		"runs.dir":       s.runsDir(),
+		"workspace.root":  s.WorkspaceRoot,
+		"session.dir":     s.sessionDir(),
+		"cron.dir":        s.cronDir(),
+		"agent.dir":       s.agentDir(),
+		"workspace.peers": s.peersDir(),
+		"workflow.dir":    s.workflowDir(),
+		"runs.dir":        s.runsDir(),
 	}
 	for key, path := range dirs {
 		if path == "" {
@@ -222,7 +223,13 @@ func (s *repoState) validate() []doctorFinding {
 
 func (s *repoState) createStateDirs() []string {
 	created := []string{}
-	for _, path := range uniqueNonEmptyPaths([]string{s.WorkspaceRoot, s.sessionDir(), s.cronDir(), s.agentDir(), s.workflowDir(), s.runsDir()}) {
+	paths := []string{s.WorkspaceRoot, s.sessionDir(), s.cronDir(), s.agentDir(), s.peersDir(), s.workflowDir(), s.runsDir()}
+	for _, dbPath := range []string{s.memoryDBPath(), s.tasksDBPath(), s.calendarDBPath()} {
+		if dbPath != "" {
+			paths = append(paths, filepath.Dir(dbPath))
+		}
+	}
+	for _, path := range uniqueNonEmptyPaths(paths) {
 		if dirExists(path) {
 			continue
 		}
@@ -255,6 +262,13 @@ func (s *repoState) agentDir() string {
 		return ""
 	}
 	return s.Config.AgentDir()
+}
+
+func (s *repoState) peersDir() string {
+	if s.Config == nil || s.WorkspaceRoot == "" || !s.WorkspacePerAgent {
+		return ""
+	}
+	return filepath.Join(s.WorkspaceRoot, "peers")
 }
 
 // workflowDir returns the derived workflow storage path.
