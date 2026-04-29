@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
@@ -51,7 +52,28 @@ func (h *Handler) dispatchTool(ctx context.Context, peerID string, call agent.To
 			return h.mcpManager.CallTool(ctx, call.Name, call.Arguments)
 		}
 	}
+	if suggestions := h.suggestTools(peerID, call.Name); len(suggestions) > 0 {
+		return nil, fmt.Errorf("unknown tool %q; did you mean: %s", call.Name, strings.Join(suggestions, ", "))
+	}
 	return nil, fmt.Errorf("unknown tool %q", call.Name)
+}
+
+// suggestTools returns tool names that share the same suffix as name (e.g.
+// "create" matches "task.create", "bookmark.create"). It is used to produce
+// actionable error messages when an agent calls a bare name without its domain
+// prefix.
+func (h *Handler) suggestTools(peerID, name string) []string {
+	if name == "" {
+		return nil
+	}
+	suffix := "." + name
+	var matches []string
+	for _, tool := range h.ToolDefinitions(peerID) {
+		if tool.Type == "function" && strings.HasSuffix(tool.Function.Name, suffix) {
+			matches = append(matches, tool.Function.Name)
+		}
+	}
+	return matches
 }
 
 // recordToolResult persists a provenance record for a completed tool execution.
