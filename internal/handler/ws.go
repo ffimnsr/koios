@@ -65,8 +65,15 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/artifacts"
 	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/calendar"
+	"github.com/ffimnsr/koios/internal/decisions"
+	"github.com/ffimnsr/koios/internal/notes"
+	"github.com/ffimnsr/koios/internal/plans"
+	"github.com/ffimnsr/koios/internal/preferences"
+	"github.com/ffimnsr/koios/internal/projects"
+	"github.com/ffimnsr/koios/internal/scratchpad"
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/heartbeat"
 	"github.com/ffimnsr/koios/internal/mcp"
@@ -80,6 +87,7 @@ import (
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
+	"github.com/ffimnsr/koios/internal/reminder"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/usage"
@@ -223,6 +231,14 @@ type Handler struct {
 	taskStore               *tasks.Store
 	bookmarkStore           *bookmarks.Store
 	calendarStore           *calendar.Store
+	noteStore               *notes.Store
+	scratchpadStore         *scratchpad.Store
+	planStore               *plans.Store
+	projectStore            *projects.Store
+	artifactStore           *artifacts.Store
+	decisionStore           *decisions.Store
+	preferenceStore         *preferences.Store
+	reminderStore           *reminder.Store
 	memTopK                 int
 	memInject               bool
 	identityDir             string
@@ -290,6 +306,14 @@ type HandlerOptions struct {
 	TaskStore               *tasks.Store
 	BookmarkStore           *bookmarks.Store
 	CalendarStore           *calendar.Store
+	NoteStore               *notes.Store
+	ScratchpadStore         *scratchpad.Store
+	PlanStore               *plans.Store
+	ProjectStore            *projects.Store
+	ArtifactStore           *artifacts.Store
+	DecisionStore           *decisions.Store
+	PreferenceStore         *preferences.Store
+	ReminderStore           *reminder.Store
 	MemTopK                 int
 	MemInject               bool
 	HBRunner                *heartbeat.Runner
@@ -361,6 +385,14 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		taskStore:               opts.TaskStore,
 		bookmarkStore:           opts.BookmarkStore,
 		calendarStore:           opts.CalendarStore,
+		noteStore:               opts.NoteStore,
+		scratchpadStore:         opts.ScratchpadStore,
+		planStore:               opts.PlanStore,
+		projectStore:            opts.ProjectStore,
+		artifactStore:           opts.ArtifactStore,
+		decisionStore:           opts.DecisionStore,
+		preferenceStore:         opts.PreferenceStore,
+		reminderStore:           opts.ReminderStore,
 		memTopK:                 topK,
 		memInject:               opts.MemInject,
 		identityDir:             opts.WorkspaceRoot,

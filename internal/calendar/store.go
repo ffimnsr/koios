@@ -79,6 +79,49 @@ type Conflict struct {
 	Events  []Event `json:"events"`
 }
 
+// LocalEvent is a calendar event created directly by the user or agent (not
+// derived from an ICS source).
+type LocalEvent struct {
+	ID          string `json:"id"`
+	PeerID      string `json:"peer_id"`
+	Summary     string `json:"summary"`
+	Description string `json:"description,omitempty"`
+	Location    string `json:"location,omitempty"`
+	StartAt     int64  `json:"start_at"`
+	EndAt       int64  `json:"end_at"`
+	AllDay      bool   `json:"all_day,omitempty"`
+	Timezone    string `json:"timezone,omitempty"`
+	// Status is one of "confirmed", "tentative", or "cancelled".
+	Status    string `json:"status"`
+	CreatedAt int64  `json:"created_at"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// LocalEventInput holds mutable fields for creating a local event.
+type LocalEventInput struct {
+	Summary     string
+	Description string
+	Location    string
+	StartAt     int64
+	EndAt       int64
+	AllDay      bool
+	Timezone    string
+	Status      string
+}
+
+// LocalEventPatch carries optional fields for a partial update.
+type LocalEventPatch struct {
+	Summary     *string
+	Description *string
+	Location    *string
+	StartAt     *int64
+	EndAt       *int64
+	AllDay      *bool
+	Timezone    *string
+	Status      *string
+}
+
+
 type AgendaQuery struct {
 	Scope    string `json:"scope"`
 	Timezone string `json:"timezone,omitempty"`
@@ -251,10 +294,14 @@ func (s *Store) Agenda(ctx context.Context, peerID string, query AgendaQuery, cl
 		Sources:     append([]Source(nil), sources...),
 		GeneratedAt: time.Now().Unix(),
 	}
-	if len(sources) == 0 {
-		return out, nil
-	}
 	allEvents := make([]Event, 0, 32)
+	// Merge in locally-created events that fall in the window.
+	localEvents, localErr := s.localEventsInRange(ctx, peerID, windowStart.Unix(), lookaheadEnd.Unix())
+	if localErr != nil {
+		out.Warnings = append(out.Warnings, "local events: "+localErr.Error())
+	} else {
+		allEvents = append(allEvents, localEvents...)
+	}
 	for _, source := range sources {
 		events, loadErr := loadSourceEvents(ctx, source, client, loc, windowStart, lookaheadEnd)
 		if loadErr != nil {
@@ -803,6 +850,22 @@ func migrate(db *sql.DB) error {
 			last_error TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_calendar_sources_peer_created ON calendar_sources(peer_id, created_at ASC)`,
+		// Local events created directly by agents or users (not ICS-sourced).
+		`CREATE TABLE IF NOT EXISTS calendar_events (
+			id          TEXT    PRIMARY KEY,
+			peer_id     TEXT    NOT NULL,
+			summary     TEXT    NOT NULL,
+			description TEXT    NOT NULL DEFAULT '',
+			location    TEXT    NOT NULL DEFAULT '',
+			start_at    INTEGER NOT NULL,
+			end_at      INTEGER NOT NULL,
+			all_day     INTEGER NOT NULL DEFAULT 0,
+			timezone    TEXT    NOT NULL DEFAULT '',
+			status      TEXT    NOT NULL DEFAULT 'confirmed',
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_calendar_events_peer_start ON calendar_events(peer_id, start_at ASC)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -810,6 +873,192 @@ func migrate(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// CreateLocalEvent inserts a new agent/user-created calendar event.
+func (s *Store) CreateLocalEvent(ctx context.Context, peerID string, input LocalEventInput) (*LocalEvent, error) {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return nil, fmt.Errorf("peer_id is required")
+	}
+	if strings.TrimSpace(input.Summary) == "" {
+		return nil, fmt.Errorf("summary is required")
+	}
+	if input.StartAt <= 0 {
+		return nil, fmt.Errorf("start_at is required")
+	}
+	if input.EndAt <= 0 {
+		input.EndAt = input.StartAt
+	}
+	if input.EndAt < input.StartAt {
+		return nil, fmt.Errorf("end_at must not be before start_at")
+	}
+	status := normalizeEventStatus(input.Status)
+	now := time.Now().Unix()
+	e := &LocalEvent{
+		ID:          randomID(),
+		PeerID:      peerID,
+		Summary:     strings.TrimSpace(input.Summary),
+		Description: strings.TrimSpace(input.Description),
+		Location:    strings.TrimSpace(input.Location),
+		StartAt:     input.StartAt,
+		EndAt:       input.EndAt,
+		AllDay:      input.AllDay,
+		Timezone:    strings.TrimSpace(input.Timezone),
+		Status:      status,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO calendar_events(id, peer_id, summary, description, location, start_at, end_at, all_day, timezone, status, created_at, updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		e.ID, e.PeerID, e.Summary, e.Description, e.Location, e.StartAt, e.EndAt, boolToInt(e.AllDay), e.Timezone, e.Status, e.CreatedAt, e.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("calendar event create: %w", err)
+	}
+	return e, nil
+}
+
+// GetLocalEvent returns a single local event by ID, verifying peer ownership.
+func (s *Store) GetLocalEvent(ctx context.Context, peerID, id string) (*LocalEvent, error) {
+	return s.getLocalEvent(ctx, strings.TrimSpace(peerID), strings.TrimSpace(id))
+}
+
+func (s *Store) getLocalEvent(ctx context.Context, peerID, id string) (*LocalEvent, error) {
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	e, err := scanLocalEvent(s.db.QueryRowContext(ctx,
+		`SELECT id, peer_id, summary, description, location, start_at, end_at, all_day, timezone, status, created_at, updated_at
+		   FROM calendar_events WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("calendar event %s not found", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("calendar event get: %w", err)
+	}
+	if e.PeerID != peerID {
+		return nil, fmt.Errorf("calendar event %s does not belong to peer", id)
+	}
+	return &e, nil
+}
+
+// UpdateLocalEvent applies a partial patch to an existing local event.
+func (s *Store) UpdateLocalEvent(ctx context.Context, peerID, id string, patch LocalEventPatch) (*LocalEvent, error) {
+	peerID = strings.TrimSpace(peerID)
+	id = strings.TrimSpace(id)
+	e, err := s.getLocalEvent(ctx, peerID, id)
+	if err != nil {
+		return nil, err
+	}
+	if patch.Summary != nil {
+		if strings.TrimSpace(*patch.Summary) == "" {
+			return nil, fmt.Errorf("summary must not be empty")
+		}
+		e.Summary = strings.TrimSpace(*patch.Summary)
+	}
+	if patch.Description != nil {
+		e.Description = strings.TrimSpace(*patch.Description)
+	}
+	if patch.Location != nil {
+		e.Location = strings.TrimSpace(*patch.Location)
+	}
+	if patch.StartAt != nil {
+		e.StartAt = *patch.StartAt
+	}
+	if patch.EndAt != nil {
+		e.EndAt = *patch.EndAt
+	}
+	if e.EndAt < e.StartAt {
+		return nil, fmt.Errorf("end_at must not be before start_at")
+	}
+	if patch.AllDay != nil {
+		e.AllDay = *patch.AllDay
+	}
+	if patch.Timezone != nil {
+		e.Timezone = strings.TrimSpace(*patch.Timezone)
+	}
+	if patch.Status != nil {
+		e.Status = normalizeEventStatus(*patch.Status)
+	}
+	e.UpdatedAt = time.Now().Unix()
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE calendar_events SET summary=?, description=?, location=?, start_at=?, end_at=?, all_day=?, timezone=?, status=?, updated_at=?
+		  WHERE peer_id=? AND id=?`,
+		e.Summary, e.Description, e.Location, e.StartAt, e.EndAt, boolToInt(e.AllDay), e.Timezone, e.Status, e.UpdatedAt, peerID, id); err != nil {
+		return nil, fmt.Errorf("calendar event update: %w", err)
+	}
+	return e, nil
+}
+
+// CancelLocalEvent sets the event status to "cancelled". It is idempotent.
+func (s *Store) CancelLocalEvent(ctx context.Context, peerID, id string) (*LocalEvent, error) {
+	peerID = strings.TrimSpace(peerID)
+	id = strings.TrimSpace(id)
+	// Verify ownership first.
+	if _, err := s.getLocalEvent(ctx, peerID, id); err != nil {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE calendar_events SET status='cancelled', updated_at=? WHERE peer_id=? AND id=?`,
+		now, peerID, id); err != nil {
+		return nil, fmt.Errorf("calendar event cancel: %w", err)
+	}
+	return s.getLocalEvent(ctx, peerID, id)
+}
+
+func scanLocalEvent(s interface{ Scan(...any) error }) (LocalEvent, error) {
+	var (
+		e      LocalEvent
+		allDay int
+	)
+	if err := s.Scan(&e.ID, &e.PeerID, &e.Summary, &e.Description, &e.Location, &e.StartAt, &e.EndAt, &allDay, &e.Timezone, &e.Status, &e.CreatedAt, &e.UpdatedAt); err != nil {
+		return LocalEvent{}, err
+	}
+	e.AllDay = allDay != 0
+	return e, nil
+}
+
+func normalizeEventStatus(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "tentative":
+		return "tentative"
+	case "cancelled":
+		return "cancelled"
+	default:
+		return "confirmed"
+	}
+}
+
+// localEventsInRange returns non-cancelled local events that overlap the given
+// time window, for inclusion in the agenda.
+func (s *Store) localEventsInRange(ctx context.Context, peerID string, windowStart, windowEnd int64) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, summary, description, location, start_at, end_at, all_day
+		   FROM calendar_events
+		  WHERE peer_id = ? AND status != 'cancelled'
+		    AND start_at < ? AND end_at >= ?
+		  ORDER BY start_at ASC`,
+		peerID, windowEnd, windowStart)
+	if err != nil {
+		return nil, fmt.Errorf("local events query: %w", err)
+	}
+	defer rows.Close()
+	const localSourceName = "local"
+	var out []Event
+	for rows.Next() {
+		var (
+			e      Event
+			allDay int
+		)
+		if err := rows.Scan(&e.UID, &e.Summary, &e.Description, &e.Location, &e.StartAt, &e.EndAt, &allDay); err != nil {
+			return nil, fmt.Errorf("local events scan: %w", err)
+		}
+		e.SourceName = localSourceName
+		e.AllDay = allDay != 0
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func boolToInt(value bool) int {

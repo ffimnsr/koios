@@ -21,6 +21,17 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.runSystemNotifyTool(ctx, args.Title, args.Message)
+	case "notification.send":
+		var args struct {
+			Title   string `json:"title"`
+			Message string `json:"message"`
+			Kind    string `json:"kind"`
+			Urgency string `json:"urgency"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runNotificationSendTool(ctx, args.Title, args.Message, args.Kind, args.Urgency)
 	case "approval.request":
 		var args struct {
 			Kind     string         `json:"kind"`

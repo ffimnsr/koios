@@ -188,6 +188,111 @@ func systemNotifyCommand(title, message string) (string, []string, error) {
 	}
 }
 
+// validNotificationKinds is the set of accepted kind values for notification.send.
+var validNotificationKinds = map[string]bool{
+	"reminder":     true,
+	"run_complete": true,
+	"cron":         true,
+	"waiting_on":   true,
+	"status":       true,
+	"alert":        true,
+	"info":         true,
+}
+
+// validNotificationUrgencies is the set of accepted urgency values for notification.send.
+var validNotificationUrgencies = map[string]bool{
+	"low":    true,
+	"normal": true,
+	"high":   true,
+}
+
+// runNotificationSendTool delivers a structured local notification to the
+// owner's device.  It delegates to the same OS notification mechanism as
+// system.notify but forwards kind and urgency metadata where the platform
+// supports it (notify-send on Linux accepts --urgency).
+func (h *Handler) runNotificationSendTool(ctx context.Context, title, message, kind, urgency string) (map[string]any, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil, fmt.Errorf("message is required")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Koios"
+	}
+	kind = strings.TrimSpace(kind)
+	if kind != "" && !validNotificationKinds[kind] {
+		return nil, fmt.Errorf("invalid kind %q: must be one of reminder, run_complete, cron, waiting_on, status, alert, info", kind)
+	}
+	urgency = strings.TrimSpace(urgency)
+	if urgency != "" && !validNotificationUrgencies[urgency] {
+		return nil, fmt.Errorf("invalid urgency %q: must be one of low, normal, high", urgency)
+	}
+	name, args, err := notificationSendCommand(title, message, urgency)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return nil, fmt.Errorf("notification.send failed: %s", errMsg)
+	}
+	result := map[string]any{
+		"ok":      true,
+		"title":   title,
+		"message": message,
+	}
+	if kind != "" {
+		result["kind"] = kind
+	}
+	if urgency != "" {
+		result["urgency"] = urgency
+	}
+	return result, nil
+}
+
+// notificationSendCommand builds the OS command for notification.send.  On
+// Linux it passes --urgency to notify-send when an urgency value is provided,
+// mapping "high" to the notify-send "critical" level.
+func notificationSendCommand(title, message, urgency string) (string, []string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		if _, err := exec.LookPath("osascript"); err != nil {
+			return "", nil, fmt.Errorf("system notifications are unavailable: osascript not found")
+		}
+		script := fmt.Sprintf(`display notification %q with title %q`, message, title)
+		return "osascript", []string{"-e", script}, nil
+	case "windows":
+		if _, err := exec.LookPath("powershell"); err != nil {
+			if _, err := exec.LookPath("pwsh"); err != nil {
+				return "", nil, fmt.Errorf("system notifications are unavailable: PowerShell not found")
+			}
+			return "pwsh", []string{"-NoProfile", "-Command", fmt.Sprintf(`[console]::beep(800,200); Write-Output %q`, title+": "+message)}, nil
+		}
+		return "powershell", []string{"-NoProfile", "-Command", fmt.Sprintf(`[console]::beep(800,200); Write-Output %q`, title+": "+message)}, nil
+	default:
+		if _, err := exec.LookPath("notify-send"); err != nil {
+			return "", nil, fmt.Errorf("system notifications are unavailable: notify-send not found")
+		}
+		args := []string{}
+		if urgency != "" {
+			// notify-send uses "critical" where the tool API uses "high".
+			level := urgency
+			if level == "high" {
+				level = "critical"
+			}
+			args = append(args, "--urgency", level)
+		}
+		args = append(args, title, message)
+		return "notify-send", args, nil
+	}
+}
+
 func (h *Handler) execNeedsApproval(command string) (string, bool) {
 	switch h.execConfig.ApprovalMode {
 	case "never", "off":

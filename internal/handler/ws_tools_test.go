@@ -1183,3 +1183,60 @@ func TestExecuteTool_SystemNotifyErrorsWhenNotifierUnavailable(t *testing.T) {
 		t.Fatal("expected system.notify to fail without a notifier command")
 	}
 }
+
+func TestExecuteTool_NotificationSendErrorsWhenNotifierUnavailable(t *testing.T) {
+	t.Setenv("PATH", "")
+	h := handler.NewHandler(session.New(10), &stubProvider{response: &types.ChatResponse{}}, handler.HandlerOptions{
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+	_, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "notification.send",
+		Arguments: json.RawMessage(`{"message":"Task complete","kind":"run_complete"}`),
+	})
+	if err == nil {
+		t.Fatal("expected notification.send to fail without a notifier command")
+	}
+}
+
+func TestExecuteTool_NotificationSendRejectsEmptyMessage(t *testing.T) {
+	h := handler.NewHandler(session.New(10), &stubProvider{response: &types.ChatResponse{}}, handler.HandlerOptions{
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+	_, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "notification.send",
+		Arguments: json.RawMessage(`{"message":""}`),
+	})
+	if err == nil {
+		t.Fatal("expected notification.send to fail with empty message")
+	}
+}
+
+func TestExecuteTool_NotificationSendRejectsInvalidKind(t *testing.T) {
+	h := handler.NewHandler(session.New(10), &stubProvider{response: &types.ChatResponse{}}, handler.HandlerOptions{
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+	_, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "notification.send",
+		Arguments: json.RawMessage(`{"message":"hi","kind":"bogus"}`),
+	})
+	if err == nil {
+		t.Fatal("expected notification.send to fail with invalid kind")
+	}
+}
+
+func TestExecuteTool_NotificationSendRejectsInvalidUrgency(t *testing.T) {
+	h := handler.NewHandler(session.New(10), &stubProvider{response: &types.ChatResponse{}}, handler.HandlerOptions{
+		Model:   "test-model",
+		Timeout: 5 * time.Second,
+	})
+	_, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "notification.send",
+		Arguments: json.RawMessage(`{"message":"hi","urgency":"extreme"}`),
+	})
+	if err == nil {
+		t.Fatal("expected notification.send to fail with invalid urgency")
+	}
+}

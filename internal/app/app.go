@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/artifacts"
 	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/config"
+	"github.com/ffimnsr/koios/internal/decisions"
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/heartbeat"
@@ -26,13 +28,19 @@ import (
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/memory/milvus"
 	"github.com/ffimnsr/koios/internal/monitor"
+	"github.com/ffimnsr/koios/internal/notes"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/orchestrator"
+	"github.com/ffimnsr/koios/internal/plans"
+	"github.com/ffimnsr/koios/internal/preferences"
 	"github.com/ffimnsr/koios/internal/presence"
+	"github.com/ffimnsr/koios/internal/projects"
 	"github.com/ffimnsr/koios/internal/provider"
 	"github.com/ffimnsr/koios/internal/redact"
+	"github.com/ffimnsr/koios/internal/reminder"
 	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/scheduler"
+	"github.com/ffimnsr/koios/internal/scratchpad"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
@@ -208,6 +216,35 @@ func RunGateway(build BuildInfo) error {
 	if err != nil {
 		return err
 	}
+	noteStore, err := notes.New(cfg.NotesDBPath())
+	if err != nil {
+		return err
+	}
+	planStore, err := plans.New(cfg.PlansDBPath())
+	if err != nil {
+		return err
+	}
+	projectStore, err := projects.New(cfg.ProjectsDBPath())
+	if err != nil {
+		return err
+	}
+	artifactStore, err := artifacts.New(cfg.ArtifactsDBPath())
+	if err != nil {
+		return err
+	}
+	decisionStore, err := decisions.New(cfg.DecisionsDBPath())
+	if err != nil {
+		return err
+	}
+	preferenceStore, err := preferences.New(cfg.PreferencesDBPath())
+	if err != nil {
+		return err
+	}
+	reminderStore, err := reminder.New(cfg.RemindersDBPath())
+	if err != nil {
+		return err
+	}
+	scratchpadStore := scratchpad.New()
 	presenceMgr := presence.NewManager(cfg.PresenceTypingTTL)
 
 	var (
@@ -364,6 +401,14 @@ func RunGateway(build BuildInfo) error {
 		TaskStore:       taskStore,
 		BookmarkStore:   bookmarkStore,
 		CalendarStore:   calendarStore,
+		NoteStore:       noteStore,
+		ScratchpadStore: scratchpadStore,
+		PlanStore:       planStore,
+		ProjectStore:    projectStore,
+		ArtifactStore:   artifactStore,
+		DecisionStore:   decisionStore,
+		PreferenceStore: preferenceStore,
+		ReminderStore:   reminderStore,
 		MemTopK:         cfg.MemoryTopK,
 		MemInject:       cfg.MemoryInject,
 		HBRunner:        hbRunner,
@@ -604,6 +649,9 @@ shutdown:
 	}
 	if calendarStore != nil {
 		_ = calendarStore.Close()
+	}
+	if reminderStore != nil {
+		_ = reminderStore.Close()
 	}
 	if subRegistry != nil {
 		_ = subRegistry.Sweep(0)

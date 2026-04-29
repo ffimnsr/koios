@@ -8,9 +8,17 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/artifacts"
 	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/briefing"
 	"github.com/ffimnsr/koios/internal/calendar"
+	"github.com/ffimnsr/koios/internal/decisions"
+	"github.com/ffimnsr/koios/internal/notes"
+	"github.com/ffimnsr/koios/internal/plans"
+	"github.com/ffimnsr/koios/internal/preferences"
+	"github.com/ffimnsr/koios/internal/projects"
+	"github.com/ffimnsr/koios/internal/reminder"
+	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/tasks"
 )
 
@@ -758,6 +766,397 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.briefGenerate(peerID, args, ctx)
+	case "brief.preview":
+		var args briefing.Options
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.briefPreview(peerID, args, ctx)
+	case "brief.save":
+		var args struct {
+			briefing.Options
+			Title string `json:"title"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.briefSave(peerID, args.Options, args.Title, ctx)
+	case "brief.send":
+		var args struct {
+			briefing.Options
+			Title string `json:"title"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.briefSend(peerID, args.Options, args.Title, ctx)
+	case "brief.schedule":
+		var args struct {
+			Name     string             `json:"name"`
+			Kind     string             `json:"kind"`
+			Timezone string             `json:"timezone"`
+			Schedule scheduler.Schedule `json:"schedule"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.briefSchedule(peerID, args.Name, briefing.Options{Kind: args.Kind, Timezone: args.Timezone}, args.Schedule, ctx)
+	case "calendar.create":
+		var args struct {
+			Summary     string `json:"summary"`
+			Description string `json:"description"`
+			Location    string `json:"location"`
+			StartAt     int64  `json:"start_at"`
+			EndAt       int64  `json:"end_at"`
+			AllDay      bool   `json:"all_day"`
+			Timezone    string `json:"timezone"`
+			Status      string `json:"status"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.calendarCreate(peerID, calendar.LocalEventInput{
+			Summary:     args.Summary,
+			Description: args.Description,
+			Location:    args.Location,
+			StartAt:     args.StartAt,
+			EndAt:       args.EndAt,
+			AllDay:      args.AllDay,
+			Timezone:    args.Timezone,
+			Status:      args.Status,
+		}, ctx)
+	case "calendar.update":
+		var args struct {
+			ID          string  `json:"id"`
+			Summary     *string `json:"summary"`
+			Description *string `json:"description"`
+			Location    *string `json:"location"`
+			StartAt     *int64  `json:"start_at"`
+			EndAt       *int64  `json:"end_at"`
+			AllDay      *bool   `json:"all_day"`
+			Timezone    *string `json:"timezone"`
+			Status      *string `json:"status"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.calendarUpdate(peerID, args.ID, calendar.LocalEventPatch{
+			Summary:     args.Summary,
+			Description: args.Description,
+			Location:    args.Location,
+			StartAt:     args.StartAt,
+			EndAt:       args.EndAt,
+			AllDay:      args.AllDay,
+			Timezone:    args.Timezone,
+			Status:      args.Status,
+		}, ctx)
+	case "calendar.cancel":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.calendarCancel(peerID, args.ID, ctx)
+	case "reminder.create":
+		var args struct {
+			Title string `json:"title"`
+			Body  string `json:"body"`
+			DueAt int64  `json:"due_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.reminderCreate(peerID, reminder.Input{Title: args.Title, Body: args.Body, DueAt: args.DueAt}, ctx)
+	case "reminder.list":
+		var args struct {
+			PendingOnly bool `json:"pending_only"`
+			Limit       int  `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.reminderList(peerID, args.PendingOnly, args.Limit, ctx)
+	case "reminder.complete":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.reminderComplete(peerID, args.ID, ctx)
+	case "note.create":
+		var args struct {
+			Title   string   `json:"title"`
+			Content string   `json:"content"`
+			Labels  []string `json:"labels"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.noteCreate(peerID, notes.Input{Title: args.Title, Content: args.Content, Labels: args.Labels}, ctx)
+	case "note.search":
+		var args struct {
+			Query string `json:"query"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.noteSearch(peerID, args.Query, args.Limit, ctx)
+	case "note.update":
+		var args struct {
+			ID      string    `json:"id"`
+			Title   *string   `json:"title"`
+			Content *string   `json:"content"`
+			Labels  *[]string `json:"labels"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.noteUpdate(peerID, args.ID, notePatch(args.Title, args.Content, args.Labels), ctx)
+	case "scratchpad.create":
+		var args struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.scratchpadCreate(peerID, sessionKeyFromCtx(peerID, ctx), args.Content)
+	case "scratchpad.update":
+		var args struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.scratchpadUpdate(peerID, sessionKeyFromCtx(peerID, ctx), args.Content)
+	case "scratchpad.get":
+		return h.scratchpadGet(peerID, sessionKeyFromCtx(peerID, ctx))
+	case "scratchpad.clear":
+		return h.scratchpadClear(peerID, sessionKeyFromCtx(peerID, ctx))
+	case "plan.create":
+		var args struct {
+			Title       string            `json:"title"`
+			Description string            `json:"description"`
+			Steps       []plans.StepInput `json:"steps"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.planCreate(peerID, plans.Input{Title: args.Title, Description: args.Description, Steps: args.Steps}, ctx)
+	case "plan.update":
+		var args struct {
+			ID          string            `json:"id"`
+			Title       *string           `json:"title"`
+			Description *string           `json:"description"`
+			Status      *string           `json:"status"`
+			Steps       *[]plans.StepInput `json:"steps"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		var status *plans.PlanStatus
+		if args.Status != nil {
+			s := plans.PlanStatus(*args.Status)
+			status = &s
+		}
+		return h.planUpdate(peerID, args.ID, planPatch(args.Title, args.Description, status, args.Steps), ctx)
+	case "plan.status":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.planStatus(peerID, args.ID, ctx)
+	case "plan.complete_step":
+		var args struct {
+			PlanID string `json:"plan_id"`
+			StepID string `json:"step_id"`
+			Notes  string `json:"notes"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.planCompleteStep(peerID, args.PlanID, args.StepID, args.Notes, ctx)
+	case "project.create":
+		var args struct {
+			Title       string   `json:"title"`
+			Description string   `json:"description"`
+			Labels      []string `json:"labels"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.projectCreate(peerID, projects.Input{Title: args.Title, Description: args.Description, Labels: args.Labels}, ctx)
+	case "project.list":
+		var args struct {
+			Status string `json:"status"`
+			Limit  int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.projectList(peerID, args.Limit, projects.ProjectStatus(args.Status), ctx)
+	case "project.status":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.projectStatus(peerID, args.ID, ctx)
+	case "project.update":
+		var args struct {
+			ID          string   `json:"id"`
+			Title       *string  `json:"title"`
+			Description *string  `json:"description"`
+			Labels      *[]string `json:"labels"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.projectUpdate(peerID, args.ID, projectPatch(args.Title, args.Description, args.Labels), ctx)
+	case "project.link_task":
+		var args struct {
+			ID     string `json:"id"`
+			TaskID string `json:"task_id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.projectLinkTask(peerID, args.ID, args.TaskID, ctx)
+	case "project.unlink_task":
+		var args struct {
+			ID     string `json:"id"`
+			TaskID string `json:"task_id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.projectUnlinkTask(peerID, args.ID, args.TaskID, ctx)
+	case "project.archive":
+		var args struct {
+			ID        string `json:"id"`
+			Unarchive bool   `json:"unarchive"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if args.Unarchive {
+			return h.projectUnarchive(peerID, args.ID, ctx)
+		}
+		return h.projectArchive(peerID, args.ID, ctx)
+	case "artifact.create":
+		var args struct {
+			Kind    string   `json:"kind"`
+			Title   string   `json:"title"`
+			Content string   `json:"content"`
+			Labels  []string `json:"labels"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.artifactCreate(peerID, artifacts.Input{Kind: args.Kind, Title: args.Title, Content: args.Content, Labels: args.Labels}, ctx)
+	case "artifact.get":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.artifactGet(peerID, args.ID, ctx)
+	case "artifact.list":
+		var args struct {
+			Kind  string `json:"kind"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.artifactList(peerID, args.Kind, args.Limit, ctx)
+	case "artifact.update":
+		var args struct {
+			ID      string    `json:"id"`
+			Kind    *string   `json:"kind"`
+			Title   *string   `json:"title"`
+			Content *string   `json:"content"`
+			Labels  *[]string `json:"labels"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.artifactUpdate(peerID, args.ID, artifacts.Patch{Kind: args.Kind, Title: args.Title, Content: args.Content, Labels: args.Labels}, ctx)
+	case "decision.record":
+		var args struct {
+			Title        string `json:"title"`
+			Decision     string `json:"decision"`
+			Rationale    string `json:"rationale"`
+			Alternatives string `json:"alternatives"`
+			Owner        string `json:"owner"`
+			Context      string `json:"context"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.decisionRecord(peerID, decisions.Input{
+			Title: args.Title, Decision: args.Decision,
+			Rationale: args.Rationale, Alternatives: args.Alternatives,
+			Owner: args.Owner, Context: args.Context,
+		}, ctx)
+	case "decision.list":
+		var args struct {
+			Limit int `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.decisionList(peerID, args.Limit, ctx)
+	case "decision.search":
+		var args struct {
+			Query string `json:"query"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.decisionSearch(peerID, args.Query, args.Limit, ctx)
+	case "preference.set":
+		var args struct {
+			Key             string  `json:"key"`
+			Value           string  `json:"value"`
+			Scope           string  `json:"scope"`
+			Provenance      string  `json:"provenance"`
+			Confidence      float64 `json:"confidence"`
+			LastConfirmedAt int64   `json:"last_confirmed_at"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.preferenceSet(peerID, preferences.Input{
+			Key: args.Key, Value: args.Value, Scope: args.Scope,
+			Provenance: args.Provenance, Confidence: args.Confidence,
+			LastConfirmedAt: args.LastConfirmedAt,
+		}, ctx)
+	case "preference.get":
+		var args struct {
+			Key   string `json:"key"`
+			Scope string `json:"scope"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.preferenceGet(peerID, args.Key, args.Scope, ctx)
+	case "preference.list":
+		var args struct {
+			Scope string `json:"scope"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.preferenceList(peerID, args.Scope, args.Limit, ctx)
 	default:
 		return nil, errUnhandledTool
 	}

@@ -167,35 +167,35 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Notes: Expose task management directly to the agent with tools such as `task.create`, `task.list`, `task.update`, `task.complete`, and `task.extract`. Koios already has task RPC and slash-command surfaces, so this patch should reuse `internal/tasks` behavior rather than adding a parallel task model.
 - [x] `approval.request` built-in tool
 	- Notes: Add a generic approval primitive for sensitive actions such as outbound messages, shell execution, cron creation, file deletion, and webhook calls. The tool should integrate with existing exec approval and policy hooks so all approval-gated built-ins share one lifecycle.
-- [ ] `notification.send` built-in tool
+- [x] `notification.send` built-in tool
 	- Notes: Provide a local or node-backed notification surface for reminders, completed runs, cron alerts, waiting-on follow-ups, and user-visible status changes. Keep this separate from `message.send` because notifications target the owner/device, while messages target chat conversations.
 - [ ] `git.*` built-in tools for structured repository operations
 	- Notes: Add safer wrappers for common repository work such as `git.status`, `git.diff`, `git.log`, `git.branch`, `git.commit`, and `git.apply_patch`. These should produce structured outputs and enforce workspace boundaries instead of relying on raw `exec` for every git operation.
 - [ ] `code.search` and `code.symbol` built-in tools
 	- Notes: Add code-aware discovery tools for symbol lookup, definitions, callers, references, and module summaries. Prefer Atlas/LSP-backed context where available, with file-search fallback only when structural lookup is unavailable.
-- [ ] `brief.*` built-in tools for brief lifecycle management
-	- Notes: Extend `brief.generate` with tools such as `brief.preview`, `brief.save`, `brief.send`, and `brief.schedule` so daily and weekly briefs can move from generated text into saved, delivered, or scheduled workflows.
 - [ ] `contact.*` built-in tools
 	- Notes: Add contact resolution and aliasing tools such as `contact.list`, `contact.resolve`, `contact.alias`, and `contact.link_channel_identity`. This becomes important once cross-channel messaging needs stable human identity rather than raw platform IDs.
 - [ ] `inbox.*` built-in tools
 	- Notes: Add multi-channel inbox tools such as `inbox.list`, `inbox.read`, `inbox.mark_read`, `inbox.route`, and `inbox.summarize`. This should pair with multi-channel routing so agents can inspect and triage incoming messages without binding to one transport.
-- [ ] `artifact.*` built-in tools
-	- Notes: Add a structured store for generated reports, specs, plans, drafts, and reusable documents with tools such as `artifact.create`, `artifact.update`, `artifact.list`, and `artifact.get`. This gives agents a durable output surface distinct from memory, bookmarks, and workspace files.
-- [ ] `calendar.create`, `calendar.update`, and `calendar.cancel` built-in tools
+- [x] `brief.*` built-in tools for brief lifecycle management
+	- Notes: Extend `brief.generate` with tools such as `brief.preview`, `brief.save`, `brief.send`, and `brief.schedule` so daily and weekly briefs can move from generated text into saved, delivered, or scheduled workflows.
+- [x] `calendar.create`, `calendar.update`, and `calendar.cancel` built-in tools
 	- Notes: Koios already has agenda and calendar source tools, but mutation tools would let agents actually schedule, reschedule, and cancel events. These should require explicit approval by default when inviting others or modifying external calendars.
-- [ ] `reminder.create`, `reminder.list`, and `reminder.complete` built-in tools
+- [x] `reminder.create`, `reminder.list`, and `reminder.complete` built-in tools
 	- Notes: Add a lightweight reminder surface separate from cron. User-facing reminders should not require users or agents to model simple nudges as scheduled jobs.
-- [ ] `project.*` built-in tools
+- [x] `project.*` built-in tools
 	- Notes: Track higher-level projects separately from tasks with tools such as `project.create`, `project.list`, `project.status`, `project.link_task`, and `project.archive`. Projects should provide durable context for related tasks, decisions, artifacts, and sessions.
-- [ ] `decision.record`, `decision.list`, and `decision.search` built-in tools
+- [x] `artifact.*` built-in tools
+	- Notes: Add a structured store for generated reports, specs, plans, drafts, and reusable documents with tools such as `artifact.create`, `artifact.update`, `artifact.list`, and `artifact.get`. This gives agents a durable output surface distinct from memory, bookmarks, and workspace files.
+- [x] `decision.record`, `decision.list`, and `decision.search` built-in tools
 	- Notes: Add a structured registry for durable decisions such as "we chose X because Y". This is higher-signal than burying decisions in generic memory and should include provenance, timestamp, alternatives, and owner/context where available.
-- [ ] `preference.set`, `preference.get`, and `preference.list` built-in tools
+- [x] `preference.set`, `preference.get`, and `preference.list` built-in tools
 	- Notes: Store explicit user preferences with provenance, scope, confidence, and last-confirmed timestamps. This gives the runtime a more reliable behavior-shaping source than generic memory retrieval.
-- [ ] `note.create`, `note.search`, and `note.update` built-in tools
+- [x] `note.create`, `note.search`, and `note.update` built-in tools
 	- Notes: Add a lightweight knowledge and draft surface distinct from bookmarks, artifacts, and long-term memory. Notes should be easy for agents to update incrementally without implying a finalized artifact.
-- [ ] `scratchpad.create`, `scratchpad.update`, `scratchpad.get`, and `scratchpad.clear` built-in tools
+- [x] `scratchpad.create`, `scratchpad.update`, `scratchpad.get`, and `scratchpad.clear` built-in tools
 	- Notes: Add ephemeral per-session working notes for long tasks. Scratchpads should help agents track intermediate reasoning and local state without polluting long-term memory, bookmarks, notes, or artifacts.
-- [ ] `plan.create`, `plan.update`, `plan.status`, and `plan.complete_step` built-in tools
+- [x] `plan.create`, `plan.update`, `plan.status`, and `plan.complete_step` built-in tools
 	- Notes: Add structured task plans with explicit step status, separate from durable user tasks. Plans should support in-progress agent work without implying the user has created persistent personal commitments.
 - [x] `run.status`, `run.list`, `run.cancel`, and `run.logs` built-in tools
 	- Notes: Provide unified run introspection for agent runs, subagents, workflows, cron jobs, code execution, and background processes. This should sit on top of the run ledger rather than each subsystem exposing an incompatible status shape.

@@ -41,6 +41,20 @@ func (c *Config) BookmarksDBPath() string { return filepath.Join(c.WorkspaceRoot
 // CalendarDBPath returns the path for the durable calendar SQLite database, derived from WorkspaceRoot.
 func (c *Config) CalendarDBPath() string { return filepath.Join(c.WorkspaceRoot, "calendar.db") }
 
+// NotesDBPath returns the path for the durable notes SQLite database, derived from WorkspaceRoot.
+func (c *Config) NotesDBPath() string { return filepath.Join(c.WorkspaceRoot, "notes.db") }
+
+// PlansDBPath returns the path for the durable plans SQLite database, derived from WorkspaceRoot.
+func (c *Config) PlansDBPath() string { return filepath.Join(c.WorkspaceRoot, "plans.db") }
+
+// ProjectsDBPath returns the path for the durable projects SQLite database, derived from WorkspaceRoot.
+func (c *Config) ProjectsDBPath() string { return filepath.Join(c.WorkspaceRoot, "projects.db") }
+
+func (c *Config) ArtifactsDBPath() string   { return filepath.Join(c.WorkspaceRoot, "artifacts.db") }
+func (c *Config) DecisionsDBPath() string    { return filepath.Join(c.WorkspaceRoot, "decisions.db") }
+func (c *Config) PreferencesDBPath() string  { return filepath.Join(c.WorkspaceRoot, "preferences.db") }
+func (c *Config) RemindersDBPath() string    { return filepath.Join(c.WorkspaceRoot, "reminders.db") }
+
 const (
 	// DefaultConfigFile is the default runtime config path in the repo root.
 	DefaultConfigFile = "koios.config.toml"

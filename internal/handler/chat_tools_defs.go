@@ -1046,6 +1046,190 @@ var toolDefs = []toolDef{
 		argHint: `{"kind":"daily|weekly","timezone":"UTC","session_key":"optional","history_limit":12}`,
 	},
 	{
+		name:        "brief.preview",
+		description: "Preview a daily or weekly brief as formatted text without saving or delivering it.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":            map[string]any{"type": "string", "enum": []string{"daily", "weekly"}},
+				"timezone":        map[string]any{"type": "string"},
+				"now":             map[string]any{"type": "integer"},
+				"session_key":     map[string]any{"type": "string"},
+				"history_limit":   map[string]any{"type": "integer"},
+				"event_limit":     map[string]any{"type": "integer"},
+				"waiting_limit":   map[string]any{"type": "integer"},
+				"task_limit":      map[string]any{"type": "integer"},
+				"project_limit":   map[string]any{"type": "integer"},
+				"candidate_limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"kind":"daily|weekly","timezone":"UTC"}`,
+	},
+	{
+		name:        "brief.save",
+		description: "Generate a brief and save it as a durable artifact for later retrieval.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":            map[string]any{"type": "string", "enum": []string{"daily", "weekly"}},
+				"title":           map[string]any{"type": "string"},
+				"timezone":        map[string]any{"type": "string"},
+				"now":             map[string]any{"type": "integer"},
+				"session_key":     map[string]any{"type": "string"},
+				"history_limit":   map[string]any{"type": "integer"},
+				"event_limit":     map[string]any{"type": "integer"},
+				"waiting_limit":   map[string]any{"type": "integer"},
+				"task_limit":      map[string]any{"type": "integer"},
+				"project_limit":   map[string]any{"type": "integer"},
+				"candidate_limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"kind":"daily|weekly","title":"optional override","timezone":"UTC"}`,
+		available: func(h *Handler) bool { return h.artifactStore != nil },
+	},
+	{
+		name:        "brief.send",
+		description: "Generate a brief and deliver it as a system notification.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":            map[string]any{"type": "string", "enum": []string{"daily", "weekly"}},
+				"title":           map[string]any{"type": "string"},
+				"timezone":        map[string]any{"type": "string"},
+				"now":             map[string]any{"type": "integer"},
+				"session_key":     map[string]any{"type": "string"},
+				"history_limit":   map[string]any{"type": "integer"},
+				"event_limit":     map[string]any{"type": "integer"},
+				"waiting_limit":   map[string]any{"type": "integer"},
+				"task_limit":      map[string]any{"type": "integer"},
+				"project_limit":   map[string]any{"type": "integer"},
+				"candidate_limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"kind":"daily|weekly","title":"optional notification title","timezone":"UTC"}`,
+	},
+	{
+		name:        "brief.schedule",
+		description: "Schedule a recurring brief delivery via a cron job. The job will trigger an agent turn that generates and sends the brief.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":     map[string]any{"type": "string"},
+				"kind":     map[string]any{"type": "string", "enum": []string{"daily", "weekly"}},
+				"timezone": map[string]any{"type": "string"},
+				"schedule": map[string]any{"type": "object"},
+			},
+			"required":             []string{"schedule"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"optional name","kind":"daily","timezone":"UTC","schedule":{"kind":"cron","expr":"0 8 * * 1-5","tz":"America/New_York"}}`,
+		available: func(h *Handler) bool { return h.jobStore != nil && h.sched != nil },
+	},
+	{
+		name:        "calendar.create",
+		description: "Create a new locally-managed calendar event. Does not write to any external calendar source.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"summary":     map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"location":    map[string]any{"type": "string"},
+				"start_at":    map[string]any{"type": "integer"},
+				"end_at":      map[string]any{"type": "integer"},
+				"all_day":     map[string]any{"type": "boolean"},
+				"timezone":    map[string]any{"type": "string"},
+				"status":      map[string]any{"type": "string", "enum": []string{"confirmed", "tentative"}},
+			},
+			"required":             []string{"summary", "start_at"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"summary":"Team sync","start_at":1735689600,"end_at":1735693200,"timezone":"UTC","status":"confirmed"}`,
+		available: func(h *Handler) bool { return h.calendarStore != nil },
+	},
+	{
+		name:        "calendar.update",
+		description: "Update a locally-managed calendar event by id.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":          map[string]any{"type": "string"},
+				"summary":     map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"location":    map[string]any{"type": "string"},
+				"start_at":    map[string]any{"type": "integer"},
+				"end_at":      map[string]any{"type": "integer"},
+				"all_day":     map[string]any{"type": "boolean"},
+				"timezone":    map[string]any{"type": "string"},
+				"status":      map[string]any{"type": "string", "enum": []string{"confirmed", "tentative", "cancelled"}},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"event-id","summary":"Updated title","start_at":1735689600}`,
+		available: func(h *Handler) bool { return h.calendarStore != nil },
+	},
+	{
+		name:        "calendar.cancel",
+		description: "Cancel a locally-managed calendar event. The event is marked as cancelled and excluded from future agenda results.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"event-id"}`,
+		available: func(h *Handler) bool { return h.calendarStore != nil },
+	},
+	{
+		name:        "reminder.create",
+		description: "Create a lightweight reminder. Reminders are simple nudges separate from tasks and cron jobs.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":  map[string]any{"type": "string"},
+				"body":   map[string]any{"type": "string"},
+				"due_at": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"title"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"title":"Review pull request","body":"optional detail","due_at":1735689600}`,
+		available: func(h *Handler) bool { return h.reminderStore != nil },
+	},
+	{
+		name:        "reminder.list",
+		description: "List reminders for this peer, optionally filtered to pending only.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pending_only": map[string]any{"type": "boolean"},
+				"limit":        map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"pending_only":true,"limit":20}`,
+		available: func(h *Handler) bool { return h.reminderStore != nil },
+	},
+	{
+		name:        "reminder.complete",
+		description: "Mark a reminder as completed.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"reminder-id"}`,
+		available: func(h *Handler) bool { return h.reminderStore != nil },
+	},
+	{
 		name:        "cron.list",
 		description: "List cron jobs for this peer.",
 		parameters:  mustJSONSchema(map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}),
@@ -1598,6 +1782,28 @@ var toolDefs = []toolDef{
 		argHint: `{"title":"Koios","message":"Build finished successfully"}`,
 	},
 	{
+		name:        "notification.send",
+		description: "Send a structured local notification to the owner's device for reminders, completed runs, cron alerts, waiting-on follow-ups, and user-visible status changes. Use this instead of system.notify when you want to categorize or assign urgency to a notification.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":   map[string]any{"type": "string"},
+				"message": map[string]any{"type": "string"},
+				"kind": map[string]any{
+					"type": "string",
+					"enum": []string{"reminder", "run_complete", "cron", "waiting_on", "status", "alert", "info"},
+				},
+				"urgency": map[string]any{
+					"type": "string",
+					"enum": []string{"low", "normal", "high"},
+				},
+			},
+			"required":             []string{"message"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"title":"Run finished","message":"go test ./... passed","kind":"run_complete","urgency":"normal"}`,
+	},
+	{
 		name:        "approval.request",
 		description: "Create a pending human approval request for a sensitive action so it can share the same approval lifecycle as approval-gated built-ins.",
 		parameters: mustJSONSchema(map[string]any{
@@ -2138,5 +2344,455 @@ var toolDefs = []toolDef{
 		}),
 		argHint:   `{}`,
 		available: func(h *Handler) bool { return h.orchestrator != nil },
+	},
+	// note.*
+	{
+		name:        "note.create",
+		description: "Create a lightweight knowledge or draft note, distinct from bookmarks, long-term memory, and artifacts. Notes are easy to update incrementally.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":   map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+				"labels":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required":             []string{"title", "content"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"title":"API design notes","content":"Use REST for external surface...","labels":["design","api"]}`,
+		available: func(h *Handler) bool { return h.noteStore != nil },
+	},
+	{
+		name:        "note.search",
+		description: "Search notes by title, content, or labels.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"query"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"query":"API","limit":10}`,
+		available: func(h *Handler) bool { return h.noteStore != nil },
+	},
+	{
+		name:        "note.update",
+		description: "Update an existing note by ID.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":      map[string]any{"type": "string"},
+				"title":   map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+				"labels":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"note-id","content":"Updated content..."}`,
+		available: func(h *Handler) bool { return h.noteStore != nil },
+	},
+	// scratchpad.*
+	{
+		name:        "scratchpad.create",
+		description: "Initialise ephemeral per-session working notes. Scratchpads are cleared when the session ends and do not pollute long-term memory, bookmarks, notes, or artifacts.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"content": map[string]any{"type": "string"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"content":"Step 1: analyse schema..."}`,
+	},
+	{
+		name:        "scratchpad.update",
+		description: "Replace the content of the current session scratchpad. Creates one if none exists.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"content": map[string]any{"type": "string"},
+			},
+			"required":             []string{"content"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"content":"Updated working notes..."}`,
+	},
+	{
+		name:        "scratchpad.get",
+		description: "Read the current session scratchpad content.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}),
+		argHint: `{}`,
+	},
+	{
+		name:        "scratchpad.clear",
+		description: "Delete the current session scratchpad.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}),
+		argHint: `{}`,
+	},
+	// plan.*
+	{
+		name:        "plan.create",
+		description: "Create a structured task plan with explicit steps. Plans support in-progress agent work without creating persistent user task commitments.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":       map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"steps": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"title": map[string]any{"type": "string"},
+							"notes": map[string]any{"type": "string"},
+						},
+						"required":             []string{"title"},
+						"additionalProperties": false,
+					},
+				},
+			},
+			"required":             []string{"title"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"title":"Migrate database","description":"Move from Postgres to SQLite","steps":[{"title":"Export data"},{"title":"Transform schema"},{"title":"Import data"}]}`,
+		available: func(h *Handler) bool { return h.planStore != nil },
+	},
+	{
+		name:        "plan.update",
+		description: "Update plan metadata or replace all steps. When steps is provided the entire step list is replaced.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":          map[string]any{"type": "string"},
+				"title":       map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"status":      map[string]any{"type": "string", "enum": []string{"open", "in_progress", "completed", "cancelled"}},
+				"steps": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"title": map[string]any{"type": "string"},
+							"notes": map[string]any{"type": "string"},
+						},
+						"required":             []string{"title"},
+						"additionalProperties": false,
+					},
+				},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"plan-id","status":"in_progress"}`,
+		available: func(h *Handler) bool { return h.planStore != nil },
+	},
+	{
+		name:        "plan.status",
+		description: "Fetch a plan with its full step list and current status.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"plan-id"}`,
+		available: func(h *Handler) bool { return h.planStore != nil },
+	},
+	{
+		name:        "plan.complete_step",
+		description: "Mark a step as done within a plan. Automatically marks the plan completed when all steps are done or skipped.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"plan_id": map[string]any{"type": "string"},
+				"step_id": map[string]any{"type": "string"},
+				"notes":   map[string]any{"type": "string"},
+			},
+			"required":             []string{"plan_id", "step_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"plan_id":"plan-id","step_id":"step-id","notes":"Completed after review"}`,
+		available: func(h *Handler) bool { return h.planStore != nil },
+	},
+	// project.*
+	{
+		name:        "project.create",
+		description: "Create a higher-level project that groups related tasks, decisions, artifacts, and sessions under durable context.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":       map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"labels":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required":             []string{"title"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"title":"Q3 API migration","description":"Move all endpoints to v2","labels":["backend","api"]}`,
+		available: func(h *Handler) bool { return h.projectStore != nil },
+	},
+	{
+		name:        "project.list",
+		description: "List projects for this peer. Optionally filter by status (active or archived).",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"status": map[string]any{"type": "string", "enum": []string{"active", "archived"}},
+				"limit":  map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"status":"active","limit":20}`,
+		available: func(h *Handler) bool { return h.projectStore != nil },
+	},
+	{
+		name:        "project.status",
+		description: "Fetch a project by ID with its linked tasks and current status.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"project-id"}`,
+		available: func(h *Handler) bool { return h.projectStore != nil },
+	},
+	{
+		name:        "project.update",
+		description: "Update a project's title, description, or labels.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":          map[string]any{"type": "string"},
+				"title":       map[string]any{"type": "string"},
+				"description": map[string]any{"type": "string"},
+				"labels":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"project-id","description":"Updated scope"}`,
+		available: func(h *Handler) bool { return h.projectStore != nil },
+	},
+	{
+		name:        "project.link_task",
+		description: "Associate an existing task ID with a project. Idempotent — linking the same task twice is safe.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":      map[string]any{"type": "string"},
+				"task_id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id", "task_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"project-id","task_id":"task-id"}`,
+		available: func(h *Handler) bool { return h.projectStore != nil },
+	},
+	{
+		name:        "project.unlink_task",
+		description: "Remove a task association from a project.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":      map[string]any{"type": "string"},
+				"task_id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id", "task_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"project-id","task_id":"task-id"}`,
+		available: func(h *Handler) bool { return h.projectStore != nil },
+	},
+	{
+		name:        "project.archive",
+		description: "Archive a project. Pass unarchive=true to restore it to active.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":        map[string]any{"type": "string"},
+				"unarchive": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"project-id","unarchive":false}`,
+		available: func(h *Handler) bool { return h.projectStore != nil },
+	},
+	// artifact.*
+	{
+		name:        "artifact.create",
+		description: "Store a generated report, spec, plan, draft, or document as a durable artifact. Artifacts are distinct from memory, bookmarks, and workspace files.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":    map[string]any{"type": "string", "description": "report, spec, plan, draft, document, or any custom kind"},
+				"title":   map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+				"labels":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required":             []string{"title", "content"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"kind":"report","title":"Q1 Summary","content":"...","labels":["finance"]}`,
+		available: func(h *Handler) bool { return h.artifactStore != nil },
+	},
+	{
+		name:        "artifact.get",
+		description: "Fetch a single artifact by ID.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"artifact-id"}`,
+		available: func(h *Handler) bool { return h.artifactStore != nil },
+	},
+	{
+		name:        "artifact.list",
+		description: "List artifacts for this peer, optionally filtered by kind, ordered by most recently updated.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kind":  map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"kind":"report","limit":20}`,
+		available: func(h *Handler) bool { return h.artifactStore != nil },
+	},
+	{
+		name:        "artifact.update",
+		description: "Update an artifact's kind, title, content, or labels. Omit a field to leave it unchanged.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":      map[string]any{"type": "string"},
+				"kind":    map[string]any{"type": "string"},
+				"title":   map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+				"labels":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"artifact-id","content":"revised content"}`,
+		available: func(h *Handler) bool { return h.artifactStore != nil },
+	},
+	// decision.*
+	{
+		name:        "decision.record",
+		description: "Record a durable decision such as 'we chose X because Y' with optional rationale, alternatives, owner, and context.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":        map[string]any{"type": "string", "description": "Short summary label for the decision"},
+				"decision":     map[string]any{"type": "string", "description": "The decision that was made"},
+				"rationale":    map[string]any{"type": "string"},
+				"alternatives": map[string]any{"type": "string"},
+				"owner":        map[string]any{"type": "string"},
+				"context":      map[string]any{"type": "string"},
+			},
+			"required":             []string{"title", "decision"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"title":"Auth library","decision":"Use JWT","rationale":"Stateless, easy to validate","alternatives":"Sessions, API keys","owner":"alice"}`,
+		available: func(h *Handler) bool { return h.decisionStore != nil },
+	},
+	{
+		name:        "decision.list",
+		description: "List recorded decisions for this peer, ordered by most recent first.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"limit":20}`,
+		available: func(h *Handler) bool { return h.decisionStore != nil },
+	},
+	{
+		name:        "decision.search",
+		description: "Search recorded decisions by title, decision text, rationale, owner, or context.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"query"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"query":"auth","limit":10}`,
+		available: func(h *Handler) bool { return h.decisionStore != nil },
+	},
+	// preference.*
+	{
+		name:        "preference.set",
+		description: "Store or update an explicit user preference with optional scope, provenance, and confidence. Updates the existing preference in place when key+scope already exists.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"key":               map[string]any{"type": "string"},
+				"value":             map[string]any{"type": "string"},
+				"scope":             map[string]any{"type": "string", "description": "global (default), session, or task"},
+				"provenance":        map[string]any{"type": "string", "description": "How the preference was learned, e.g. user-stated, inferred"},
+				"confidence":        map[string]any{"type": "number", "description": "0.0–1.0, defaults to 1.0"},
+				"last_confirmed_at": map[string]any{"type": "integer", "description": "Unix timestamp when the user last confirmed this preference"},
+			},
+			"required":             []string{"key", "value"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"key":"theme","value":"dark","scope":"global","provenance":"user-stated","confidence":1.0}`,
+		available: func(h *Handler) bool { return h.preferenceStore != nil },
+	},
+	{
+		name:        "preference.get",
+		description: "Fetch a single preference by key and optional scope (defaults to global).",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"key":   map[string]any{"type": "string"},
+				"scope": map[string]any{"type": "string"},
+			},
+			"required":             []string{"key"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"key":"theme","scope":"global"}`,
+		available: func(h *Handler) bool { return h.preferenceStore != nil },
+	},
+	{
+		name:        "preference.list",
+		description: "List all preferences for this peer, optionally filtered by scope, ordered by key.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"scope": map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"scope":"global","limit":50}`,
+		available: func(h *Handler) bool { return h.preferenceStore != nil },
 	},
 }

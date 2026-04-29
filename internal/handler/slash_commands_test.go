@@ -781,7 +781,8 @@ func TestSlashCalendarAddListAndAgenda(t *testing.T) {
 	conn, calendarStore := dialSlashServerWithCalendar(t, "calendar-sierra")
 	ctx := context.Background()
 	icsPath := filepath.Join(t.TempDir(), "Agenda.ics")
-	ics := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:evt-1\nSUMMARY:Design review\nDTSTART:20260424T090000Z\nDTEND:20260424T100000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+	todayStamp := time.Now().UTC().Format("20060102")
+	ics := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:evt-1\nSUMMARY:Design review\nDTSTART:" + todayStamp + "T090000Z\nDTEND:" + todayStamp + "T100000Z\nEND:VEVENT\nEND:VCALENDAR\n"
 	if err := os.WriteFile(icsPath, []byte(ics), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -860,15 +861,16 @@ func TestSlashBriefDaily(t *testing.T) {
 		t.Fatalf("CreateEntity: %v", err)
 	}
 	icsPath := filepath.Join(t.TempDir(), "brief.ics")
+	briefTodayStamp := time.Now().UTC().Format("20060102")
 	ics := strings.Join([]string{
 		"BEGIN:VCALENDAR",
 		"VERSION:2.0",
 		"PRODID:-//Koios//EN",
 		"BEGIN:VEVENT",
 		"UID:brief-event",
-		"DTSTAMP:20260424T090000Z",
-		"DTSTART:20260424T150000Z",
-		"DTEND:20260424T153000Z",
+		"DTSTAMP:" + briefTodayStamp + "T090000Z",
+		"DTSTART:" + briefTodayStamp + "T150000Z",
+		"DTEND:" + briefTodayStamp + "T153000Z",
 		"SUMMARY:Planning Sync",
 		"END:VEVENT",
 		"END:VCALENDAR",
