@@ -75,6 +75,7 @@ func newBriefCommand(ctx *commandContext) *cobra.Command {
 			return nil
 		},
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.Flags().StringVar(&peer, "peer", "", "peer ID")
 	cmd.Flags().StringVar(&kind, "kind", "daily", "brief kind: daily or weekly")
 	cmd.Flags().StringVar(&timezone, "timezone", "", "display timezone")

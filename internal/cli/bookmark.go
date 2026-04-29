@@ -14,6 +14,7 @@ func newBookmarkCommand(ctx *commandContext) *cobra.Command {
 		Use:   "bookmark",
 		Short: "Conversation bookmarks and save-for-later recall",
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "emit JSON output")
 	cmd.AddCommand(newBookmarkListCommand(ctx, &jsonOut))
 	cmd.AddCommand(newBookmarkGetCommand(ctx, &jsonOut))
@@ -73,8 +74,8 @@ func newBookmarkGetCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 		Use:   "get",
 		Short: "Fetch one bookmark",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			return runBookmarkRPC(ctx, cmd, *jsonOut, timeout, peer, "bookmark.get", map[string]any{"id": id})
 		},
@@ -94,8 +95,8 @@ func newBookmarkAddCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 		Use:   "add",
 		Short: "Create a manual bookmark",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || strings.TrimSpace(title) == "" || strings.TrimSpace(content) == "" {
-				return fmt.Errorf("--peer, --title, and --content are required")
+			if strings.TrimSpace(title) == "" || strings.TrimSpace(content) == "" {
+				return fmt.Errorf("--title and --content are required")
 			}
 			params := map[string]any{"title": title, "content": content}
 			if strings.TrimSpace(labels) != "" {
@@ -149,8 +150,8 @@ func newBookmarkClipCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 		Use:   "clip",
 		Short: "Capture a session-history range into a bookmark",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || startIndex <= 0 {
-				return fmt.Errorf("--peer and --start are required")
+			if startIndex <= 0 {
+				return fmt.Errorf("--start is required")
 			}
 			params := map[string]any{"start_index": startIndex, "title": title}
 			if endIndex > 0 {
@@ -191,8 +192,8 @@ func newBookmarkSearchCommand(ctx *commandContext, jsonOut *bool) *cobra.Command
 		Use:   "search",
 		Short: "Search bookmarks",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || strings.TrimSpace(query) == "" {
-				return fmt.Errorf("--peer and --query are required")
+			if strings.TrimSpace(query) == "" {
+				return fmt.Errorf("--query is required")
 			}
 			return runBookmarkRPC(ctx, cmd, *jsonOut, timeout, peer, "bookmark.search", map[string]any{"query": query, "limit": limit})
 		},
@@ -213,8 +214,8 @@ func newBookmarkUpdateCommand(ctx *commandContext, jsonOut *bool) *cobra.Command
 		Use:   "update",
 		Short: "Update a bookmark",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			state, err := ctx.state()
 			if err != nil {
@@ -287,8 +288,8 @@ func newBookmarkDeleteCommand(ctx *commandContext, jsonOut *bool) *cobra.Command
 		Use:   "delete",
 		Short: "Delete a bookmark",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			return runBookmarkRPC(ctx, cmd, *jsonOut, timeout, peer, "bookmark.delete", map[string]any{"id": id})
 		},

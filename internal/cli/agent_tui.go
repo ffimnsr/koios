@@ -32,6 +32,7 @@ type agentTUIModel struct {
 	viewport viewport.Model
 	lines    []chatLine
 	waiting  bool
+	follow   bool
 	err      string
 	width    int
 	height   int
@@ -81,6 +82,7 @@ func newAgentTUIModel(client *gatewayClient, opts agentOptions) *agentTUIModel {
 		opts:     opts,
 		input:    in,
 		viewport: vp,
+		follow:   true,
 		lines: []chatLine{
 			{at: time.Now(), role: "meta", content: "Interactive Koios agent chat started. Ctrl+C or Esc quits."},
 			{at: time.Now(), role: "meta", content: fmt.Sprintf("Connected to peer=%s scope=%s", opts.Peer, opts.Scope)},
@@ -109,6 +111,30 @@ func (m *agentTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
+		case tea.KeyPgUp:
+			m.viewport.PageUp()
+			m.follow = m.viewport.AtBottom()
+			return m, nil
+		case tea.KeyPgDown:
+			m.viewport.PageDown()
+			m.follow = m.viewport.AtBottom()
+			return m, nil
+		case tea.KeyCtrlU:
+			m.viewport.HalfPageUp()
+			m.follow = m.viewport.AtBottom()
+			return m, nil
+		case tea.KeyCtrlD:
+			m.viewport.HalfPageDown()
+			m.follow = m.viewport.AtBottom()
+			return m, nil
+		case tea.KeyHome:
+			m.viewport.GotoTop()
+			m.follow = false
+			return m, nil
+		case tea.KeyEnd:
+			m.viewport.GotoBottom()
+			m.follow = true
+			return m, nil
 		case tea.KeyEnter:
 			if m.waiting {
 				return m, nil
@@ -121,6 +147,7 @@ func (m *agentTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lines = append(m.lines, chatLine{at: now, role: "user", content: content})
 			m.lines = append(m.lines, chatLine{at: now, role: "assistant", content: ""})
 			m.waiting = true
+			m.follow = true
 			m.err = ""
 			m.input.Reset()
 			m.syncViewport()
@@ -129,6 +156,14 @@ func (m *agentTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+	case tea.MouseMsg:
+		var cmd tea.Cmd
+		previousOffset := m.viewport.YOffset
+		m.viewport, cmd = m.viewport.Update(msg)
+		if m.viewport.YOffset != previousOffset {
+			m.follow = m.viewport.AtBottom()
+		}
+		return m, cmd
 	case agentDeltaMsg:
 		if len(m.lines) == 0 {
 			m.lines = append(m.lines, chatLine{at: time.Now(), role: "assistant", content: ""})
@@ -191,9 +226,12 @@ func (m *agentTUIModel) View() string {
 		headerRight,
 	))
 
-	status := "Enter sends | Esc quits"
+	status := "Enter sends | PgUp/PgDn scroll | End jumps latest | Esc quits"
 	if m.waiting {
 		status = "Awaiting agent reply..."
+	}
+	if !m.follow && m.err == "" {
+		status = "Browsing history | PgUp/PgDn scroll | End jumps latest | Esc quits"
 	}
 	if m.err != "" {
 		status = m.err
@@ -224,6 +262,7 @@ func (m *agentTUIModel) View() string {
 }
 
 func (m *agentTUIModel) syncViewport() {
+	stickToBottom := m.follow || m.viewport.AtBottom()
 	var b strings.Builder
 	for i, line := range m.lines {
 		b.WriteString(tsStyle.Render(line.at.Format("15:04")))
@@ -241,7 +280,10 @@ func (m *agentTUIModel) syncViewport() {
 		}
 	}
 	m.viewport.SetContent(b.String())
-	m.viewport.GotoBottom()
+	if stickToBottom {
+		m.viewport.GotoBottom()
+		m.follow = true
+	}
 }
 
 func (m *agentTUIModel) renderLine(line chatLine) (string, string) {

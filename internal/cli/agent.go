@@ -28,9 +28,6 @@ func newAgentCommand(ctx *commandContext) *cobra.Command {
 		Use:   "agent",
 		Short: "Run an agent turn or launch an interactive agent TUI",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" {
-				return errors.New("--peer is required")
-			}
 			if message == "" {
 				if !tui && !term.IsTerminal(int(os.Stdin.Fd())) {
 					return errors.New("--message is required when stdin is not a terminal")
@@ -63,13 +60,14 @@ func newAgentCommand(ctx *commandContext) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&message, "message", "m", "", "message body")
-	cmd.Flags().StringVar(&peer, "peer", "", "peer id")
+	cmd.Flags().StringVar(&peer, "peer", "", "peer id (default: derived from current user and host)")
 	cmd.Flags().StringVar(&scope, "scope", "main", "session scope: main, direct, isolated, global")
 	cmd.Flags().StringVar(&senderID, "sender-id", "", "sender id for direct scope")
 	cmd.Flags().StringVar(&sessionKey, "session-key", "", "explicit session key override")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "agent timeout")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON for one-shot runs")
 	cmd.Flags().BoolVar(&tui, "tui", false, "force TUI mode")
+	enableDerivedPeerDefault(cmd)
 	return cmd
 }
 
@@ -128,7 +126,7 @@ func runAgentTUI(ctx context.Context, cmdCtx *commandContext, opts agentOptions)
 	}
 	client := newGatewayClient(state, opts.Timeout)
 	model := newAgentTUIModel(client, opts)
-	prog := tea.NewProgram(model, tea.WithAltScreen())
+	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	model.program = prog
 	model.submit = func(msg string) {
 		go func() {

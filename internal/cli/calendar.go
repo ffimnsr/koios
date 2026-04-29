@@ -14,6 +14,7 @@ func newCalendarCommand(ctx *commandContext) *cobra.Command {
 		Use:   "calendar",
 		Short: "Calendar source management and agenda queries",
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "emit JSON output")
 	cmd.AddCommand(newCalendarAddCommand(ctx, &jsonOut))
 	cmd.AddCommand(newCalendarListCommand(ctx, &jsonOut))
@@ -116,8 +117,8 @@ func newCalendarRemoveCommand(ctx *commandContext, jsonOut *bool) *cobra.Command
 		Use:   "remove",
 		Short: "Delete a calendar source",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			state, err := ctx.state()
 			if err != nil {

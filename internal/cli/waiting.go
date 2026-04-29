@@ -16,6 +16,7 @@ func newWaitingCommand(ctx *commandContext) *cobra.Command {
 		Use:   "waiting",
 		Short: "Waiting-on tracker for delegated asks and unanswered follow-ups",
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "emit JSON output")
 	cmd.AddCommand(newWaitingListCommand(ctx, &jsonOut))
 	cmd.AddCommand(newWaitingGetCommand(ctx, &jsonOut))
@@ -69,8 +70,8 @@ func newWaitingGetCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 		Use:   "get",
 		Short: "Fetch one waiting-on record",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			return runWaitingRPC(ctx, cmd, *jsonOut, timeout, peer, "waiting.get", map[string]any{"id": id})
 		},
@@ -89,8 +90,8 @@ func newWaitingCreateCommand(ctx *commandContext, jsonOut *bool) *cobra.Command 
 		Use:   "create",
 		Short: "Create a waiting-on record",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || strings.TrimSpace(title) == "" || strings.TrimSpace(waitingFor) == "" {
-				return fmt.Errorf("--peer, --title, and --waiting-for are required")
+			if strings.TrimSpace(title) == "" || strings.TrimSpace(waitingFor) == "" {
+				return fmt.Errorf("--title and --waiting-for are required")
 			}
 			params := map[string]any{
 				"title":       title,
@@ -132,8 +133,8 @@ func newWaitingUpdateCommand(ctx *commandContext, jsonOut *bool) *cobra.Command 
 		Use:   "update",
 		Short: "Update a waiting-on record",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			state, err := ctx.state()
 			if err != nil {
@@ -195,8 +196,8 @@ func newWaitingSnoozeCommand(ctx *commandContext, jsonOut *bool) *cobra.Command 
 		Use:   "snooze",
 		Short: "Snooze a waiting-on record until a Unix timestamp",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" || until <= 0 {
-				return fmt.Errorf("--peer, --id, and --until are required")
+			if id == "" || until <= 0 {
+				return fmt.Errorf("--id and --until are required")
 			}
 			return runWaitingRPC(ctx, cmd, *jsonOut, timeout, peer, "waiting.snooze", map[string]any{"id": id, "until": until})
 		},
@@ -215,8 +216,8 @@ func newWaitingResolveCommand(ctx *commandContext, jsonOut *bool) *cobra.Command
 		Use:   "resolve",
 		Short: "Resolve a waiting-on record",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			return runWaitingRPC(ctx, cmd, *jsonOut, timeout, peer, "waiting.resolve", map[string]any{"id": id})
 		},
@@ -234,8 +235,8 @@ func newWaitingReopenCommand(ctx *commandContext, jsonOut *bool) *cobra.Command 
 		Use:   "reopen",
 		Short: "Reopen a resolved waiting-on record",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			return runWaitingRPC(ctx, cmd, *jsonOut, timeout, peer, "waiting.reopen", map[string]any{"id": id})
 		},

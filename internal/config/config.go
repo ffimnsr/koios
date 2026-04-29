@@ -51,9 +51,9 @@ func (c *Config) PlansDBPath() string { return filepath.Join(c.WorkspaceRoot, "p
 func (c *Config) ProjectsDBPath() string { return filepath.Join(c.WorkspaceRoot, "projects.db") }
 
 func (c *Config) ArtifactsDBPath() string   { return filepath.Join(c.WorkspaceRoot, "artifacts.db") }
-func (c *Config) DecisionsDBPath() string    { return filepath.Join(c.WorkspaceRoot, "decisions.db") }
-func (c *Config) PreferencesDBPath() string  { return filepath.Join(c.WorkspaceRoot, "preferences.db") }
-func (c *Config) RemindersDBPath() string    { return filepath.Join(c.WorkspaceRoot, "reminders.db") }
+func (c *Config) DecisionsDBPath() string   { return filepath.Join(c.WorkspaceRoot, "decisions.db") }
+func (c *Config) PreferencesDBPath() string { return filepath.Join(c.WorkspaceRoot, "preferences.db") }
+func (c *Config) RemindersDBPath() string   { return filepath.Join(c.WorkspaceRoot, "reminders.db") }
 
 const (
 	// DefaultConfigFile is the default runtime config path in the repo root.
@@ -264,7 +264,7 @@ type fileConfig struct {
 		Reserve   *int `toml:"reserve"`
 	} `toml:"compaction"`
 	Memory struct {
-		EmbedModel string   `toml:"embed_model"`
+		EmbedModel *string  `toml:"embed_model"`
 		Inject     *bool    `toml:"inject"`
 		TopK       *int     `toml:"top_k"`
 		LCMWindow  *int     `toml:"lcm_window"`
@@ -751,8 +751,8 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 		dst.CompactReserve = *src.Compaction.Reserve
 	}
 
-	if src.Memory.EmbedModel != "" {
-		dst.EmbedModel = src.Memory.EmbedModel
+	if src.Memory.EmbedModel != nil {
+		dst.EmbedModel = *src.Memory.EmbedModel
 	}
 	if src.Memory.Inject != nil {
 		dst.MemoryInject = *src.Memory.Inject

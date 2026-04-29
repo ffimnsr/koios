@@ -163,14 +163,19 @@ func newStatusCommand(ctx *commandContext) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			defaultPeer, err := defaultCLIPeerID()
+			if err != nil {
+				return err
+			}
 			payload := map[string]any{
-				"build":         ctx.build,
-				"config_exists": state.ConfigExists,
-				"listen_addr":   state.ListenAddr,
-				"provider":      state.Provider,
-				"model":         state.Model,
-				"base_url":      state.BaseURL,
-				"paths":         statePaths(state),
+				"build":           ctx.build,
+				"config_exists":   state.ConfigExists,
+				"listen_addr":     state.ListenAddr,
+				"provider":        state.Provider,
+				"model":           state.Model,
+				"base_url":        state.BaseURL,
+				"default_peer_id": defaultPeer,
+				"paths":           statePaths(state),
 				"enabled_systems": map[string]bool{
 					"session_persistence": state.WorkspaceRoot != "",
 					"cron":                state.WorkspaceRoot != "",
@@ -615,6 +620,7 @@ func newCronListCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			return nil
 		},
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.Flags().StringVar(&peer, "peer", "", "peer that owns the jobs")
 	return cmd
 }
@@ -641,6 +647,7 @@ func newCronAddCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			return nil
 		},
 	}
+	enableDerivedPeerDefault(cmd)
 	flags.bind(cmd, false)
 	return cmd
 }
@@ -669,6 +676,7 @@ func newCronEditCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			return nil
 		},
 	}
+	enableDerivedPeerDefault(cmd)
 	flags.bind(cmd, true)
 	return cmd
 }
@@ -692,6 +700,7 @@ func newCronDeleteCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			return nil
 		},
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.Flags().StringVar(&peer, "peer", "", "peer that owns the job")
 	return cmd
 }
@@ -721,6 +730,7 @@ func newCronEnableDisableCommand(ctx *commandContext, jsonOut *bool, enabled boo
 			return nil
 		},
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.Flags().StringVar(&peer, "peer", "", "peer that owns the job")
 	return cmd
 }
@@ -732,8 +742,8 @@ func newCronRunsCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 		Use:   "runs",
 		Short: "List run history for a cron job",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return errors.New("--peer and --id are required")
+			if id == "" {
+				return errors.New("--id is required")
 			}
 			var out []scheduler.RunRecord
 			if err := ctx.cronRPC(cmd, peer, "cron.runs", map[string]any{"id": id, "limit": limit}, &out); err != nil {
@@ -743,6 +753,7 @@ func newCronRunsCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			return nil
 		},
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.Flags().StringVar(&peer, "peer", "", "peer that owns the job")
 	cmd.Flags().StringVar(&id, "id", "", "job id")
 	cmd.Flags().IntVar(&limit, "limit", 50, "max run records")
@@ -767,6 +778,7 @@ func newCronRunCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 			return nil
 		},
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.Flags().StringVar(&peer, "peer", "", "peer that owns the job")
 	return cmd
 }

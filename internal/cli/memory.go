@@ -17,6 +17,7 @@ func newMemoryCommand(ctx *commandContext) *cobra.Command {
 		Use:   "memory",
 		Short: "Long-term memory operations",
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "emit JSON output")
 	cmd.AddCommand(newMemoryStatsCommand(ctx, &jsonOut))
 	cmd.AddCommand(newMemoryListCommand(ctx, &jsonOut))

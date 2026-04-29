@@ -16,6 +16,7 @@ func newTasksCommand(ctx *commandContext) *cobra.Command {
 		Use:   "tasks",
 		Short: "Task inbox and durable task operations",
 	}
+	enableDerivedPeerDefault(cmd)
 	cmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "emit JSON output")
 	cmd.AddCommand(newTasksListCommand(ctx, &jsonOut))
 	cmd.AddCommand(newTasksGetCommand(ctx, &jsonOut))
@@ -173,8 +174,8 @@ func newTasksAssignCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 		Use:   "assign",
 		Short: "Assign a task owner",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" || owner == "" {
-				return fmt.Errorf("--peer, --id, and --owner are required")
+			if id == "" || owner == "" {
+				return fmt.Errorf("--id and --owner are required")
 			}
 			return runTaskRPC(ctx, cmd, *jsonOut, timeout, peer, "task.assign", map[string]any{"id": id, "owner": owner})
 		},
@@ -194,8 +195,8 @@ func newTasksSnoozeCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 		Use:   "snooze",
 		Short: "Snooze a task until a Unix timestamp",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" || until <= 0 {
-				return fmt.Errorf("--peer, --id, and --until are required")
+			if id == "" || until <= 0 {
+				return fmt.Errorf("--id and --until are required")
 			}
 			return runTaskRPC(ctx, cmd, *jsonOut, timeout, peer, "task.snooze", map[string]any{"id": id, "until": until})
 		},
@@ -214,8 +215,8 @@ func newTasksCompleteCommand(ctx *commandContext, jsonOut *bool) *cobra.Command 
 		Use:   "complete",
 		Short: "Mark a task complete",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			return runTaskRPC(ctx, cmd, *jsonOut, timeout, peer, "task.complete", map[string]any{"id": id})
 		},
@@ -233,8 +234,8 @@ func newTasksReopenCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 		Use:   "reopen",
 		Short: "Reopen a completed or snoozed task",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			return runTaskRPC(ctx, cmd, *jsonOut, timeout, peer, "task.reopen", map[string]any{"id": id})
 		},
@@ -267,8 +268,8 @@ func newTasksQueueAddCommand(ctx *commandContext, jsonOut *bool) *cobra.Command 
 		Use:   "add",
 		Short: "Queue a task candidate manually",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || strings.TrimSpace(title) == "" {
-				return fmt.Errorf("--peer and --title are required")
+			if strings.TrimSpace(title) == "" {
+				return fmt.Errorf("--title is required")
 			}
 			return runTaskRPC(ctx, cmd, *jsonOut, timeout, peer, "task.candidate.create", map[string]any{"title": title, "details": details, "owner": owner, "due_at": dueAt})
 		},
@@ -289,8 +290,8 @@ func newTasksQueueExtractCommand(ctx *commandContext, jsonOut *bool) *cobra.Comm
 		Use:   "extract",
 		Short: "Extract task candidates from freeform text",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || strings.TrimSpace(text) == "" {
-				return fmt.Errorf("--peer and --text are required")
+			if strings.TrimSpace(text) == "" {
+				return fmt.Errorf("--text is required")
 			}
 			params := map[string]any{"text": text}
 			if captureKind != "" {
@@ -358,8 +359,8 @@ func newTasksQueueEditCommand(ctx *commandContext, jsonOut *bool) *cobra.Command
 		Use:   "edit",
 		Short: "Edit a pending task candidate",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			state, err := ctx.state()
 			if err != nil {
@@ -405,8 +406,8 @@ func newTasksQueueApproveCommand(ctx *commandContext, jsonOut *bool) *cobra.Comm
 		Use:   "approve",
 		Short: "Promote a task candidate into the durable task store",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" {
-				return fmt.Errorf("--peer and --id are required")
+			if id == "" {
+				return fmt.Errorf("--id is required")
 			}
 			state, err := ctx.state()
 			if err != nil {
@@ -452,8 +453,8 @@ func newTasksQueueRejectCommand(ctx *commandContext, jsonOut *bool) *cobra.Comma
 		Use:   "reject",
 		Short: "Reject a pending task candidate",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if peer == "" || id == "" || strings.TrimSpace(reason) == "" {
-				return fmt.Errorf("--peer, --id, and --reason are required")
+			if id == "" || strings.TrimSpace(reason) == "" {
+				return fmt.Errorf("--id and --reason are required")
 			}
 			return runTaskRPC(ctx, cmd, *jsonOut, timeout, peer, "task.candidate.reject", map[string]any{"id": id, "reason": reason})
 		},

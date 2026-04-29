@@ -157,6 +157,32 @@ memory_bytes = 1048576
 	}
 }
 
+func TestLoadFromPathAllowsDisablingMemoryEmbeddings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "koios.config.toml")
+	content := `
+[llm]
+provider = "openai"
+model = "gpt-4o"
+
+[workspace]
+root = "./workspace"
+
+[memory]
+embed_model = ""
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadFromPath(path)
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+	if cfg.EmbedModel != "" {
+		t.Fatalf("expected memory embeddings disabled, got %q", cfg.EmbedModel)
+	}
+}
+
 func TestLoadFromPathParsesProcessConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "koios.config.toml")

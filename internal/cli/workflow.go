@@ -19,6 +19,7 @@ func newWorkflowCommand(ctx *commandContext) *cobra.Command {
 		Use:   "workflow",
 		Short: "Manage and run multi-step workflows",
 	}
+	enableDerivedPeerDefault(root)
 	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "emit JSON")
 	root.AddCommand(newWorkflowListCommand(ctx, &jsonOut))
 	root.AddCommand(newWorkflowCreateCommand(ctx, &jsonOut))

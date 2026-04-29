@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -172,6 +173,22 @@ func TestMemoryGetCommandFormatsProvenance(t *testing.T) {
 }
 
 func TestHealthStatusAndCronCommands(t *testing.T) {
+	oldUser := cliCurrentUser
+	oldHostname := cliHostname
+	t.Cleanup(func() {
+		cliCurrentUser = oldUser
+		cliHostname = oldHostname
+	})
+	cliCurrentUser = func() (*user.User, error) {
+		return &user.User{Username: "alice.dev"}, nil
+	}
+	cliHostname = func() (string, error) { return "workstation-01", nil }
+
+	expectedPeer, err := defaultCLIPeerID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -236,6 +253,9 @@ func TestHealthStatusAndCronCommands(t *testing.T) {
 	}
 	if !strings.Contains(statusOut.String(), `"cron": true`) {
 		t.Fatalf("unexpected status output: %s", statusOut.String())
+	}
+	if !strings.Contains(statusOut.String(), fmt.Sprintf(`"default_peer_id": %q`, expectedPeer)) {
+		t.Fatalf("expected derived default peer in status output: %s", statusOut.String())
 	}
 
 	cronCmd := newCronCommand(cmdCtx)
@@ -702,6 +722,133 @@ func TestAgentOneShotCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "Hello world") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestAgentCommandDerivesPeerWhenMissing(t *testing.T) {
+	oldUser := cliCurrentUser
+	oldHostname := cliHostname
+	t.Cleanup(func() {
+		cliCurrentUser = oldUser
+		cliHostname = oldHostname
+	})
+	cliCurrentUser = func() (*user.User, error) {
+		return &user.User{Username: "alice.dev"}, nil
+	}
+	cliHostname = func() (string, error) { return "workstation-01", nil }
+
+	expectedPeer, err := defaultCLIPeerID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ws":
+			if got := r.URL.Query().Get("peer_id"); got != expectedPeer {
+				t.Fatalf("peer_id = %q want %q", got, expectedPeer)
+			}
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			_ = conn.WriteJSON(map[string]any{"id": "1", "result": map[string]any{"session_key": expectedPeer, "attempts": 1, "assistant_text": "Hello world", "steps": 1}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	toml := fmt.Sprintf(agentOneShotConfigTemplate, server.URL)
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newAgentCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--message", "hi"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Hello world") {
+		t.Fatalf("unexpected output: %s", out.String())
+	}
+}
+
+func TestBookmarkCommandDerivesPeerWhenMissing(t *testing.T) {
+	oldUser := cliCurrentUser
+	oldHostname := cliHostname
+	t.Cleanup(func() {
+		cliCurrentUser = oldUser
+		cliHostname = oldHostname
+	})
+	cliCurrentUser = func() (*user.User, error) {
+		return &user.User{Username: "alice.dev"}, nil
+	}
+	cliHostname = func() (string, error) { return "workstation-01", nil }
+
+	expectedPeer, err := defaultCLIPeerID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/ws":
+			if got := r.URL.Query().Get("peer_id"); got != expectedPeer {
+				t.Fatalf("peer_id = %q want %q", got, expectedPeer)
+			}
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("upgrade: %v", err)
+				return
+			}
+			defer conn.Close()
+			var req map[string]any
+			if err := conn.ReadJSON(&req); err != nil {
+				t.Errorf("read json: %v", err)
+				return
+			}
+			if got := req["method"]; got != "bookmark.list" {
+				t.Errorf("method = %v", got)
+			}
+			_ = conn.WriteJSON(map[string]any{"id": req["id"], "result": map[string]any{"count": 1, "bookmarks": []map[string]any{{"id": "bm-1", "title": "Release checklist"}}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	toml := fmt.Sprintf(agentOneShotConfigTemplate, server.URL)
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newBookmarkCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"list", "--limit", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Release checklist") {
 		t.Fatalf("unexpected output: %s", out.String())
 	}
 }
