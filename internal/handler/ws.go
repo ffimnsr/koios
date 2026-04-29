@@ -89,6 +89,7 @@ import (
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/tasks"
+	"github.com/ffimnsr/koios/internal/toolresults"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/usage"
 	"github.com/ffimnsr/koios/internal/workflow"
@@ -239,6 +240,7 @@ type Handler struct {
 	decisionStore           *decisions.Store
 	preferenceStore         *preferences.Store
 	reminderStore           *reminder.Store
+	toolResultStore         *toolresults.Store
 	memTopK                 int
 	memInject               bool
 	identityDir             string
@@ -314,6 +316,7 @@ type HandlerOptions struct {
 	DecisionStore           *decisions.Store
 	PreferenceStore         *preferences.Store
 	ReminderStore           *reminder.Store
+	ToolResultStore         *toolresults.Store
 	MemTopK                 int
 	MemInject               bool
 	HBRunner                *heartbeat.Runner
@@ -393,6 +396,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		decisionStore:           opts.DecisionStore,
 		preferenceStore:         opts.PreferenceStore,
 		reminderStore:           opts.ReminderStore,
+		toolResultStore:         opts.ToolResultStore,
 		memTopK:                 topK,
 		memInject:               opts.MemInject,
 		identityDir:             opts.WorkspaceRoot,

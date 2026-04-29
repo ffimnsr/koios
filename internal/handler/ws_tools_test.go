@@ -86,10 +86,10 @@ func TestToolPromptRequiresExactFullToolNames(t *testing.T) {
 
 	prompt := h.ToolPrompt("alice")
 	for _, want := range []string{
-		"Use the exact full tool name exactly as listed",
-		"use task.create not create",
-		"memory.insert not insert",
-		"cron.list not list",
+		"ALWAYS use the EXACT FULL tool name",
+		"task.create",
+		"memory.insert",
+		"domain.operation",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected prompt to contain %q, got %q", want, prompt)
@@ -97,7 +97,7 @@ func TestToolPromptRequiresExactFullToolNames(t *testing.T) {
 	}
 }
 
-func TestExecuteToolInfersBareTaskCreateAlias(t *testing.T) {
+func TestExecuteToolRejectsBareToolName(t *testing.T) {
 	store := session.New(10)
 	prov := &stubProvider{response: &types.ChatResponse{}}
 	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
@@ -114,26 +114,14 @@ func TestExecuteToolInfersBareTaskCreateAlias(t *testing.T) {
 		},
 	})
 
-	createdAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+	// Bare tool names (without domain prefix) are no longer inferred;
+	// the dispatcher must reject them as unknown.
+	_, err = h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
 		Name:      "create",
 		Arguments: json.RawMessage(`{"title":"Book venue","details":"Confirm with ops","owner":"alice"}`),
 	})
-	if err != nil {
-		t.Fatalf("ExecuteTool(create->task.create): %v", err)
-	}
-	createdRaw, _ := json.Marshal(createdAny)
-	var created struct {
-		Task struct {
-			ID     string `json:"id"`
-			Status string `json:"status"`
-			Owner  string `json:"owner"`
-		} `json:"task"`
-	}
-	if err := json.Unmarshal(createdRaw, &created); err != nil {
-		t.Fatalf("unmarshal create alias result: %v", err)
-	}
-	if created.Task.ID == "" || created.Task.Status != string(tasks.TaskStatusOpen) || created.Task.Owner != "alice" {
-		t.Fatalf("unexpected create alias result: %#v", createdAny)
+	if err == nil {
+		t.Fatal("expected error for bare tool name 'create', got nil")
 	}
 }
 
@@ -154,6 +142,7 @@ func TestExecuteToolInfersBareMemoryInsertAlias(t *testing.T) {
 		},
 	})
 
+	// Unambiguous bare names (unique suffix match in NormalizeToolName) still resolve.
 	insertedAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
 		Name:      "insert",
 		Arguments: json.RawMessage(`{"content":"Remember margin trading ships today","category":"tasks","tags":["deadline"]}`),

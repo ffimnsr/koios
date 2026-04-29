@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/mcp"
+	"github.com/ffimnsr/koios/internal/toolresults"
 )
 
 var errUnhandledTool = errors.New("unhandled tool")
@@ -16,10 +17,22 @@ var errUnhandledTool = errors.New("unhandled tool")
 func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
 	toolCtx, _ := agent.ToolRunContextFromContext(ctx)
 	call.Name = h.NormalizeToolName(peerID, call.Name)
-	call.Name = h.inferToolNameFromArguments(peerID, call.Name, call.Arguments)
 	if !h.effectiveToolPolicy(peerID, toolCtx.SessionKey, toolCtx.ActiveProfile).Allows(call.Name) {
 		return nil, fmt.Errorf("tool %q is not allowed", call.Name)
 	}
+
+	start := time.Now()
+	result, execErr := h.dispatchTool(ctx, peerID, call)
+	durationMS := time.Since(start).Milliseconds()
+
+	h.recordToolResult(ctx, peerID, call, toolCtx, result, execErr, durationMS)
+
+	return result, execErr
+}
+
+// dispatchTool routes the call to the appropriate executor without any
+// provenance concerns.
+func (h *Handler) dispatchTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
 	for _, dispatch := range []func(context.Context, string, agent.ToolCall) (any, error){
 		h.executeDataTool,
 		h.executeSessionWorkspaceTool,
@@ -41,36 +54,63 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 	return nil, fmt.Errorf("unknown tool %q", call.Name)
 }
 
-func (h *Handler) inferToolNameFromArguments(peerID, name string, arguments json.RawMessage) string {
-	name = strings.TrimSpace(name)
-	if name == "" || strings.Contains(name, ".") {
-		return name
+// recordToolResult persists a provenance record for a completed tool execution.
+// Errors during persistence are logged but do not affect the tool result.
+func (h *Handler) recordToolResult(
+	ctx context.Context,
+	peerID string,
+	call agent.ToolCall,
+	toolCtx agent.ToolRunContext,
+	result any,
+	execErr error,
+	durationMS int64,
+) {
+	if h.toolResultStore == nil {
+		return
 	}
-	var args map[string]json.RawMessage
-	if err := json.Unmarshal(arguments, &args); err != nil {
-		return name
+
+	executorKind := "builtin"
+	if _, _, ok := mcp.ParseToolName(call.Name); ok {
+		executorKind = "mcp"
 	}
-	has := func(key string) bool {
-		_, ok := args[key]
-		return ok
-	}
-	hasTool := func(toolName string) bool {
-		for _, tool := range h.ToolDefinitions(peerID) {
-			if tool.Type == "function" && tool.Function.Name == toolName {
-				return true
+
+	var resultJSON string
+	if result != nil {
+		if b, err := json.Marshal(result); err == nil {
+			resultJSON = string(b)
+			if len(resultJSON) > 8192 {
+				resultJSON = resultJSON[:8192]
 			}
 		}
-		return false
 	}
-	switch name {
-	case "create":
-		if hasTool("task.create") && has("title") && (has("owner") || has("due_at")) && !has("waiting_for") && !has("content") && !has("name") {
-			return "task.create"
-		}
-	case "insert":
-		if hasTool("memory.insert") && has("content") && !has("id") && !has("title") && !has("name") {
-			return "memory.insert"
-		}
+
+	var errMsg string
+	if execErr != nil {
+		errMsg = execErr.Error()
 	}
-	return name
+	summary := call.Name
+	if errMsg != "" {
+		summary = call.Name + ": " + errMsg
+	}
+
+	input := toolresults.Input{
+		SessionKey: toolCtx.SessionKey,
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+		ArgsJSON:   string(call.Arguments),
+		ResultJSON: resultJSON,
+		Summary:    summary,
+		IsError:    execErr != nil,
+		DurationMS: durationMS,
+		Provenance: toolresults.Provenance{
+			ExecutorKind:  executorKind,
+			ModelProfile:  toolCtx.ActiveProfile,
+			CaptureReason: "tool_execution",
+		},
+	}
+
+	if _, err := h.toolResultStore.Create(ctx, peerID, input); err != nil {
+		// Non-fatal: provenance capture should not break tool execution.
+		_ = err
+	}
 }

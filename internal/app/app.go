@@ -45,6 +45,7 @@ import (
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/tasks"
+	"github.com/ffimnsr/koios/internal/toolresults"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/usage"
 	"github.com/ffimnsr/koios/internal/workflow"
@@ -320,6 +321,10 @@ func RunGateway(build BuildInfo) error {
 	if err != nil {
 		return err
 	}
+	toolResultStore, err := toolresults.New(cfg.ToolResultsDBPath())
+	if err != nil {
+		return err
+	}
 	scratchpadStore := scratchpad.New()
 	presenceMgr := presence.NewManager(cfg.PresenceTypingTTL)
 
@@ -485,6 +490,7 @@ func RunGateway(build BuildInfo) error {
 		DecisionStore:   decisionStore,
 		PreferenceStore: preferenceStore,
 		ReminderStore:   reminderStore,
+		ToolResultStore: toolResultStore,
 		MemTopK:         cfg.MemoryTopK,
 		MemInject:       cfg.MemoryInject,
 		HBRunner:        hbRunner,
@@ -728,6 +734,9 @@ shutdown:
 	}
 	if reminderStore != nil {
 		_ = reminderStore.Close()
+	}
+	if toolResultStore != nil {
+		_ = toolResultStore.Close()
 	}
 	if subRegistry != nil {
 		_ = subRegistry.Sweep(0)

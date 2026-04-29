@@ -316,6 +316,7 @@ func expectedWorkspaceDBPaths(root string) []string {
 		filepath.Join(root, "workspace", "db", "decisions.db"),
 		filepath.Join(root, "workspace", "db", "preferences.db"),
 		filepath.Join(root, "workspace", "db", "reminders.db"),
+		filepath.Join(root, "workspace", "db", "tool_results.db"),
 	}
 }
 
@@ -1579,7 +1580,7 @@ func TestDoctorRepairCreatesConfigAndStateDirs(t *testing.T) {
 	if !strings.Contains(out.String(), `"created workspace starter doc:`) {
 		t.Fatalf("expected workspace doc creation in repair output: %s", out.String())
 	}
-	if !strings.Contains(out.String(), `"repairs": 27`) {
+	if !strings.Contains(out.String(), `"repairs": 28`) {
 		t.Fatalf("unexpected doctor output: %s", out.String())
 	}
 	if !strings.Contains(out.String(), `"created koios.config.toml"`) {

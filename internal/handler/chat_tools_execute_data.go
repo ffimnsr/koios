@@ -20,6 +20,7 @@ import (
 	"github.com/ffimnsr/koios/internal/reminder"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/tasks"
+	"github.com/ffimnsr/koios/internal/toolresults"
 )
 
 func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
@@ -1157,6 +1158,36 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.preferenceList(peerID, args.Scope, args.Limit, ctx)
+	case "tool_result.get":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if h.toolResultStore == nil {
+			return nil, fmt.Errorf("tool result store is not available")
+		}
+		return h.toolResultStore.Get(ctx, peerID, args.ID)
+	case "tool_result.list":
+		var args struct {
+			SessionKey string `json:"session_key"`
+			ToolName   string `json:"tool_name"`
+			IsError    *bool  `json:"is_error"`
+			Limit      int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if h.toolResultStore == nil {
+			return nil, fmt.Errorf("tool result store is not available")
+		}
+		return h.toolResultStore.List(ctx, peerID, toolresults.Filter{
+			SessionKey: args.SessionKey,
+			ToolName:   args.ToolName,
+			IsError:    args.IsError,
+			Limit:      args.Limit,
+		})
 	default:
 		return nil, errUnhandledTool
 	}

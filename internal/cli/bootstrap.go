@@ -15,6 +15,7 @@ import (
 	"github.com/ffimnsr/koios/internal/projects"
 	"github.com/ffimnsr/koios/internal/reminder"
 	"github.com/ffimnsr/koios/internal/tasks"
+	"github.com/ffimnsr/koios/internal/toolresults"
 )
 
 type dbBootstrapTarget struct {
@@ -39,6 +40,7 @@ func bootstrapWorkspaceDBs(state *repoState) ([]string, error) {
 		{name: "decisions", path: state.Config.DecisionsDBPath(), open: func() (io.Closer, error) { return decisions.New(state.Config.DecisionsDBPath()) }},
 		{name: "preferences", path: state.Config.PreferencesDBPath(), open: func() (io.Closer, error) { return preferences.New(state.Config.PreferencesDBPath()) }},
 		{name: "reminders", path: state.Config.RemindersDBPath(), open: func() (io.Closer, error) { return reminder.New(state.Config.RemindersDBPath()) }},
+		{name: "tool_results", path: state.Config.ToolResultsDBPath(), open: func() (io.Closer, error) { return toolresults.New(state.Config.ToolResultsDBPath()) }},
 	}
 	created := make([]string, 0, len(targets))
 	for _, target := range targets {

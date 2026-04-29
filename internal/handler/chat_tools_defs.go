@@ -2795,4 +2795,35 @@ var toolDefs = []toolDef{
 		argHint:   `{"scope":"global","limit":50}`,
 		available: func(h *Handler) bool { return h.preferenceStore != nil },
 	},
+	// tool_result.*
+	{
+		name:        "tool_result.get",
+		description: "Fetch a single persisted tool execution record by ID, including arguments, result summary, duration, and source provenance.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string", "description": "Tool result record ID"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"tr_abc123"}`,
+		available: func(h *Handler) bool { return h.toolResultStore != nil },
+	},
+	{
+		name:        "tool_result.list",
+		description: "List persisted tool execution records for this peer, optionally filtered by session, tool name, or error state, ordered by most recent first.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session_key": map[string]any{"type": "string", "description": "Filter by session key"},
+				"tool_name":   map[string]any{"type": "string", "description": "Filter by exact tool name"},
+				"is_error":    map[string]any{"type": "boolean", "description": "Filter by error state"},
+				"limit":       map[string]any{"type": "integer", "description": "Maximum results to return (default 50)"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"tool_name":"memory.search","limit":20}`,
+		available: func(h *Handler) bool { return h.toolResultStore != nil },
+	},
 }

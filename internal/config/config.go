@@ -54,10 +54,11 @@ func (c *Config) PlansDBPath() string { return filepath.Join(c.DBDir(), "plans.d
 // ProjectsDBPath returns the path for the durable projects SQLite database, derived from WorkspaceRoot.
 func (c *Config) ProjectsDBPath() string { return filepath.Join(c.DBDir(), "projects.db") }
 
-func (c *Config) ArtifactsDBPath() string   { return filepath.Join(c.DBDir(), "artifacts.db") }
-func (c *Config) DecisionsDBPath() string   { return filepath.Join(c.DBDir(), "decisions.db") }
-func (c *Config) PreferencesDBPath() string { return filepath.Join(c.DBDir(), "preferences.db") }
-func (c *Config) RemindersDBPath() string   { return filepath.Join(c.DBDir(), "reminders.db") }
+func (c *Config) ArtifactsDBPath() string    { return filepath.Join(c.DBDir(), "artifacts.db") }
+func (c *Config) DecisionsDBPath() string    { return filepath.Join(c.DBDir(), "decisions.db") }
+func (c *Config) PreferencesDBPath() string  { return filepath.Join(c.DBDir(), "preferences.db") }
+func (c *Config) RemindersDBPath() string    { return filepath.Join(c.DBDir(), "reminders.db") }
+func (c *Config) ToolResultsDBPath() string  { return filepath.Join(c.DBDir(), "tool_results.db") }
 
 const (
 	// DefaultConfigFile is the default runtime config path in the repo root.
