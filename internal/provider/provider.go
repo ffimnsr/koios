@@ -144,6 +144,70 @@ func New(cfg *config.Config) (Provider, error) {
 			hooks:       openAICompatibleHooks("nvidia"),
 		}, nil
 
+	case "ollama":
+		// Ollama exposes an OpenAI-compatible endpoint. No API key is required
+		// for local deployments; an empty string is accepted.
+		base := cfg.BaseURL
+		if base == "" {
+			base = "http://localhost:11434"
+		}
+		return &openAIProvider{
+			client:      client,
+			apiKey:      cfg.APIKey,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("ollama"),
+		}, nil
+
+	case "vllm":
+		// vLLM serves an OpenAI-compatible API. The default port matches vLLM's
+		// out-of-the-box server; set base_url in config to override.
+		base := cfg.BaseURL
+		if base == "" {
+			base = "http://localhost:8000"
+		}
+		return &openAIProvider{
+			client:      client,
+			apiKey:      cfg.APIKey,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("vllm"),
+		}, nil
+
+	case "litellm":
+		// LiteLLM proxy exposes an OpenAI-compatible surface over many backends.
+		// Point base_url at your LiteLLM proxy instance.
+		base := cfg.BaseURL
+		if base == "" {
+			base = "http://localhost:4000"
+		}
+		return &openAIProvider{
+			client:      client,
+			apiKey:      cfg.APIKey,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("litellm"),
+		}, nil
+
+	case "gemini":
+		// Google Gemini exposes an OpenAI-compatible endpoint under its
+		// generativelanguage.googleapis.com domain. Use a Gemini API key.
+		base := cfg.BaseURL
+		if base == "" {
+			base = "https://generativelanguage.googleapis.com/v1beta/openai"
+		}
+		return &openAIProvider{
+			client:      client,
+			apiKey:      cfg.APIKey,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("gemini"),
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", cfg.Provider)
 	}

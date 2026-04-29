@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,26 @@ const (
 	HookAfterCompaction  HookName = "after_compaction"
 	HookCronApproval     HookName = "cron_approval"
 )
+
+var validHookNames = map[HookName]struct{}{
+	HookBeforeMessage:    {},
+	HookAfterMessage:     {},
+	HookMessageReceived:  {},
+	HookBeforeLLM:        {},
+	HookAfterLLM:         {},
+	HookBeforeToolCall:   {},
+	HookAfterToolCall:    {},
+	HookBeforeCompaction: {},
+	HookAfterCompaction:  {},
+	HookCronApproval:     {},
+}
+
+// ParseHookName normalizes and validates a configured hook name.
+func ParseHookName(value string) (HookName, bool) {
+	name := HookName(strings.ToLower(strings.TrimSpace(value)))
+	_, ok := validHookNames[name]
+	return name, ok
+}
 
 // Event is a typed hook event payload.
 type Event struct {

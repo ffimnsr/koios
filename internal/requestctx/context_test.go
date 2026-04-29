@@ -2,12 +2,14 @@ package requestctx
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/types"
+	"github.com/ffimnsr/koios/internal/workspace"
 )
 
 func TestBuild_PrunesOldToolMessagesFromContext(t *testing.T) {
@@ -252,4 +254,92 @@ func TestBuild_InjectsStructuredPreferencesAheadOfGenericMemory(t *testing.T) {
 
 func containsSubstring(s, want string) bool {
 	return strings.Contains(s, want)
+}
+
+func TestLoadIdentityMessages_IncludesTOOLSmd(t *testing.T) {
+	dir := t.TempDir()
+	defaultPeerDir := filepath.Join(dir, "peers", workspace.DefaultPeerID)
+	if err := os.MkdirAll(defaultPeerDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "## Core Tooling\n- Build: go build ./..."
+	if err := os.WriteFile(filepath.Join(defaultPeerDir, "TOOLS.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write TOOLS.md: %v", err)
+	}
+
+	msgs := LoadIdentityMessages(dir, "")
+
+	var found bool
+	for _, m := range msgs {
+		if m.Role == "system" && strings.Contains(m.Content, "go build ./...") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected TOOLS.md content in identity messages, got %#v", msgs)
+	}
+}
+
+func TestBuild_InjectsBootstrapOnFreshSession(t *testing.T) {
+	dir := t.TempDir()
+	defaultPeerDir := filepath.Join(dir, "peers", workspace.DefaultPeerID)
+	if err := os.MkdirAll(defaultPeerDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	bootstrapContent := "# BOOTSTRAP.md\n\nStartup checklist goes here."
+	if err := os.WriteFile(filepath.Join(defaultPeerDir, "BOOTSTRAP.md"), []byte(bootstrapContent), 0o644); err != nil {
+		t.Fatalf("write BOOTSTRAP.md: %v", err)
+	}
+
+	built, err := Build(context.Background(), BuildOptions{
+		Model:       "m",
+		Messages:    []types.Message{{Role: "user", Content: "hello"}},
+		IdentityDir: dir,
+		PeerID:      "",
+		// No History — fresh session.
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	var found bool
+	for _, m := range built.Request.Messages {
+		if m.Role == "system" && strings.Contains(m.Content, "Startup checklist goes here.") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected BOOTSTRAP.md in messages for fresh session, got %#v", built.Request.Messages)
+	}
+}
+
+func TestBuild_SkipsBootstrapWhenHistoryPresent(t *testing.T) {
+	dir := t.TempDir()
+	defaultPeerDir := filepath.Join(dir, "peers", workspace.DefaultPeerID)
+	if err := os.MkdirAll(defaultPeerDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultPeerDir, "BOOTSTRAP.md"), []byte("# Startup content"), 0o644); err != nil {
+		t.Fatalf("write BOOTSTRAP.md: %v", err)
+	}
+
+	built, err := Build(context.Background(), BuildOptions{
+		Model:    "m",
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+		IdentityDir: dir,
+		PeerID:   "",
+		History:  []types.Message{
+			{Role: "user", Content: "prior turn"},
+			{Role: "assistant", Content: "prior reply"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	for _, m := range built.Request.Messages {
+		if m.Role == "system" && strings.Contains(m.Content, "Startup content") {
+			t.Fatalf("did not expect BOOTSTRAP.md when history is present, got %#v", built.Request.Messages)
+		}
+	}
 }

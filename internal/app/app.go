@@ -22,6 +22,7 @@ import (
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/decisions"
 	"github.com/ffimnsr/koios/internal/eventbus"
+	"github.com/ffimnsr/koios/internal/extensions"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/heartbeat"
 	"github.com/ffimnsr/koios/internal/mcp"
@@ -102,6 +103,45 @@ func buildCompactionMemoryCheckpoint(messages []types.Message) string {
 		return ""
 	}
 	return strings.TrimSpace(sb.String())
+}
+
+func mergedMCPServers(cfg *config.Config) ([]config.MCPServerConfig, error) {
+	servers := append([]config.MCPServerConfig(nil), cfg.MCPServers...)
+	manifests, err := discoveredExtensions(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return mergedMCPServersWithManifests(servers, manifests)
+}
+
+func discoveredExtensions(cfg *config.Config) ([]extensions.DiscoveredManifest, error) {
+	manifests, err := extensions.Discover(cfg.ExtensionSearchPaths())
+	if err != nil {
+		return nil, fmt.Errorf("discover extensions: %w", err)
+	}
+	return extensions.Filter(manifests, extensions.FilterPolicy{
+		Allow: cfg.ExtensionAllow,
+		Deny:  cfg.ExtensionDeny,
+	}), nil
+}
+
+func mergedMCPServersWithManifests(servers []config.MCPServerConfig, manifests []extensions.DiscoveredManifest) ([]config.MCPServerConfig, error) {
+	discoveredServers, err := extensions.MCPServers(manifests)
+	if err != nil {
+		return nil, fmt.Errorf("load extension manifests: %w", err)
+	}
+	seen := make(map[string]struct{}, len(servers))
+	for _, server := range servers {
+		seen[server.Name] = struct{}{}
+	}
+	for _, server := range discoveredServers {
+		if _, exists := seen[server.Name]; exists {
+			return nil, fmt.Errorf("mcp server name %q is defined both in config and extension manifests", server.Name)
+		}
+		seen[server.Name] = struct{}{}
+		servers = append(servers, server)
+	}
+	return servers, nil
 }
 
 func migrateWorkspaceDatabases(cfg *config.Config) error {
@@ -244,8 +284,8 @@ func RunGateway(build BuildInfo) error {
 	var calendarStore *calendar.Store
 	{
 		var embedder memory.Embedder
-		if cfg.EmbedModel != "" {
-			embedder = memory.NewOpenAIEmbedder(cfg.APIKey, cfg.BaseURL, cfg.EmbedModel)
+		if cfg.MemoryEmbedEnabled {
+			embedder = memory.NewOpenAIEmbedder(cfg.APIKey, cfg.BaseURL, cfg.MemoryEmbedModel)
 		}
 		if cfg.MilvusEnabled {
 			milvusClient, milvusErr := milvus.New(context.Background(), cfg.MilvusURL, cfg.MilvusCollection, 0)
@@ -429,15 +469,26 @@ func RunGateway(build BuildInfo) error {
 
 	usageStore := usage.New()
 	mon := monitor.New(cfg.MonitorStaleThreshold, cfg.MonitorMaxRestarts)
+	extensionManifests, err := discoveredExtensions(cfg)
+	if err != nil {
+		return err
+	}
+	allMCPServers, err := mergedMCPServersWithManifests(append([]config.MCPServerConfig(nil), cfg.MCPServers...), extensionManifests)
+	if err != nil {
+		return err
+	}
 
 	// Start MCP servers if any are configured.
 	var mcpMgr *mcp.Manager
-	if len(cfg.MCPServers) > 0 {
-		mcpMgr = mcp.NewManager(cfg.MCPServers)
+	if len(allMCPServers) > 0 {
+		mcpMgr = mcp.NewManager(allMCPServers)
 		if err := mcpMgr.Start(context.Background()); err != nil {
 			// Non-fatal: individual server errors are logged inside Start.
 			slog.Warn("mcp: one or more servers failed to start", "err", err)
 		}
+	}
+	if err := extensions.RegisterHooks(hooks, mcpMgr, extensionManifests); err != nil {
+		return fmt.Errorf("register extension hooks: %w", err)
 	}
 
 	// Workflow engine setup.
@@ -564,7 +615,9 @@ func RunGateway(build BuildInfo) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/ws", wsHandler)
-	mux.Handle("POST /v1/webhooks/events", handler.NewWebhookHTTPHandler(store, hooks, presenceMgr, jobStore, sched, cfg.WebhookToken))
+	webhookHandler := handler.NewWebhookHTTPHandler(store, hooks, presenceMgr, jobStore, sched, cfg.WebhookToken)
+	webhookHandler.SetAgentCoordinator(agentCoord, wsHandler)
+	mux.Handle("POST /v1/webhooks/events", webhookHandler)
 	mux.HandleFunc("GET /v1/usage", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

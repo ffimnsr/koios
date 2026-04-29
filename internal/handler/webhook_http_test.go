@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/types"
@@ -19,6 +20,10 @@ func (webhookStubProvider) Complete(context.Context, *types.ChatRequest) (*types
 	}, nil
 }
 
+func (webhookStubProvider) CompleteStream(_ context.Context, _ *types.ChatRequest, _ http.ResponseWriter) (string, error) {
+	return "ok", nil
+}
+
 func TestWebhookApply_CronScheduleCreatesOneShotJob(t *testing.T) {
 	jobStore, err := scheduler.NewJobStore(t.TempDir())
 	if err != nil {
@@ -28,7 +33,7 @@ func TestWebhookApply_CronScheduleCreatesOneShotJob(t *testing.T) {
 	sched := scheduler.New(jobStore, webhookStubProvider{}, store, nil, "model", 1)
 	h := NewWebhookHTTPHandler(store, nil, nil, jobStore, sched, "token")
 
-	err = h.apply(webhookEventRequest{
+	_, err = h.apply(webhookEventRequest{
 		Type:   "cron.schedule",
 		PeerID: "peer-1",
 		Name:   "webhook-job",
@@ -74,7 +79,7 @@ func TestWebhookApply_CronTriggerRunsJob(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	if err := h.apply(webhookEventRequest{
+	if _, err := h.apply(webhookEventRequest{
 		Type:   "cron.trigger",
 		PeerID: "peer-1",
 		JobID:  job.JobID,
@@ -103,5 +108,143 @@ func TestWebhookAuthorized_Bearer(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer secret")
 	if !webhookAuthorized(req, "secret") {
 		t.Fatal("expected bearer authorization to succeed")
+	}
+}
+
+func TestWebhookApply_AgentRunReturnsRunID(t *testing.T) {
+	store := session.New(20)
+	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
+	coord := agent.NewCoordinator(rt)
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h.SetAgentCoordinator(coord, nil)
+
+	runID, err := h.apply(webhookEventRequest{
+		Type:   "agent.run",
+		PeerID: "peer-1",
+		Prompt: "say hello",
+	})
+	if err != nil {
+		t.Fatalf("apply agent.run: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("expected a non-empty run_id from agent.run")
+	}
+}
+
+func TestWebhookApply_AgentRunRequiresPrompt(t *testing.T) {
+	store := session.New(20)
+	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
+	coord := agent.NewCoordinator(rt)
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h.SetAgentCoordinator(coord, nil)
+
+	_, err := h.apply(webhookEventRequest{
+		Type:   "agent.run",
+		PeerID: "peer-1",
+		Prompt: "",
+	})
+	if err == nil {
+		t.Fatal("expected error when prompt is empty")
+	}
+}
+
+func TestWebhookApply_AgentRunRequiresCoordinator(t *testing.T) {
+	store := session.New(20)
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	// no coordinator set
+
+	_, err := h.apply(webhookEventRequest{
+		Type:   "agent.run",
+		PeerID: "peer-1",
+		Prompt: "hello",
+	})
+	if err == nil {
+		t.Fatal("expected error when coordinator is nil")
+	}
+}
+
+func TestWebhookApply_SessionWakeReturnsRunID(t *testing.T) {
+	store := session.New(20)
+	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
+	coord := agent.NewCoordinator(rt)
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h.SetAgentCoordinator(coord, nil)
+
+	runID, err := h.apply(webhookEventRequest{
+		Type:   "session.wake",
+		PeerID: "peer-1",
+		Prompt: "reminder: check your schedule",
+	})
+	if err != nil {
+		t.Fatalf("apply session.wake: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("expected a non-empty run_id from session.wake")
+	}
+}
+
+func TestWebhookApply_SessionWakePersistsToMainSession(t *testing.T) {
+	store := session.New(20)
+	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
+	coord := agent.NewCoordinator(rt)
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h.SetAgentCoordinator(coord, nil)
+
+	runID, err := h.apply(webhookEventRequest{
+		Type:   "session.wake",
+		PeerID: "peer-1",
+		Prompt: "wake up and check the news",
+	})
+	if err != nil {
+		t.Fatalf("apply session.wake: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("expected a non-empty run_id from session.wake")
+	}
+
+	// Wait for the async run to complete and verify the assistant reply
+	// was persisted to the main session history (not an isolated session).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		history := store.Get("peer-1::main").History()
+		for _, msg := range history {
+			if msg.Role == "assistant" && msg.Content != "" {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected session.wake to persist assistant reply to main session, got %#v", store.Get("peer-1::main").History())
+}
+
+func TestWebhookApply_SessionWakeRequiresPrompt(t *testing.T) {
+	store := session.New(20)
+	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
+	coord := agent.NewCoordinator(rt)
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h.SetAgentCoordinator(coord, nil)
+
+	_, err := h.apply(webhookEventRequest{
+		Type:   "session.wake",
+		PeerID: "peer-1",
+		Prompt: "",
+	})
+	if err == nil {
+		t.Fatal("expected error when prompt is empty for session.wake")
+	}
+}
+
+func TestWebhookApply_SessionWakeRequiresCoordinator(t *testing.T) {
+	store := session.New(20)
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	// no coordinator set
+
+	_, err := h.apply(webhookEventRequest{
+		Type:   "session.wake",
+		PeerID: "peer-1",
+		Prompt: "hello",
+	})
+	if err == nil {
+		t.Fatal("expected error when coordinator is nil for session.wake")
 	}
 }

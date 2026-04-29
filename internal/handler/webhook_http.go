@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/presence"
 	"github.com/ffimnsr/koios/internal/scheduler"
@@ -17,16 +19,25 @@ import (
 
 // WebhookHTTPHandler accepts authenticated external trigger events.
 type WebhookHTTPHandler struct {
-	store    *session.Store
-	hooks    *ops.Manager
-	presence *presence.Manager
-	jobStore *scheduler.JobStore
-	sched    *scheduler.Scheduler
-	token    string
+	store      *session.Store
+	hooks      *ops.Manager
+	presence   *presence.Manager
+	jobStore   *scheduler.JobStore
+	sched      *scheduler.Scheduler
+	token      string
+	agentCoord *agent.Coordinator
+	toolExec   agent.ToolExecutor
 }
 
 func NewWebhookHTTPHandler(store *session.Store, hooks *ops.Manager, p *presence.Manager, jobStore *scheduler.JobStore, sched *scheduler.Scheduler, token string) *WebhookHTTPHandler {
 	return &WebhookHTTPHandler{store: store, hooks: hooks, presence: p, jobStore: jobStore, sched: sched, token: strings.TrimSpace(token)}
+}
+
+// SetAgentCoordinator wires in the agent coordinator and tool executor so that
+// the "agent.run" webhook event type can dispatch isolated agent runs directly.
+func (h *WebhookHTTPHandler) SetAgentCoordinator(coord *agent.Coordinator, exec agent.ToolExecutor) {
+	h.agentCoord = coord
+	h.toolExec = exec
 }
 
 type webhookEventRequest struct {
@@ -43,6 +54,11 @@ type webhookEventRequest struct {
 	Enabled        *bool               `json:"enabled,omitempty"`
 	DeleteAfterRun *bool               `json:"delete_after_run,omitempty"`
 	Description    string              `json:"description,omitempty"`
+	// agent.run fields
+	Prompt         string `json:"prompt,omitempty"`
+	Model          string `json:"model,omitempty"`
+	Profile        string `json:"profile,omitempty"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
 func (h *WebhookHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -72,17 +88,22 @@ func (h *WebhookHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid peer_id", http.StatusBadRequest)
 		return
 	}
-	if err := h.apply(req); err != nil {
+	runID, err := h.apply(req)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	resp := map[string]any{"ok": true}
+	if runID != "" {
+		resp["run_id"] = runID
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *WebhookHTTPHandler) apply(req webhookEventRequest) error {
+func (h *WebhookHTTPHandler) apply(req webhookEventRequest) (string, error) {
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
 		source = "webhook"
@@ -90,11 +111,11 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) error {
 	switch strings.TrimSpace(req.Type) {
 	case "message.append":
 		if req.Message == nil {
-			return errors.New("message is required for message.append")
+			return "", errors.New("message is required for message.append")
 		}
 		msg := *req.Message
 		if strings.TrimSpace(msg.Role) == "" {
-			return errors.New("message.role is required")
+			return "", errors.New("message.role is required")
 		}
 		if h.hooks != nil {
 			if err := h.hooks.Emit(context.Background(), ops.Event{
@@ -105,7 +126,7 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) error {
 					"source": source,
 				},
 			}); err != nil {
-				return err
+				return "", err
 			}
 		}
 		h.store.AppendWithSource(req.PeerID, source, msg)
@@ -127,33 +148,33 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) error {
 				},
 			})
 		}
-		return nil
+		return "", nil
 	case "presence.set":
 		if h.presence == nil {
-			return errors.New("presence is not enabled")
+			return "", errors.New("presence is not enabled")
 		}
 		typing := false
 		if req.Typing != nil {
 			typing = *req.Typing
 		}
 		h.presence.Set(req.PeerID, req.Status, typing, source)
-		return nil
+		return "", nil
 	case "cron.trigger":
 		if h.sched == nil || h.jobStore == nil {
-			return errors.New("cron is not enabled")
+			return "", errors.New("cron is not enabled")
 		}
 		if strings.TrimSpace(req.JobID) == "" {
-			return errors.New("job_id is required for cron.trigger")
+			return "", errors.New("job_id is required for cron.trigger")
 		}
 		job := h.jobStore.Get(req.JobID)
 		if job == nil || job.PeerID != req.PeerID {
-			return errors.New("job not found")
+			return "", errors.New("job not found")
 		}
 		_, err := h.sched.TriggerRun(req.JobID)
-		return err
+		return "", err
 	case "cron.schedule":
 		if h.sched == nil || h.jobStore == nil {
-			return errors.New("cron is not enabled")
+			return "", errors.New("cron is not enabled")
 		}
 		if strings.TrimSpace(req.Name) == "" {
 			req.Name = "webhook-scheduled"
@@ -163,7 +184,7 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) error {
 			req.Schedule = &scheduler.Schedule{Kind: scheduler.KindAt, At: now}
 		}
 		if req.Payload == nil {
-			return errors.New("payload is required for cron.schedule")
+			return "", errors.New("payload is required for cron.schedule")
 		}
 		tmp := &Handler{jobStore: h.jobStore, sched: h.sched}
 		_, err := tmp.createCronJob(req.PeerID, cronCreateParams{
@@ -174,9 +195,65 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) error {
 			Enabled:        req.Enabled,
 			DeleteAfterRun: req.DeleteAfterRun,
 		})
-		return err
+		return "", err
+	case "agent.run":
+		if h.agentCoord == nil {
+			return "", errors.New("agent coordinator is not available for agent.run")
+		}
+		prompt := strings.TrimSpace(req.Prompt)
+		if prompt == "" {
+			return "", errors.New("prompt is required for agent.run")
+		}
+		timeout := time.Duration(req.TimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = 5 * time.Minute
+		}
+		runReq := agent.RunRequest{
+			PeerID:        req.PeerID,
+			Scope:         agent.ScopeIsolated,
+			Messages:      []types.Message{{Role: "user", Content: prompt}},
+			ToolExecutor:  h.toolExec,
+			Model:         strings.TrimSpace(req.Model),
+			ActiveProfile: strings.TrimSpace(req.Profile),
+			Timeout:       timeout,
+		}
+		rec, err := h.agentCoord.Start(runReq)
+		if err != nil {
+			return "", fmt.Errorf("agent.run: %w", err)
+		}
+		return rec.ID, nil
+	case "session.wake":
+		// session.wake dispatches a non-isolated agent run against the main
+		// peer session so that external events (cron callbacks, incoming
+		// notifications, etc.) can wake the primary context and inject a
+		// message that persists in the session history.
+		if h.agentCoord == nil {
+			return "", errors.New("agent coordinator is not available for session.wake")
+		}
+		prompt := strings.TrimSpace(req.Prompt)
+		if prompt == "" {
+			return "", errors.New("prompt is required for session.wake")
+		}
+		timeout := time.Duration(req.TimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = 5 * time.Minute
+		}
+		runReq := agent.RunRequest{
+			PeerID:        req.PeerID,
+			Scope:         agent.ScopeMain,
+			Messages:      []types.Message{{Role: "user", Content: prompt}},
+			ToolExecutor:  h.toolExec,
+			Model:         strings.TrimSpace(req.Model),
+			ActiveProfile: strings.TrimSpace(req.Profile),
+			Timeout:       timeout,
+		}
+		rec, err := h.agentCoord.Start(runReq)
+		if err != nil {
+			return "", fmt.Errorf("session.wake: %w", err)
+		}
+		return rec.ID, nil
 	default:
-		return errors.New("unsupported webhook type")
+		return "", errors.New("unsupported webhook type")
 	}
 }
 

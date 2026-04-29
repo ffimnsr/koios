@@ -13,14 +13,16 @@
 //  4. Client → tools/list to discover available tools
 //  5. Client → tools/call to invoke a tool
 //
-// Tool names are prefixed with the server name so that tools from different
-// servers do not conflict: mcp__{server}__{tool}.
+// Tool names are prefixed so that tools from different servers do not
+// conflict. Plain MCP servers use mcp__{server}__{tool}; manifest-backed
+// extension servers may use an alternate mcp_plug_* namespace.
 package mcp
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // Tool describes a tool exposed by an MCP server.
@@ -108,12 +110,14 @@ type toolsCallParams struct {
 	Arguments map[string]any `json:"arguments"`
 }
 
-// encodeParams marshals v to json.RawMessage, panicking on error (only called
-// with static, known-safe values).
+// encodeParams marshals v to json.RawMessage. All callers pass JSON-derived
+// or static struct values so marshaling should never fail. If it does, an
+// error is logged and an empty object is returned so the server keeps running.
 func encodeParams(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(fmt.Sprintf("mcp: marshal params: %v", err))
+		slog.Error("mcp: encodeParams: cannot marshal params", "err", err)
+		return json.RawMessage("{}")
 	}
 	return b
 }

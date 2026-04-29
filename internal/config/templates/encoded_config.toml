@@ -23,9 +23,12 @@ threshold = %d
 reserve = %d
 
 [memory]
-embed_model = %s
 inject = %t
 top_k = %d
+
+[memory.embed]
+enabled = %t
+model = %s
 
 [memory.milvus]
 address = %s
@@ -69,6 +72,11 @@ enabled = %t
 stop_timeout = %s
 log_tail_bytes = %d
 max_processes_per_peer = %d
+
+[extensions]
+dirs = [%s]
+allow = [%s]
+deny = [%s]
 
 [tools.exec]
 enabled = %t

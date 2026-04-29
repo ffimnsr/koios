@@ -12,10 +12,7 @@ func mustJSONSchema(v any) json.RawMessage {
 	return b
 }
 
-// toolDef registers a server-side tool in one place.
-// ToolPrompt, ToolDefinitions, and the ExecuteTool switch are all derived from
-// this table; adding a new tool only requires a new entry here plus a case in
-// ExecuteTool — no other functions need to change.
+// toolDef describes one built-in server-side tool.
 type toolDef struct {
 	name        string
 	description string
@@ -27,18 +24,9 @@ type toolDef struct {
 	available func(*Handler) bool
 }
 
-// toolDefs is the single source of truth for every registered tool.
+// toolDefs contains built-in tools that are compiled directly into the
+// handler. Native plugins and MCP servers extend the catalog at runtime.
 var toolDefs = []toolDef{
-	{
-		name:        "time.now",
-		description: "Get the current UTC time from the server.",
-		parameters: mustJSONSchema(map[string]any{
-			"type":                 "object",
-			"properties":           map[string]any{},
-			"additionalProperties": false,
-		}),
-		argHint: `{}`,
-	},
 	{
 		name:        "session.history",
 		description: "Read stored session history for the current peer. Optional session_key must belong to this peer, and optional run_id can target one of this peer's spawned sub-sessions.",

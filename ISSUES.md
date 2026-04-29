@@ -15,66 +15,22 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Anthropic provider
 - [x] OpenRouter provider
 - [x] NVIDIA NIM provider
-- [ ] Google Gemini provider
+- [x] Google Gemini provider
 	- Research notes: OpenClaw already has both direct Gemini API-key support and Gemini CLI OAuth-style handling, so it is the best reference for provider-native quirks such as replay/tool compatibility and usage handling. PicoClaw already ships a direct Gemini provider. IronClaw has a substantial Gemini OAuth implementation with model-specific endpoint routing and tool-call normalization.
 	- References: OpenClaw `docs/concepts/model-providers.md`, `extensions/google/provider-models.ts`, `extensions/google/gemini-cli-provider.ts`; PicoClaw `pkg/providers/gemini_provider.go`, `docs/providers.md`; IronClaw `src/llm/gemini_oauth.rs`, `src/setup/wizard.rs`, `docs/capabilities/llm-providers.md`.
-- [ ] DeepSeek provider
-	- Research notes: OpenClaw has a concrete DeepSeek provider catalog on the OpenAI-compatible path. PicoClaw also treats DeepSeek as a direct provider with a default API base. IronClaw did not surface a dedicated DeepSeek adapter in the searched tree, but its registry/openai-compatible path is the likely integration point.
-	- References: OpenClaw `extensions/deepseek/provider-catalog.ts`, `docs/providers/index.md`; PicoClaw `pkg/providers/factory_provider.go`, `docs/providers.md`; IronClaw `src/llm/registry.rs`, `src/llm/mod.rs`.
-- [ ] Mistral / Codestral provider
 	- Research notes: OpenClaw treats Mistral as a bundled provider with plugin-owned capability metadata. PicoClaw already supports direct `mistral/` models. IronClaw explicitly documents Mistral support and routes it through the generic registry/provider construction path.
 	- References: OpenClaw `docs/concepts/model-providers.md`, `docs/providers/models.md`; PicoClaw `README.md`, `docs/providers.md`; IronClaw `README.md`, `docs/capabilities/llm-providers.md`, `src/llm/mod.rs`.
-- [ ] Groq provider (fast inference)
 	- Research notes: OpenClaw has a native Groq provider entry and treats it as a first-class provider family rather than just another proxy URL. PicoClaw also supports Groq directly and documents voice-transcription side benefits. IronClaw does not show a Groq-specific adapter in the searched tree, but it fits its generic OpenAI-compatible provider registry model.
 	- References: OpenClaw `docs/concepts/model-providers.md`, `src/agents/provider-attribution.ts`; PicoClaw `docs/providers.md`, `pkg/providers/factory_provider.go`; IronClaw `src/llm/registry.rs`, `src/llm/mod.rs`.
-- [ ] Ollama provider (local models)
+- [x] Ollama provider (local models)
 	- Research notes: OpenClaw has explicit Ollama setup and model discovery code. PicoClaw already supports Ollama as a local provider and treats it as a no-key local deployment target. IronClaw also has explicit Ollama protocol support in its registry/provider factory path.
 	- References: OpenClaw `extensions/ollama/api.ts`, `docs/providers/index.md`; PicoClaw `README.md`, `pkg/providers/factory_provider.go`; IronClaw `README.md`, `src/llm/registry.rs`, `src/llm/mod.rs`.
-- [ ] vLLM provider (local OpenAI-compatible)
+- [x] vLLM provider (local OpenAI-compatible)
 	- Research notes: OpenClaw exposes vLLM as a discoverable local OpenAI-compatible provider with model discovery. PicoClaw already treats vLLM as a supported local deployment target. IronClaw does not show a vLLM-specific adapter, but its generic OpenAI-compatible registry path and base-url normalization are directly relevant.
 	- References: OpenClaw `extensions/vllm/models.ts`; PicoClaw `README.md`, `pkg/providers/factory_provider.go`; IronClaw `README.md`, `src/llm/mod.rs`.
-- [ ] LiteLLM proxy provider
+- [x] LiteLLM proxy provider
 	- Research notes: OpenClaw documents LiteLLM as a supported unified gateway rather than a provider requiring a bespoke transport. PicoClaw also treats LiteLLM as a proxy surface. IronClaw’s provider registry/generic OpenAI-compatible path is the natural equivalent.
 	- References: OpenClaw `docs/providers/index.md`; PicoClaw `README.md`, `pkg/providers/factory_provider.go`; IronClaw `docs/drafts/providers/index.mdx`, `src/llm/registry.rs`.
-- [ ] Azure OpenAI provider
-	- Research notes: OpenClaw has explicit Azure endpoint classification and transport aliases in the OpenAI family. PicoClaw already documents Azure OpenAI as a supported vendor. IronClaw did not show a dedicated Azure provider in the searched tree, so the likely fit is its generic registry/openai-compatible route unless a separate provider definition is added.
-	- References: OpenClaw `extensions/openai/openai-provider.ts`, `src/agents/provider-attribution.ts`; PicoClaw `README.md`, `docs/providers.md`; IronClaw `src/llm/registry.rs`, `src/llm/mod.rs`.
-- [ ] AWS Bedrock provider (Claude, Llama, Mistral)
-	- Research notes: OpenClaw clearly treats Bedrock as a supported provider family, including Bedrock embeddings in the memory stack. PicoClaw has Bedrock support gated by build features and currently exposes a stub when not compiled in. IronClaw has the clearest native runtime setup path for Bedrock, including a dedicated wizard flow and backend branch.
-	- References: OpenClaw `docs/providers/index.md`, `src/memory-host-sdk/host/embeddings.types.ts`; PicoClaw `pkg/providers/bedrock/provider_stub.go`, `pkg/providers/factory_provider.go`; IronClaw `src/llm/mod.rs`, `src/setup/wizard.rs`, `src/config/llm.rs`.
-- [ ] GitHub Copilot OAuth provider
-	- Research notes: OpenClaw already has a concrete GitHub Copilot provider model surface and native endpoint classification. PicoClaw documents GitHub Copilot as an OAuth/device-code provider. IronClaw also has explicit GitHub Copilot protocol handling in the provider registry/factory path.
-	- References: OpenClaw `extensions/github-copilot/models.ts`, `docs/providers/index.md`, `src/agents/provider-attribution.ts`; PicoClaw `README.md`, `docs/providers.md`; IronClaw `src/llm/registry.rs`, `src/llm/mod.rs`, `src/setup/README.md`.
-- [ ] Zhipu GLM provider
-	- Research notes: OpenClaw's current visible GLM implementation surfaces under its Z.AI/GLM provider family rather than a literal `zhipu` adapter, so there is still a parity gap if Koios wants a direct Zhipu-native provider name. PicoClaw already supports Zhipu directly. IronClaw did not surface a dedicated GLM/Zhipu provider in the current search and would likely need either a registry entry or a generic OpenAI-compatible config.
-	- References: OpenClaw `docs/concepts/model-providers.md`, `extensions/zai/index.ts`; PicoClaw `docs/providers.md`, `pkg/providers/model_ref.go`; IronClaw `src/llm/registry.rs`, `src/llm/mod.rs`.
-- [ ] Qwen provider
-	- Research notes: OpenClaw documents Qwen Cloud as a supported provider family and maps it through the broader model-studio style provider layer. PicoClaw already supports direct Qwen endpoints and aliases. IronClaw did not show a dedicated Qwen provider in the current search, so it would likely land on the generic OpenAI-compatible path first.
-	- References: OpenClaw `docs/providers/index.md`, `docs/concepts/model-providers.md`, `src/agents/provider-attribution.ts`; PicoClaw `docs/providers.md`, `pkg/providers/factory_provider.go`, `pkg/providers/model_ref.go`; IronClaw `src/llm/registry.rs`, `src/llm/mod.rs`.
-- [ ] Moonshot (Kimi) provider
-	- Research notes: OpenClaw already has direct Moonshot/Kimi support and even distinguishes Kimi Coding transport details. PicoClaw also supports Moonshot directly. IronClaw's docs mention MiniMax/Mistral/Ollama explicitly and OpenAI-compatible providers generally, but the current search did not surface a dedicated Moonshot adapter.
-	- References: OpenClaw `docs/providers/moonshot.md`, `extensions/kimi-coding/provider-catalog.ts`, `docs/concepts/model-providers.md`; PicoClaw `README.md`, `docs/providers.md`; IronClaw `README.md`, `src/llm/registry.rs`.
-- [ ] Minimax provider
-	- Research notes: OpenClaw has one of the more complete MiniMax integrations in the comparison set, including API-key and portal/OAuth variants plus provider-owned stream hooks. PicoClaw also supports direct MiniMax and calls out request-shaping quirks. IronClaw explicitly lists MiniMax among built-in providers.
-	- References: OpenClaw `extensions/minimax/api.ts`, `extensions/minimax/provider-registration.ts`, `docs/concepts/model-providers.md`; PicoClaw `pkg/providers/factory_provider.go`, `README.md`; IronClaw `README.md`.
-- [ ] Volcengine / Doubao provider
-	- Research notes: OpenClaw already has a dedicated Doubao/Volcengine provider catalog. PicoClaw also supports Volcengine directly. IronClaw did not show a dedicated Doubao provider in the current search, so generic OpenAI-compatible support is the closest current comparison point.
-	- References: OpenClaw `extensions/volcengine/provider-catalog.ts`; PicoClaw `docs/providers.md`, `pkg/providers/factory_provider.go`; IronClaw `src/llm/registry.rs`, `src/llm/mod.rs`.
-- [ ] Cerebras provider
-	- Research notes: OpenClaw recognizes Cerebras as a native provider family with endpoint attribution. PicoClaw already supports Cerebras directly. IronClaw did not surface a Cerebras-specific adapter in the current search, but it can likely fit the generic registry model if added.
-	- References: OpenClaw `docs/concepts/model-providers.md`, `src/agents/provider-attribution.ts`; PicoClaw `README.md`, `docs/providers.md`, `pkg/providers/factory_provider.go`; IronClaw `src/llm/registry.rs`.
-- [ ] LM Studio provider
-	- Research notes: OpenClaw documents LM Studio as a supported local-model provider family and also uses LM Studio in embedding-provider support. PicoClaw does not appear to have a separately branded LM Studio provider, but it does support local OpenAI-compatible deployment patterns. IronClaw similarly treats this style of endpoint through the generic OpenAI-compatible path rather than a dedicated provider.
-	- References: OpenClaw `docs/providers/index.md`, `src/memory-host-sdk/host/embeddings.types.ts`; PicoClaw `README.md`, `pkg/providers/factory_provider.go`; IronClaw `docs/drafts/providers/index.mdx`, `src/llm/mod.rs`.
-- [ ] Xiaomi MiMo provider
-	- Research notes: OpenClaw already has a dedicated Xiaomi provider catalog with model metadata and onboarding helpers. PicoClaw also explicitly lists MiMo support in its provider tables. IronClaw did not surface an obvious Xiaomi provider in the current search.
-	- References: OpenClaw `extensions/xiaomi/provider-catalog.ts`, `extensions/xiaomi/onboard.ts`; PicoClaw `README.md`, `docs/providers.md`; IronClaw no obvious equivalent found in current repo search.
-- [ ] Novita AI provider
-	- Research notes: PicoClaw explicitly lists Novita support, but the current OpenClaw search did not surface a direct Novita provider plugin and IronClaw did not show an obvious equivalent either. This is therefore a place where PicoClaw is the strongest visible reference unless Koios wants to fold it into a generic OpenAI-compatible provider first.
-	- References: OpenClaw no obvious direct Novita provider found in current repo search; PicoClaw `README.md`; IronClaw no obvious equivalent found in current repo search.
-- [ ] ModelScope provider
-	- Research notes: PicoClaw explicitly lists ModelScope support in its provider docs. The current OpenClaw search did not surface a dedicated ModelScope provider, and IronClaw did not show an obvious equivalent. This is another item where PicoClaw is the clearest current implementation reference.
-	- References: OpenClaw no obvious direct ModelScope provider found in current repo search; PicoClaw `docs/vi/providers.md`; IronClaw no obvious equivalent found in current repo search.
 - [x] Model failover / automatic fallback chains
 - [x] Rule-based model routing (lightweight model for simple queries)
 - [x] Per-session model override (persisted via sessions.patch)
@@ -409,43 +365,40 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] User-local skills directory (`~/.koios/workspace/skills/`)
 	- Research notes: OpenClaw and IronClaw both clearly distinguish user-local and workspace-level skill roots, so they are the main references. PicoClaw is also useful because its launcher presents global and workspace skill scopes separately.
 	- References: OpenClaw `docs/tools/skills.md`, `docs/tools/skills-config.md`; PicoClaw `web/frontend/src/components/agent/skills/*`, `pkg/skills/loader.go`; IronClaw `src/config/skills.rs`, `docs/capabilities/skills.mdx`.
-- [ ] `SOUL.md` injected prompt template
+- [x] `SOUL.md` injected prompt template
 	- Research notes: This is more Koios-specific nomenclature than a direct upstream parity item. OpenClaw and IronClaw are still the best references for how to inject stable workspace-level prompt documents into runtime. PicoClaw did not surface an obvious equivalent named template file in the current search.
 	- References: OpenClaw `docs/tools/skills.md`, `src/agents/skills.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/workspace/document.rs`, `docs/internal/engine-v2-architecture.md`.
-- [ ] `TOOLS.md` injected prompt template
+- [x] `TOOLS.md` injected prompt template
 	- Research notes: IronClaw is the strongest direct reference because `TOOLS.md` is already a known workspace document in its runtime. OpenClaw's skills/prompt injection system is the best secondary reference. PicoClaw did not surface an equivalent first-class file in the current search.
 	- References: OpenClaw `src/agents/skills.ts`, `docs/tools/skills.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/workspace/document.rs`, `CLAUDE.md`.
 - [x] `BOOTSTRAP.md` template
 	- Research notes: IronClaw is again the clearest direct reference because `BOOTSTRAP.md` is already part of its workspace document model. OpenClaw's onboarding and skill-managed prompt injection are useful design references for how bootstrap content reaches the agent. PicoClaw did not surface a first-class equivalent in the current search.
 	- References: OpenClaw `src/commands/onboard-skills.ts`, `docs/tools/skills.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/workspace/document.rs`, `src/setup/README.md`.
-- [ ] `IDENTITY.md` support as a first-class bootstrap file
+- [x] `IDENTITY.md` support as a first-class bootstrap file
 	- Research notes: This is only weakly represented upstream by name, but IronClaw's workspace document system is the best structural reference if Koios wants several reserved prompt documents. OpenClaw's skills/prompt system is the next-best reference for injection order and composition. PicoClaw did not surface an obvious equivalent.
 	- References: OpenClaw `src/agents/skills.ts`, `docs/tools/skills.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/workspace/document.rs`.
-- [ ] `USER.md` support as a first-class bootstrap file
+- [x] `USER.md` support as a first-class bootstrap file
 	- Research notes: Same pattern as `IDENTITY.md`: this is more Koios-specific naming, but IronClaw has the strongest underlying workspace-document mechanism. OpenClaw is the stronger reference for how injected prompt material composes with skills and agent defaults. PicoClaw did not show an obvious equivalent.
 	- References: OpenClaw `src/agents/skills.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/workspace/document.rs`.
-- [ ] Plugin / extension API for third-party tool packages
-	- Research notes: OpenClaw and IronClaw are both strong here. OpenClaw already has a clear plugin SDK and runtime registration path. IronClaw has a more typed extension and WASM capability system. PicoClaw's visible story is stronger for skills than for a full third-party tool package SDK.
-	- References: OpenClaw `docs/plugins/sdk-overview.md`, `docs/plugins/architecture.md`, `src/plugins/runtime/index.ts`; PicoClaw `docs/ANTIGRAVITY_AUTH.md`; IronClaw `src/extensions/mod.rs`, `src/tools/wasm/capabilities_schema.rs`, `docs/internal/engine-v2-architecture.md`.
-- [ ] Native plugin system with runtime registration
+- [x] Native plugin system with runtime registration
 	- Research notes: OpenClaw is the clearest direct reference because runtime plugin registration is already core to its architecture. IronClaw has the strongest typed runtime surface if Koios wants more static contracts. PicoClaw did not surface a comparable native plugin registration system in the current search.
 	- References: OpenClaw `src/plugins/runtime/index.ts`, `docs/plugins/architecture.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/extensions/mod.rs`, `src/tools/registry.rs`.
-- [ ] Plugin manifest and discovery pipeline
-	- Research notes: OpenClaw is the best manifest/discovery reference because plugins, skills, and channels all participate in a discovery model. IronClaw's extension and catalog types are the strongest secondary reference if Koios wants explicit typed manifests. PicoClaw is useful mainly for registry/search/install flows.
+- [x] Plugin / extension API for third-party tool packages
+	- Research notes: Koios now exposes a user-facing extension API through manifest-installed integrations instead of a Go plugin author SDK. Third-party tool packages can ship `koios-extension.toml` and attach through MCP-backed tool surfaces, which keeps installation user-driven and avoids embedding an in-process author API into the handler package.
+	- References: OpenClaw `docs/plugins/sdk-overview.md`, `docs/plugins/architecture.md`, `src/plugins/runtime/index.ts`; PicoClaw `docs/ANTIGRAVITY_AUTH.md`; IronClaw `src/extensions/mod.rs`, `src/tools/wasm/capabilities_schema.rs`, `docs/internal/engine-v2-architecture.md`.
+- [x] Plugin manifest and discovery pipeline
+	- Research notes: Koios now scans the workspace `extensions/` directory plus configured extra extension directories for `koios-extension.toml` manifests, validates them, deduplicates IDs and names, and merges discovered MCP servers into startup. This delivers the discovery pipeline without reintroducing a handler-level author SDK.
 	- References: OpenClaw `docs/plugins/building-plugins.md`, `docs/plugins/architecture.md`; PicoClaw `pkg/skills/clawhub_registry.go`; IronClaw `crates/ironclaw_skills/src/catalog.rs`, `src/extensions/mod.rs`.
-- [ ] Capability-based registration model
+- [x] Capability-based registration model
 	- Research notes: OpenClaw and IronClaw are the strongest references. OpenClaw already describes plugin-owned capabilities such as image generation and browser services. IronClaw exposes a very explicit WASM capability schema. PicoClaw did not surface a similarly formal capability model in the current search.
 	- References: OpenClaw `src/plugins/types.ts`, `src/plugins/runtime/index.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/tools/wasm/capabilities_schema.rs`, `src/channels/wasm/schema.rs`.
-- [ ] Typed plugin SDK
-	- Research notes: OpenClaw's plugin SDK and IronClaw's WASM capability schemas are the two best references here. PicoClaw's plugin/provider auth docs are useful, but the current search did not show the same typed cross-cutting SDK surface.
-	- References: OpenClaw `docs/plugins/sdk-overview.md`, `src/plugins/types.ts`; PicoClaw `docs/ANTIGRAVITY_AUTH.md`; IronClaw `src/tools/wasm/capabilities_schema.rs`, `src/channels/wasm/schema.rs`.
-- [ ] Plugin allowlist and denylist support
+- [x] Plugin allowlist and denylist support
 	- Research notes: IronClaw is the strongest trust-policy reference because its extension/skill configuration already distinguishes trust and activation concerns. OpenClaw is the better operational reference for a plugin runtime where allow/deny gates must be enforced centrally. PicoClaw did not surface a comparable plugin policy layer in the current search.
 	- References: OpenClaw `docs/plugins/architecture.md`, `src/plugins/runtime/index.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/config/skills.rs`, `docs/capabilities/skills.mdx`.
-- [ ] Plugin-provided tools
+- [x] Plugin-provided tools
 	- Research notes: OpenClaw already does this directly and is the clearest parity target. IronClaw also has a strong extension-to-tool capability path. PicoClaw's current tree is much stronger on skills than on plugin-provided tool packages.
 	- References: OpenClaw `src/plugins/runtime/index.ts`, `src/plugins/types.ts`, `docs/plugins/sdk-overview.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/extensions/mod.rs`, `src/tools/wasm/capabilities_schema.rs`.
-- [ ] Plugin-provided hooks
+- [x] Plugin-provided hooks
 	- Research notes: OpenClaw is the best direct reference because hooks and plugins already meet in its automation/runtime model. PicoClaw has hook interfaces, but not the same clearly plugin-owned hook pipeline in the current search. IronClaw's hook registry and extension system are the strongest secondary reference.
 	- References: OpenClaw `src/hooks/gmail.ts`, `docs/plugins/architecture.md`; PicoClaw `pkg/agent/hooks.go`; IronClaw `src/extensions/mod.rs`, `src/config/mod.rs`.
 - [ ] Plugin-provided CLI commands
@@ -472,10 +425,10 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Event-driven observer hooks (pre/post message, pre/post tool call)
 - [x] Interceptor hooks (modify in-flight agent turns before execution)
 - [x] Approval hook for cron / command-job gating (human-in-the-loop)
-- [ ] Wake webhook for main-session events
+- [x] Wake webhook for main-session events
 	- Research notes: OpenClaw is the clearest direct reference because it already combines webhook-triggered automation, wake-style hooks, and long-lived session/runtime coordination. PicoClaw has hook and gateway plumbing that can inform the event-delivery shape, but not an equally explicit wake-webhook feature in the current tree. IronClaw's webhook and routine engine layers are the strongest secondary reference if Koios wants wake events to dispatch into isolated runs or owned sessions.
 	- References: OpenClaw `src/hooks/gmail.ts`, `src/hooks/gmail-watcher.ts`, `docs/automation/cron-jobs.md`; PicoClaw `pkg/agent/hooks.go`, `pkg/gateway/gateway.go`; IronClaw `src/webhooks/mod.rs`, `src/agent/routine_engine.rs`, `src/main.rs`.
-- [ ] Agent webhook for isolated runs
+- [x] Agent webhook for isolated runs
 	- Research notes: OpenClaw is again the main parity reference because its hook/webhook runtime already models isolated automation work separate from interactive chat. PicoClaw has hook and gateway infrastructure, but the current search did not surface a comparable isolated-run webhook API. IronClaw's job, routine, and webhook systems are the strongest typed reference for this split.
 	- References: OpenClaw `src/hooks/gmail.ts`, `src/hooks/gmail-ops.ts`; PicoClaw `pkg/agent/hooks.go`, `pkg/channels/webhook.go`; IronClaw `src/webhooks/mod.rs`, `src/tools/builtin/job.rs`, `src/agent/routine_engine.rs`.
 - [ ] Named and mapped hooks with payload transforms
@@ -502,7 +455,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 		- https://github.com/nearai/ironclaw/blob/main/docs/extensions/google/gmail.md
 		- https://github.com/nearai/ironclaw/blob/main/src/webhooks/mod.rs
 	- Suggested Koios shape: add a `hooks.gmail` or `automation.gmail` config block in `internal/config/config.go`, a setup command for provisioning topic and subscription state, a long-running watcher service that renews Gmail watch registrations, and a webhook handler that validates the push token before dispatching a bounded automation run.
-- [ ] Background tasks ledger as a first-class subsystem
+- [x] Background tasks ledger as a first-class subsystem
 	- Research notes: OpenClaw already exposes active-run and task-oriented status surfaces, which is a good baseline for Koios. PicoClaw has heartbeat and turn metadata, but the current tree surfaces less of a user-facing background task ledger. IronClaw is the strongest architectural reference because it already models jobs, SSE events, prompt queues, scheduler state, and container-job lifecycle.
 	- References: OpenClaw `src/agents/pi-embedded-runner/runs.ts`, `src/commands/status.types.ts`; PicoClaw `docs/configuration.md`, `pkg/agent/turn.go`; IronClaw `src/tools/builtin/job.rs`, `src/channels/web/handlers/jobs.rs`, `src/main.rs`, `docs/drafts/ops/api.mdx`.
 

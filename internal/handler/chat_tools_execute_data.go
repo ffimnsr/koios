@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/artifacts"
@@ -25,8 +24,6 @@ import (
 
 func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
 	switch call.Name {
-	case "time.now":
-		return map[string]string{"utc": time.Now().UTC().Format(time.RFC3339)}, nil
 	case "subagent.status":
 		var args struct {
 			ID string `json:"id"`

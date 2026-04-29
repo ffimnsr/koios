@@ -14,9 +14,11 @@ import (
 
 // serverEntry holds a connected MCP server client along with its discovered tools.
 type serverEntry struct {
-	name   string
-	client Client
-	tools  []Tool // cached after Initialize
+	name       string
+	toolPrefix string
+	hideTools  bool
+	client     Client
+	tools      []Tool // cached after Initialize
 }
 
 // Manager manages connections to multiple MCP servers and exposes their tools
@@ -35,7 +37,11 @@ func NewManager(cfgs []config.MCPServerConfig) *Manager {
 			continue
 		}
 		c := c // capture loop variable
-		m.servers = append(m.servers, &serverEntry{name: c.Name, client: newClient(c)})
+		prefix := strings.TrimSpace(c.ToolNamePrefix)
+		if prefix == "" {
+			prefix = ToolPrefix(c.Name)
+		}
+		m.servers = append(m.servers, &serverEntry{name: c.Name, toolPrefix: prefix, hideTools: c.HideTools, client: newClient(c)})
 	}
 	return m
 }
@@ -86,31 +92,53 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-// ToolName returns the prefixed tool name used in the handler registry.
-// Format: mcp__{serverName}__{toolName}
-func ToolName(serverName, toolName string) string {
-	return "mcp__" + serverName + "__" + toolName
+// ToolPrefix returns the default runtime tool prefix for a plain configured
+// MCP server.
+func ToolPrefix(serverName string) string {
+	return "mcp__" + serverName + "__"
 }
 
-// ParseToolName splits a prefixed tool name back into (serverName, toolName).
-// Returns ok=false if the name is not in MCP format.
-func ParseToolName(name string) (serverName, toolName string, ok bool) {
-	const prefix = "mcp__"
-	if !strings.HasPrefix(name, prefix) {
-		return "", "", false
+// ToolName returns the default prefixed tool name used in the handler registry.
+// Format: mcp__{serverName}__{toolName}
+func ToolName(serverName, toolName string) string {
+	return ToolPrefix(serverName) + toolName
+}
+
+// PluginToolPrefix returns the runtime tool prefix for a manifest-backed
+// extension server. The manifest id is normalized into a stable token.
+func PluginToolPrefix(manifestID string) string {
+	namespace := sanitizePrefixToken(manifestID)
+	if namespace == "" {
+		namespace = "plugin"
 	}
-	rest := name[len(prefix):]
-	idx := strings.Index(rest, "__")
-	if idx < 0 {
-		return "", "", false
+	return "mcp_plug_" + namespace + "__"
+}
+
+// ParseToolName splits a prefixed MCP tool name into a namespace token and the
+// tool name. The namespace token is the server name for default mcp__ names and
+// the normalized manifest id for mcp_plug_ names.
+func ParseToolName(name string) (namespace, toolName string, ok bool) {
+	for _, prefix := range []string{"mcp__", "mcp_plug_"} {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		rest := name[len(prefix):]
+		idx := strings.Index(rest, "__")
+		if idx < 0 {
+			return "", "", false
+		}
+		if idx == 0 || idx+2 >= len(rest) {
+			return "", "", false
+		}
+		return rest[:idx], rest[idx+2:], true
 	}
-	return rest[:idx], rest[idx+2:], true
+	return "", "", false
 }
 
 // RegisteredTool is one tool offered by an MCP server, ready for integration
 // into handler.toolDef.
 type RegisteredTool struct {
-	FullName    string // mcp__{server}__{tool}
+	FullName    string // mcp__{server}__{tool} or mcp_plug_{manifest}__{tool}
 	ServerName  string
 	ToolName    string
 	Description string
@@ -124,9 +152,12 @@ func (m *Manager) ListTools() []RegisteredTool {
 
 	var out []RegisteredTool
 	for _, s := range m.servers {
+		if s.hideTools {
+			continue
+		}
 		for _, t := range s.tools {
 			out = append(out, RegisteredTool{
-				FullName:    ToolName(s.name, t.Name),
+				FullName:    s.toolPrefix + t.Name,
 				ServerName:  s.name,
 				ToolName:    t.Name,
 				Description: t.Description,
@@ -137,14 +168,9 @@ func (m *Manager) ListTools() []RegisteredTool {
 	return out
 }
 
-// CallTool invokes a tool on the appropriate MCP server. fullName must be in
-// the mcp__{server}__{tool} format returned by ToolName.
+// CallTool invokes a tool on the appropriate MCP server. fullName must match
+// one of the prefixes returned by ToolName or PluginToolPrefix.
 func (m *Manager) CallTool(ctx context.Context, fullName string, rawArgs json.RawMessage) (any, error) {
-	serverName, toolName, ok := ParseToolName(fullName)
-	if !ok {
-		return nil, fmt.Errorf("mcp: invalid tool name %q", fullName)
-	}
-
 	var args map[string]any
 	if len(rawArgs) > 0 {
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
@@ -157,16 +183,21 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, rawArgs json.Ra
 
 	m.mu.RLock()
 	var target *serverEntry
+	var toolName string
 	for _, s := range m.servers {
-		if s.name == serverName {
+		if strings.HasPrefix(fullName, s.toolPrefix) {
 			target = s
+			toolName = strings.TrimPrefix(fullName, s.toolPrefix)
 			break
 		}
 	}
 	m.mu.RUnlock()
 
 	if target == nil {
-		return nil, fmt.Errorf("mcp: server %q not found", serverName)
+		return nil, fmt.Errorf("mcp: invalid tool name %q", fullName)
+	}
+	if strings.TrimSpace(toolName) == "" {
+		return nil, fmt.Errorf("mcp: invalid tool name %q", fullName)
 	}
 
 	result, err := target.client.CallTool(ctx, toolName, args)
@@ -201,4 +232,26 @@ func extractText(r *ToolResult) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func sanitizePrefixToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(value))
+	lastUnderscore := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }

@@ -207,6 +207,9 @@ func expandToolTokens(tokens []string) map[string]bool {
 			for _, d := range toolDefs {
 				expanded[d.name] = true
 			}
+			for _, name := range defaultPluginToolNames() {
+				expanded[name] = true
+			}
 			continue
 		}
 		if group, ok := toolGroups[token]; ok {

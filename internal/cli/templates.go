@@ -11,9 +11,6 @@ var migrateLongHelp string
 //go:embed templates/model_set_long.txt
 var modelSetLongHelp string
 
-//go:embed templates/init_wizard_config.toml
-var initWizardConfigTemplate string
-
 //go:embed templates/bootstrap/AGENTS.md
 var scaffoldAgentsTemplate string
 

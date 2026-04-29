@@ -21,6 +21,9 @@ func (c *Config) CronDir() string { return filepath.Join(c.WorkspaceRoot, "cron"
 // AgentDir returns the path where subagent registry data is stored, derived from WorkspaceRoot.
 func (c *Config) AgentDir() string { return filepath.Join(c.WorkspaceRoot, "agents") }
 
+// ExtensionsDir returns the path where user-installed extension manifests are stored.
+func (c *Config) ExtensionsDir() string { return filepath.Join(c.WorkspaceRoot, "extensions") }
+
 // WorkflowDir returns the path where workflow definitions and run records are
 // stored, derived from WorkspaceRoot.
 func (c *Config) WorkflowDir() string { return filepath.Join(c.WorkspaceRoot, "workflows") }
@@ -54,11 +57,11 @@ func (c *Config) PlansDBPath() string { return filepath.Join(c.DBDir(), "plans.d
 // ProjectsDBPath returns the path for the durable projects SQLite database, derived from WorkspaceRoot.
 func (c *Config) ProjectsDBPath() string { return filepath.Join(c.DBDir(), "projects.db") }
 
-func (c *Config) ArtifactsDBPath() string    { return filepath.Join(c.DBDir(), "artifacts.db") }
-func (c *Config) DecisionsDBPath() string    { return filepath.Join(c.DBDir(), "decisions.db") }
-func (c *Config) PreferencesDBPath() string  { return filepath.Join(c.DBDir(), "preferences.db") }
-func (c *Config) RemindersDBPath() string    { return filepath.Join(c.DBDir(), "reminders.db") }
-func (c *Config) ToolResultsDBPath() string  { return filepath.Join(c.DBDir(), "tool_results.db") }
+func (c *Config) ArtifactsDBPath() string   { return filepath.Join(c.DBDir(), "artifacts.db") }
+func (c *Config) DecisionsDBPath() string   { return filepath.Join(c.DBDir(), "decisions.db") }
+func (c *Config) PreferencesDBPath() string { return filepath.Join(c.DBDir(), "preferences.db") }
+func (c *Config) RemindersDBPath() string   { return filepath.Join(c.DBDir(), "reminders.db") }
+func (c *Config) ToolResultsDBPath() string { return filepath.Join(c.DBDir(), "tool_results.db") }
 
 const (
 	// DefaultConfigFile is the default runtime config path in the repo root.
@@ -79,7 +82,8 @@ type ModelProfile struct {
 // MCPServerConfig describes a single MCP (Model Context Protocol) server
 // that Koios should connect to at startup to discover and expose external tools.
 type MCPServerConfig struct {
-	// Name is a short identifier used to prefix tool names: mcp__{name}__{tool}.
+	// Name is a short identifier used to identify the MCP server in config,
+	// logs, and startup dedupe checks.
 	Name string `toml:"name"`
 	// Transport is one of "stdio", "http", or "sse".
 	Transport string `toml:"transport"`
@@ -97,6 +101,14 @@ type MCPServerConfig struct {
 	Timeout string `toml:"timeout"`
 	// Enabled, when false, skips this server on startup.
 	Enabled bool `toml:"enabled"`
+	// ToolNamePrefix, when set, overrides the runtime tool-name prefix used for
+	// tools discovered from this server. It is internal-only and currently used
+	// to scope manifest-backed extension tools under a plugin namespace.
+	ToolNamePrefix string `toml:"-"`
+	// HideTools suppresses this server from the agent-visible tool catalog while
+	// still allowing internal runtime callers such as manifest hook bindings to
+	// invoke its tools by full runtime name.
+	HideTools bool `toml:"-"`
 }
 
 // Config holds all runtime configuration loaded from koios.config.toml.
@@ -133,7 +145,8 @@ type Config struct {
 	SessionDailyResetTime        string
 	CompactThreshold             int
 	CompactReserve               int
-	EmbedModel                   string
+	MemoryEmbedEnabled           bool
+	MemoryEmbedModel             string
 	MemoryInject                 bool
 	MemoryTopK                   int
 	MemoryLCMWindow              int      // LCM: inject N most-recent chunks unconditionally
@@ -186,6 +199,9 @@ type Config struct {
 	ProcessStopTimeout            time.Duration
 	ProcessLogTailBytes           int
 	ProcessMaxProcessesPerPeer    int
+	ExtensionDirs                 []string
+	ExtensionAllow                []string
+	ExtensionDeny                 []string
 
 	WorkspaceRoot     string
 	WorkspacePerAgent bool
@@ -254,6 +270,11 @@ type fileConfig struct {
 	MCP struct {
 		Servers []MCPServerConfig `toml:"servers"`
 	} `toml:"mcp"`
+	Extensions struct {
+		Dirs  []string `toml:"dirs"`
+		Allow []string `toml:"allow"`
+		Deny  []string `toml:"deny"`
+	} `toml:"extensions"`
 	Session struct {
 		MaxMessages           *int   `toml:"max_messages"`
 		Retention             string `toml:"retention"`
@@ -269,7 +290,10 @@ type fileConfig struct {
 		Reserve   *int `toml:"reserve"`
 	} `toml:"compaction"`
 	Memory struct {
-		EmbedModel *string  `toml:"embed_model"`
+		Embed struct {
+			Enabled *bool   `toml:"enabled"`
+			Model   *string `toml:"model"`
+		} `toml:"embed"`
 		Inject     *bool    `toml:"inject"`
 		TopK       *int     `toml:"top_k"`
 		LCMWindow  *int     `toml:"lcm_window"`
@@ -379,7 +403,8 @@ func Default() *Config {
 		SessionDailyResetTime:         "",
 		CompactThreshold:              0,
 		CompactReserve:                20,
-		EmbedModel:                    "text-embedding-3-small",
+		MemoryEmbedEnabled:            false,
+		MemoryEmbedModel:              "text-embedding-3-small",
 		MemoryInject:                  false,
 		MemoryTopK:                    3,
 		MemoryLCMWindow:               0,
@@ -417,6 +442,9 @@ func Default() *Config {
 		ProcessStopTimeout:            5 * time.Second,
 		ProcessLogTailBytes:           64 * 1024,
 		ProcessMaxProcessesPerPeer:    8,
+		ExtensionDirs:                 nil,
+		ExtensionAllow:                nil,
+		ExtensionDeny:                 nil,
 		WorkspaceRoot:                 "./workspace",
 		WorkspacePerAgent:             true,
 		WorkspaceMaxBytes:             1 << 20,
@@ -514,9 +542,10 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		cfg.SessionPruneKeepToolMessages,
 		cfg.CompactThreshold,
 		cfg.CompactReserve,
-		strconv.Quote(cfg.EmbedModel),
 		cfg.MemoryInject,
 		cfg.MemoryTopK,
+		cfg.MemoryEmbedEnabled,
+		strconv.Quote(cfg.MemoryEmbedModel),
 		strconv.Quote(cfg.MilvusURL),
 		strconv.Quote(cfg.MilvusCollection),
 		cfg.MilvusEnabled,
@@ -546,6 +575,9 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		strconv.Quote(cfg.ProcessStopTimeout.String()),
 		cfg.ProcessLogTailBytes,
 		cfg.ProcessMaxProcessesPerPeer,
+		inlineQuotedStringSlice(cfg.ExtensionDirs),
+		inlineQuotedStringSlice(cfg.ExtensionAllow),
+		inlineQuotedStringSlice(cfg.ExtensionDeny),
 		cfg.ExecEnabled,
 		cfg.ExecEnableDenyPatterns,
 		inlineQuotedStringSlice(cfg.ExecCustomDenyPatterns),
@@ -719,6 +751,15 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	if src.MCP.Servers != nil {
 		dst.MCPServers = append([]MCPServerConfig(nil), src.MCP.Servers...)
 	}
+	if src.Extensions.Dirs != nil {
+		dst.ExtensionDirs = append([]string(nil), src.Extensions.Dirs...)
+	}
+	if src.Extensions.Allow != nil {
+		dst.ExtensionAllow = append([]string(nil), src.Extensions.Allow...)
+	}
+	if src.Extensions.Deny != nil {
+		dst.ExtensionDeny = append([]string(nil), src.Extensions.Deny...)
+	}
 
 	if src.Session.MaxMessages != nil && *src.Session.MaxMessages > 0 {
 		dst.MaxSessionMessages = *src.Session.MaxMessages
@@ -756,8 +797,11 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 		dst.CompactReserve = *src.Compaction.Reserve
 	}
 
-	if src.Memory.EmbedModel != nil {
-		dst.EmbedModel = *src.Memory.EmbedModel
+	if src.Memory.Embed.Enabled != nil {
+		dst.MemoryEmbedEnabled = *src.Memory.Embed.Enabled
+	}
+	if src.Memory.Embed.Model != nil {
+		dst.MemoryEmbedModel = *src.Memory.Embed.Model
 	}
 	if src.Memory.Inject != nil {
 		dst.MemoryInject = *src.Memory.Inject
@@ -973,6 +1017,20 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 
 func resolveRelativePaths(cfg *Config, root string) {
 	cfg.WorkspaceRoot = makeAbs(root, cfg.WorkspaceRoot)
+	for i, dir := range cfg.ExtensionDirs {
+		cfg.ExtensionDirs[i] = makeAbs(root, dir)
+	}
+}
+
+// ExtensionSearchPaths returns the manifest discovery paths in precedence order.
+func (c *Config) ExtensionSearchPaths() []string {
+	paths := []string{c.ExtensionsDir()}
+	for _, dir := range c.ExtensionDirs {
+		if strings.TrimSpace(dir) != "" {
+			paths = append(paths, dir)
+		}
+	}
+	return paths
 }
 
 func makeAbs(root, path string) string {
@@ -1154,6 +1212,21 @@ func validate(cfg *Config) error {
 	}
 	if cfg.ProcessMaxProcessesPerPeer < 1 {
 		return fmt.Errorf("tools.process.max_processes_per_peer must be >= 1")
+	}
+	for i, dir := range cfg.ExtensionDirs {
+		if strings.TrimSpace(dir) == "" {
+			return fmt.Errorf("extensions.dirs[%d] must not be empty", i)
+		}
+	}
+	for i, value := range cfg.ExtensionAllow {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("extensions.allow[%d] must not be empty", i)
+		}
+	}
+	for i, value := range cfg.ExtensionDeny {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("extensions.deny[%d] must not be empty", i)
+		}
 	}
 	if cfg.WorkspaceRoot == "" {
 		return fmt.Errorf("workspace.root must not be empty")

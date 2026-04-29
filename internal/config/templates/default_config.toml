@@ -31,6 +31,35 @@ model = "gpt-4o"
 # model = "gpt-4o-mini"
 # api_key = ""
 
+# Local Ollama (no API key required):
+# [[llm.profiles]]
+# name = "local"
+# provider = "ollama"
+# model = "llama3"
+# base_url = "http://localhost:11434"
+
+# vLLM (local OpenAI-compatible server):
+# [[llm.profiles]]
+# name = "vllm"
+# provider = "vllm"
+# model = "meta-llama/Meta-Llama-3-8B-Instruct"
+# base_url = "http://localhost:8000"
+
+# LiteLLM proxy (unified gateway over many backends):
+# [[llm.profiles]]
+# name = "litellm"
+# provider = "litellm"
+# model = "gpt-4o"
+# base_url = "http://localhost:4000"
+# api_key = ""
+
+# Google Gemini (OpenAI-compatible endpoint):
+# [[llm.profiles]]
+# name = "gemini"
+# provider = "gemini"
+# model = "gemini-2.0-flash"
+# api_key = ""
+
 # [mcp]
 # [[mcp.servers]]
 # name = "filesystem"
@@ -60,9 +89,12 @@ threshold = 0
 reserve = 20
 
 [memory]
-embed_model = "text-embedding-3-small"
 inject = false
 top_k = 3
+
+[memory.embed]
+enabled = false
+model = "text-embedding-3-small"
 
 [memory.milvus]
 address = "localhost:19530"
@@ -106,6 +138,14 @@ enabled = false
 stop_timeout = "5s"
 log_tail_bytes = 65536
 max_processes_per_peer = 8
+
+[extensions]
+# Extra directories to scan for koios-extension.toml manifests.
+# The workspace root's ./extensions directory is always scanned automatically.
+dirs = []
+# Optional extension id/name allowlist and denylist. Deny wins.
+allow = []
+deny = []
 
 [tools.exec]
 enabled = true

@@ -8,7 +8,8 @@ import (
 	"github.com/ffimnsr/koios/internal/types"
 )
 
-// activeDefs returns the subset of toolDefs whose backing subsystem is
+// activeDefs returns the subset of built-in and plugin tool definitions whose
+// backing subsystem is currently available.
 func (h *Handler) activeDefs(peerID, sessionKey, activeProfile string) []toolDef {
 	policy := h.effectiveToolPolicy(peerID, sessionKey, activeProfile)
 	var active []toolDef
@@ -20,6 +21,23 @@ func (h *Handler) activeDefs(peerID, sessionKey, activeProfile string) []toolDef
 			continue
 		}
 		active = append(active, d)
+	}
+	if h.pluginRegistry != nil {
+		for _, tool := range h.pluginRegistry.Tools() {
+			tool := tool
+			if tool.Available != nil && !tool.Available(h) {
+				continue
+			}
+			if !policy.Allows(tool.Name) {
+				continue
+			}
+			active = append(active, toolDef{
+				name:        tool.Name,
+				description: tool.Description,
+				parameters:  tool.Parameters,
+				argHint:     tool.ArgHint,
+			})
+		}
 	}
 	// Append MCP tools as dynamic toolDef entries.
 	if h.mcpManager != nil {

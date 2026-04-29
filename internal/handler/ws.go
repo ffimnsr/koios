@@ -267,6 +267,7 @@ type Handler struct {
 	monitor                 *monitor.Monitor
 	logLevel                *slog.LevelVar
 	mcpManager              *mcp.Manager
+	pluginRegistry          *pluginRegistry
 	workflowRunner          *workflow.Runner
 	orchestrator            *orchestrator.Orchestrator
 	idempotency             *idempotencyStore
@@ -378,6 +379,8 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 	execCfg := normalizeExecConfig(opts.ExecConfig)
 	codeExecCfg := normalizeCodeExecutionConfig(opts.CodeExecutionConfig)
 	processCfg := normalizeBackgroundProcessConfig(opts.BackgroundProcessConfig)
+	pluginRegistry := mustDefaultPluginRegistry()
+	pluginRegistry.InstallHooks(opts.Hooks)
 	h := &Handler{
 		store:                   store,
 		provider:                prov,
@@ -422,6 +425,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		monitor:                 opts.Monitor,
 		logLevel:                opts.LogLevel,
 		mcpManager:              opts.MCPManager,
+		pluginRegistry:          pluginRegistry,
 		workflowRunner:          opts.WorkflowRunner,
 		orchestrator:            opts.Orchestrator,
 		ownerPeerIDs:            opts.OwnerPeerIDs,

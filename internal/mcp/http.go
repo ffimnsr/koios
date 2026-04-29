@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -169,8 +170,11 @@ type sseClient struct {
 	http      *http.Client
 	postURL   string
 	nextID    atomic.Int64
-	responses chan *rpcResponse
-	sseCancel context.CancelFunc
+	responses  chan *rpcResponse
+	sseCancel  context.CancelFunc
+	callMu     sync.Mutex   // serializes concurrent send calls
+	streamDone chan struct{} // closed when the SSE background stream ends
+	streamOnce sync.Once
 }
 
 // NewSSEClient creates a new MCP client using the SSE transport.
@@ -180,12 +184,13 @@ func NewSSEClient(name, sseURL string, headers map[string]string, timeout time.D
 		timeout = 30 * time.Second
 	}
 	return &sseClient{
-		name:      name,
-		sseURL:    sseURL,
-		headers:   headers,
-		timeout:   timeout,
-		http:      &http.Client{Timeout: 0}, // no timeout on stream connection
-		responses: make(chan *rpcResponse, 256),
+		name:       name,
+		sseURL:     sseURL,
+		headers:    headers,
+		timeout:    timeout,
+		http:       &http.Client{Timeout: 0}, // no timeout on stream connection
+		responses:  make(chan *rpcResponse, 256),
+		streamDone: make(chan struct{}),
 	}
 }
 
@@ -314,16 +319,22 @@ func (c *sseClient) connectSSE(ctx context.Context, endpointCh chan<- string) {
 		}
 	}
 
-	// Signal end-of-stream.
+	// Signal end-of-stream via streamDone; do NOT close c.responses to
+	// avoid a send-on-closed-channel panic in a concurrent send call.
 	if !sentEndpoint {
 		endpointCh <- ""
 	}
-	close(c.responses)
+	c.streamOnce.Do(func() { close(c.streamDone) })
 }
 
 // send posts a JSON-RPC request and waits for the matching response on the
-// SSE stream.
+// SSE stream. callMu ensures only one request is in flight at a time, which
+// eliminates the need to put back non-matching responses and avoids any
+// send-on-closed-channel panic when the stream ends.
 func (c *sseClient) send(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+
 	id := c.nextID.Add(1)
 	req := rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params}
 	body, err := json.Marshal(req)
@@ -353,7 +364,8 @@ func (c *sseClient) send(ctx context.Context, method string, params json.RawMess
 	_, _ = io.Copy(io.Discard, httpResp.Body)
 	_ = httpResp.Body.Close()
 
-	// Wait for the response on the SSE stream.
+	// Wait for the response on the SSE stream. With callMu held, every
+	// response received here belongs to this request.
 	deadline := time.After(c.timeout)
 	for {
 		select {
@@ -361,11 +373,10 @@ func (c *sseClient) send(ctx context.Context, method string, params json.RawMess
 			return nil, ctx.Err()
 		case <-deadline:
 			return nil, fmt.Errorf("timeout waiting for SSE response to %s", method)
-		case resp, ok := <-c.responses:
-			if !ok {
-				return nil, fmt.Errorf("SSE stream closed")
-			}
-			// Check if this response matches our request ID.
+		case <-c.streamDone:
+			return nil, fmt.Errorf("SSE stream closed")
+		case resp := <-c.responses:
+			// Verify the ID defensively; with callMu it should always match.
 			var respID int64
 			switch v := resp.ID.(type) {
 			case float64:
@@ -374,11 +385,7 @@ func (c *sseClient) send(ctx context.Context, method string, params json.RawMess
 				respID, _ = v.Int64()
 			}
 			if respID != id {
-				// Not ours — put it back if possible, skip otherwise.
-				select {
-				case c.responses <- resp:
-				default:
-				}
+				// Unexpected out-of-order response; skip and keep waiting.
 				continue
 			}
 			if resp.Error != nil {

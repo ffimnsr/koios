@@ -47,6 +47,20 @@ func (h *Handler) dispatchTool(ctx context.Context, peerID string, call agent.To
 			return nil, err
 		}
 	}
+	if h.pluginRegistry != nil {
+		toolCtx, _ := agent.ToolRunContextFromContext(ctx)
+		if tool, ok := h.pluginRegistry.Tool(call.Name); ok {
+			if tool.Available != nil && !tool.Available(h) {
+				return nil, fmt.Errorf("tool %q is not available", call.Name)
+			}
+			return tool.Execute(ctx, pluginToolContext{
+				Handler:     h,
+				PeerID:      peerID,
+				Call:        call,
+				ToolContext: toolCtx,
+			})
+		}
+	}
 	if h.mcpManager != nil {
 		if _, _, ok := mcp.ParseToolName(call.Name); ok {
 			return h.mcpManager.CallTool(ctx, call.Name, call.Arguments)
@@ -92,8 +106,15 @@ func (h *Handler) recordToolResult(
 	}
 
 	executorKind := "builtin"
-	if _, _, ok := mcp.ParseToolName(call.Name); ok {
-		executorKind = "mcp"
+	if h.pluginRegistry != nil {
+		if _, ok := h.pluginRegistry.Tool(call.Name); ok {
+			executorKind = "plugin"
+		}
+	}
+	if executorKind == "builtin" {
+		if _, _, ok := mcp.ParseToolName(call.Name); ok {
+			executorKind = "mcp"
+		}
 	}
 
 	var resultJSON string

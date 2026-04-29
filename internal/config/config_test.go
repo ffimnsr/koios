@@ -14,6 +14,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg.AgentRetryStatusCodes = []int{429, 500, 503}
 	cfg.ToolsAllow = []string{"read", "write"}
 	cfg.ToolsDeny = []string{"exec"}
+	cfg.ExtensionDirs = []string{"./extensions-extra", "/opt/koios/extensions"}
+	cfg.ExtensionAllow = []string{"filesystem", "demo.http"}
+	cfg.ExtensionDeny = []string{"blocked"}
 	cfg.ExecCustomDenyPatterns = []string{"rm -rf"}
 	cfg.ExecCustomAllowPatterns = []string{"git status"}
 	cfg.ExecIsolationEnabled = true
@@ -28,6 +31,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	for _, expected := range []string{
 		`allow = ["read", "write"]`,
 		`deny = ["exec"]`,
+		`dirs = ["./extensions-extra", "/opt/koios/extensions"]`,
+		`allow = ["filesystem", "demo.http"]`,
+		`deny = ["blocked"]`,
 		`custom_deny_patterns = ["rm -rf"]`,
 		`custom_allow_patterns = ["git status"]`,
 		`expose_paths = [{ source = "/tmp/src", target = "/mnt/src", mode = "ro" }]`,
@@ -64,8 +70,35 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	if len(loaded.ExecCustomAllowPatterns) != 1 || loaded.ExecCustomAllowPatterns[0] != "git status" {
 		t.Fatalf("unexpected custom allow patterns after round-trip: %#v", loaded.ExecCustomAllowPatterns)
 	}
+	if len(loaded.ExtensionDirs) != 2 || loaded.ExtensionDirs[0] != filepath.Join(dir, "extensions-extra") || loaded.ExtensionDirs[1] != "/opt/koios/extensions" {
+		t.Fatalf("unexpected extension dirs after round-trip: %#v", loaded.ExtensionDirs)
+	}
+	if len(loaded.ExtensionAllow) != 2 || loaded.ExtensionAllow[0] != "filesystem" || loaded.ExtensionAllow[1] != "demo.http" {
+		t.Fatalf("unexpected extension allow list after round-trip: %#v", loaded.ExtensionAllow)
+	}
+	if len(loaded.ExtensionDeny) != 1 || loaded.ExtensionDeny[0] != "blocked" {
+		t.Fatalf("unexpected extension deny list after round-trip: %#v", loaded.ExtensionDeny)
+	}
 	if len(loaded.ExecIsolationPaths) != 1 || loaded.ExecIsolationPaths[0].Source != "/tmp/src" || loaded.ExecIsolationPaths[0].Target != "/mnt/src" || loaded.ExecIsolationPaths[0].Mode != "ro" {
 		t.Fatalf("unexpected isolation paths after round-trip: %#v", loaded.ExecIsolationPaths)
+	}
+}
+
+func TestValidateRejectsBlankExtensionDirs(t *testing.T) {
+	cfg := Default()
+	cfg.ExtensionDirs = []string{"/ok", "   "}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "extensions.dirs[1]") {
+		t.Fatalf("expected extension dir validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsBlankExtensionAllowEntries(t *testing.T) {
+	cfg := Default()
+	cfg.ExtensionAllow = []string{"ok", "   "}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "extensions.allow[1]") {
+		t.Fatalf("expected extension allow validation error, got %v", err)
 	}
 }
 
@@ -168,8 +201,8 @@ model = "gpt-4o"
 [workspace]
 root = "./workspace"
 
-[memory]
-embed_model = ""
+[memory.embed]
+enabled = false
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -178,8 +211,8 @@ embed_model = ""
 	if err != nil {
 		t.Fatalf("LoadFromPath: %v", err)
 	}
-	if cfg.EmbedModel != "" {
-		t.Fatalf("expected memory embeddings disabled, got %q", cfg.EmbedModel)
+	if cfg.MemoryEmbedEnabled {
+		t.Fatalf("expected memory embeddings disabled, got enabled")
 	}
 }
 

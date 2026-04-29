@@ -14,7 +14,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -1298,17 +1297,17 @@ func initWizard(cmd *cobra.Command, state *repoState, interactive bool) (string,
 	if err != nil {
 		return "", err
 	}
-	apiKeyLine := "# api_key = \"\""
-	if strings.TrimSpace(apiKey) != "" {
-		apiKeyLine = "api_key = " + strconv.Quote(apiKey)
-	}
-	return fmt.Sprintf(initWizardConfigTemplate,
-		strconv.Quote(listenAddr),
-		strconv.Quote(provider),
-		strconv.Quote(model),
-		apiKeyLine,
-		strconv.Quote(workspaceRoot),
-	), nil
+	cfg := config.Default()
+	cfg.ListenAddr = listenAddr
+	cfg.WorkspaceRoot = workspaceRoot
+	cfg.DefaultProfile = "default"
+	cfg.ModelProfiles = []config.ModelProfile{{
+		Name:     "default",
+		Provider: provider,
+		Model:    model,
+		APIKey:   apiKey,
+	}}
+	return config.EncodeTOML(cfg, strings.TrimSpace(apiKey) != ""), nil
 }
 
 func mapPaths(paths []string, prefix string) []string {
