@@ -8,6 +8,8 @@ if command -v atlas >/dev/null 2>&1; then
     atlas update || true
     atlas detect-changes || true
 fi
+# atlas-hook end
+
 
 echo "[pre-commit] checking gofmt"
 go_files=$(git ls-files '*.go')
@@ -23,6 +25,4 @@ fi
 
 echo "[pre-commit] running go test ./..."
 go test ./...
-
 echo "[pre-commit] complete"
-# atlas-hook end

@@ -35,7 +35,7 @@ func NewStore(dir string) (*Store, error) {
 }
 
 func (s *Store) defPath() string             { return filepath.Join(s.dir, "workflows.json") }
-func (s *Store) runPath(runID string) string  { return filepath.Join(s.dir, "runs", runID+".json") }
+func (s *Store) runPath(runID string) string { return filepath.Join(s.dir, "runs", runID+".json") }
 
 // load reads all workflow definitions from disk into the in-memory map.
 func (s *Store) load() error {
