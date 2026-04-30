@@ -238,18 +238,6 @@ func TestBuildHeartbeatMessages_UsesSessionHistoryAndHeartbeatFile(t *testing.T)
 	}
 }
 
-func TestBuildHeartbeatMessages_FallsBackToLegacyRootHeartbeatFile(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "HEARTBEAT.md"), []byte("Legacy heartbeat\n"), 0o644); err != nil {
-		t.Fatalf("write legacy HEARTBEAT.md: %v", err)
-	}
-	r := New(noopProvider{}, session.New(10), nil, 30*time.Minute, time.Minute, dir, nil)
-	msgs := r.buildHeartbeatMessages("peer-1", "Check if anything needs attention.")
-	if len(msgs) == 0 || msgs[0].Content != "HEARTBEAT.md\n\nLegacy heartbeat" {
-		t.Fatalf("unexpected heartbeat instructions: %#v", msgs)
-	}
-}
-
 type noopProvider struct{}
 
 func (noopProvider) Complete(context.Context, *types.ChatRequest) (*types.ChatResponse, error) {

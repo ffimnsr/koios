@@ -379,6 +379,40 @@ func TestSlashTrace(t *testing.T) {
 	}
 }
 
+func TestSlashActivation_SetAndQuery(t *testing.T) {
+	conn, store, _ := dialSlashServer(t, nil, "activation-alice")
+
+	msg := sendSlashChat(t, conn, "1", "/activation mention")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "mention") {
+		t.Fatalf("expected mention confirmation, got: %s", got)
+	}
+	if got := store.Policy("activation-alice").ActivationMode; got != "mention" {
+		t.Fatalf("activation mode = %q, want mention", got)
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/activation group always")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "Group activation default: always") {
+		t.Fatalf("expected group confirmation, got: %s", got)
+	}
+
+	msg = sendSlashChat(t, conn, "3", "/activation chat mention")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "Chat activation default: mention") {
+		t.Fatalf("expected chat confirmation, got: %s", got)
+	}
+
+	msg = sendSlashChat(t, conn, "4", "/activation")
+	got := slashAssistantText(t, msg)
+	if !strings.Contains(got, "Session activation: mention") {
+		t.Fatalf("expected session activation in query, got: %s", got)
+	}
+	if !strings.Contains(got, "Group activation default: always") {
+		t.Fatalf("expected group activation in query, got: %s", got)
+	}
+	if !strings.Contains(got, "Chat activation default: mention") {
+		t.Fatalf("expected chat activation in query, got: %s", got)
+	}
+}
+
 func TestSlashUsage_SetAndQuery(t *testing.T) {
 	conn, _, _ := dialSlashServer(t, nil, "usage-alice")
 

@@ -147,6 +147,55 @@ dirs = []
 allow = []
 deny = []
 
+[channels.telegram]
+enabled = false
+# Bot token from BotFather.
+bot_token = ""
+# mode = "polling" or "webhook"
+mode = "polling"
+poll_timeout = "25s"
+# Public HTTPS URL that Telegram should deliver updates to in webhook mode.
+webhook_url = ""
+# Optional X-Telegram-Bot-Api-Secret-Token value.
+webhook_secret = ""
+# Optional peer that owns routed Telegram inbox sessions.
+# When set, chat traffic lands in <peer>::channel::<telegram chat key>.
+inbox_peer_id = ""
+# Maximum characters per outbound Telegram message chunk.
+text_chunk_limit = 4096
+# text_chunk_mode = "paragraph", "word", or "hard"
+text_chunk_mode = "paragraph"
+# stream_queue_mode = "burst" or "throttle"
+stream_queue_mode = "burst"
+# Delay between chunk sends when stream_queue_mode = "throttle".
+stream_throttle = "750ms"
+# allowed_chat_ids = [123456789]
+allowed_chat_ids = []
+# allowed_sender_ids = [123456789]
+allowed_sender_ids = []
+# command_sender_ids restrict slash commands in groups without blocking normal messages.
+# command_sender_ids = [123456789]
+command_sender_ids = []
+# activation_mode = "always" or "mention"
+activation_mode = "always"
+# reply_activation lets replies to the bot count as activation when activation_mode = "mention".
+reply_activation = true
+# dm_policy = "open", "pairing", or "closed"
+dm_policy = "open"
+pairing_code_ttl = "24h"
+# thread_mode = "topic" keeps separate sessions per Telegram topic.
+# thread_mode = "chat" collapses all topics in one chat onto one session.
+thread_mode = "topic"
+
+# [[channels.telegram.groups]]
+# chat_id = -1001234567890
+# activation_mode = "mention"
+# allowed_sender_ids = [123456789]
+# command_sender_ids = [123456789]
+# reply_activation = true
+# allowed_topic_ids = [11, 12]
+# thread_mode = "chat"
+
 [tools.exec]
 enabled = true
 enable_deny_patterns = true

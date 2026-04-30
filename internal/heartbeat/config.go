@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -159,15 +160,16 @@ func (s *ConfigStore) Load(peerID string) (*Config, error) {
 		return nil, fmt.Errorf("read heartbeat config for %s: %w", peerID, err)
 	}
 	var wrapped diskConfig
-	if err := json.Unmarshal(data, &wrapped); err == nil {
-		return &wrapped.Config, nil
-	}
-
-	var legacy Config
-	if err := json.Unmarshal(data, &legacy); err != nil {
+	if err := json.Unmarshal(data, &wrapped); err != nil {
 		return nil, fmt.Errorf("parse heartbeat config for %s: %w", peerID, err)
 	}
-	return &legacy, nil
+	if strings.TrimSpace(wrapped.PeerID) == "" {
+		return nil, fmt.Errorf("parse heartbeat config for %s: missing peer_id", peerID)
+	}
+	if wrapped.PeerID != peerID {
+		return nil, fmt.Errorf("parse heartbeat config for %s: peer_id %q does not match file", peerID, wrapped.PeerID)
+	}
+	return &wrapped.Config, nil
 }
 
 // Save writes the heartbeat config for peerID to disk atomically.

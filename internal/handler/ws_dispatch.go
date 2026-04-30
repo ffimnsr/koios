@@ -243,6 +243,30 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcMemoryEntityRelate(ctx, wsc, req)
+	case "contact.list":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcContactList(ctx, wsc, req)
+	case "contact.resolve":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcContactResolve(ctx, wsc, req)
+	case "contact.alias":
+		if h.memStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
+			return
+		}
+		h.rpcContactAlias(ctx, wsc, req)
+	case "contact.link_channel_identity":
+		if h.memStore == nil || h.channelBindingStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "contact linking is not enabled")
+			return
+		}
+		h.rpcContactLinkChannelIdentity(ctx, wsc, req)
 	case "memory.entity.touch":
 		if h.memStore == nil {
 			wsc.replyErr(req.ID, errCodeServer, "memory is not enabled")
@@ -793,6 +817,9 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 			"memory.entity.delete",
 			"memory.entity.unlink_chunk",
 			"memory.entity.unrelate",
+			"contact.list",
+			"contact.resolve",
+			"contact.alias",
 			"memory.candidate.create",
 			"memory.candidate.list",
 			"memory.candidate.edit",
@@ -800,6 +827,9 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 			"memory.candidate.merge",
 			"memory.candidate.reject",
 		)
+		if h.channelBindingStore != nil {
+			methods = append(methods, "contact.link_channel_identity")
+		}
 	}
 	if h.bookmarkStore != nil {
 		methods = append(methods,

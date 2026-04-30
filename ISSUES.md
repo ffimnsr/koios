@@ -61,13 +61,16 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] `/restart` gateway chat command (owner-only)
 	- Research notes: OpenClaw already has a user-facing `/restart` command with gateway restart wiring, which is the direct feature reference. PicoClaw did not surface an equivalent in-channel restart path in the current search. IronClaw exposes restart mostly through gateway/UI/admin flows rather than a chat command.
 	- References: OpenClaw `src/auto-reply/commands-registry.shared.ts`, `src/auto-reply/reply/commands-session.ts`, `README.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `crates/ironclaw_gateway/static/app.js`, `crates/ironclaw_gateway/static/admin.js`.
-- [ ] `/activation mention|always` toggle in chat
+- [x] `/activation mention|always` toggle in chat
 	- Research notes: OpenClaw already implements this exact group-activation command and persists it at session level. PicoClaw has group trigger and routing patterns, but the current search did not show a matching in-chat activation toggle. IronClaw did not surface an obvious equivalent in the searched tree.
 	- References: OpenClaw `src/auto-reply/reply/commands-session.ts`, `src/auto-reply/commands-registry.shared.ts`, `src/status/status-text.ts`; PicoClaw `docs/chat-apps.md`, `pkg/channels/README.md`; IronClaw no obvious equivalent found in current repo search.
+- [x] Session activation modes for group and chat surfaces
+	- Research notes: OpenClaw already separates direct-session behavior from group activation policy, which is the most relevant reference for Koios. PicoClaw has strong route/session concepts in channels, but the current search did not show a comparable named activation policy system. IronClaw also did not surface a direct equivalent in the searched tree.
+	- References: OpenClaw `src/auto-reply/reply/commands-session.ts`, `src/status/status-text.ts`; PicoClaw `pkg/channels/wecom/wecom.go`, `pkg/channels/README.md`; IronClaw no obvious equivalent found in current repo search.
 - [x] Token usage tracking (prompt + completion counts per turn)
 - [x] Context-engine background maintenance (idle-aware pruning)
 - [x] Session send policy (per-session reply-back config, persisted)
-- [ ] Stream queue/throttle modes per channel
+- [x] Stream queue/throttle modes per channel
 	- Research notes: OpenClaw has the best reference here because queue state, block streaming, and per-channel coalescing are all visible in the runtime and channel layers. PicoClaw exposes some channel-level stream timing and placeholder/typing contracts, but not the same central queue-mode surface. IronClaw has status-stream primitives and queue observability, though less obvious per-channel queue-mode policy.
 	- References: OpenClaw `src/auto-reply/status.ts`, `src/auto-reply/reply/agent-runner-execution.ts`, `extensions/msteams/src/channel.ts`; PicoClaw `docs/channels/wecom/README.md`, `pkg/channels/README.md`; IronClaw `src/channels/channel.rs`, `src/observability/traits.rs`, `src/channels/wasm/wrapper.rs`.
 - [x] Retry policy with configurable count + status code filter
@@ -80,16 +83,13 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Block streaming with configurable chunking and coalescing
 	- Research notes: OpenClaw has the clearest implementation references for configurable block streaming, break preferences, and per-channel coalescing defaults. PicoClaw has channel-specific streaming constraints and message-length interfaces, but the current search did not surface a unified chunking policy layer. IronClaw has streaming/status events and per-channel wrappers, but not an obvious user-configurable coalescing system.
 	- References: OpenClaw `src/auto-reply/reply/agent-runner-execution.ts`, `extensions/msteams/src/channel.ts`, `src/auto-reply/reply/agent-runner-execution.test.ts`; PicoClaw `pkg/channels/README.md`, `docs/channels/wecom/README.md`; IronClaw `src/channels/repl.rs`, `crates/ironclaw_tui/src/event.rs`.
-- [ ] Session activation modes for group and chat surfaces
-	- Research notes: OpenClaw already separates direct-session behavior from group activation policy, which is the most relevant reference for Koios. PicoClaw has strong route/session concepts in channels, but the current search did not show a comparable named activation policy system. IronClaw also did not surface a direct equivalent in the searched tree.
-	- References: OpenClaw `src/auto-reply/reply/commands-session.ts`, `src/status/status-text.ts`; PicoClaw `pkg/channels/wecom/wecom.go`, `pkg/channels/README.md`; IronClaw no obvious equivalent found in current repo search.
 - [x] Manual compaction controls from chat
 	- Research notes: This is effectively the same parity gap as `/compact`, but worth keeping separately because OpenClaw also exposes compaction status and user notices during the operation. PicoClaw has the engine pieces but not a clearly user-facing chat command in the current search. IronClaw supports explicit compaction on the active thread.
 	- References: OpenClaw `src/auto-reply/reply/commands-compact.ts`, `src/auto-reply/reply/commands-compact.runtime.ts`, `docs/concepts/compaction.md`; PicoClaw `pkg/agent/context_legacy.go`, `pkg/seahorse/short_engine.go`; IronClaw `src/agent/thread_ops.rs`, `src/agent/compaction.rs`.
 - [x] Memory flush before compaction
 	- Research notes: OpenClaw has an explicit memory-flush-before-compaction concept in config, which is the strongest direct reference. PicoClaw's compaction stack focuses on summarization and threshold management rather than a preflush memory hook. IronClaw leans more toward move-to-workspace or summarize/truncate strategies than a distinct memory-flush phase.
 	- References: OpenClaw `docs/gateway/configuration-reference.md`, `src/config/schema.help.ts`; PicoClaw `pkg/seahorse/short_compaction.go`; IronClaw `src/agent/context_monitor.rs`, `src/agent/CLAUDE.md`.
-- [ ] Server-side compaction strategies where supported by providers
+- [-] Server-side compaction strategies where supported by providers (DON'T IMPLEMENT No need for now)
 	- Research notes: OpenClaw explicitly documents pluggable compaction providers and calls out provider-specific/server-side compaction options, so it is the clearest blueprint. PicoClaw compaction is engine-owned and provider-agnostic in the current tree. IronClaw also owns compaction in the runtime rather than delegating it to a provider backend.
 	- References: OpenClaw `docs/concepts/compaction.md`, `docs/gateway/configuration-reference.md`, `src/config/types.agent-defaults.ts`; PicoClaw `pkg/agent/context_manager.go`, `pkg/seahorse/short_engine.go`; IronClaw `src/agent/compaction.rs`, `crates/ironclaw_engine/src/executor/compaction.rs`.
 - [x] LLM idle timeout handling
@@ -117,8 +117,6 @@ This file is a merged checklist for the feature gap between Koios and the refere
 
 ## Tool Patches
 
-- [ ] `message.send` built-in tool for cross-channel outbound messages
-	- Notes: Provide one channel-agnostic send surface for Slack, Telegram, Discord, and future chat transports. This should reuse channel routing, sender allowlists, message chunking, and approval policy instead of letting agents call transport-specific APIs directly.
 - [x] `task.*` built-in chat tools
 	- Notes: Expose task management directly to the agent with tools such as `task.create`, `task.list`, `task.update`, `task.complete`, and `task.extract`. Koios already has task RPC and slash-command surfaces, so this patch should reuse `internal/tasks` behavior rather than adding a parallel task model.
 - [x] `approval.request` built-in tool
@@ -127,11 +125,11 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Notes: Provide a local or node-backed notification surface for reminders, completed runs, cron alerts, waiting-on follow-ups, and user-visible status changes. Keep this separate from `message.send` because notifications target the owner/device, while messages target chat conversations.
 - [ ] `git.*` built-in tools for structured repository operations
 	- Notes: Add safer wrappers for common repository work such as `git.status`, `git.diff`, `git.log`, `git.branch`, `git.commit`, and `git.apply_patch`. These should produce structured outputs and enforce workspace boundaries instead of relying on raw `exec` for every git operation.
-- [ ] `code.search` and `code.symbol` built-in tools
-	- Notes: Add code-aware discovery tools for symbol lookup, definitions, callers, references, and module summaries. Prefer Atlas/LSP-backed context where available, with file-search fallback only when structural lookup is unavailable.
-- [ ] `contact.*` built-in tools
+- [x] `contact.*` built-in tools
 	- Notes: Add contact resolution and aliasing tools such as `contact.list`, `contact.resolve`, `contact.alias`, and `contact.link_channel_identity`. This becomes important once cross-channel messaging needs stable human identity rather than raw platform IDs.
-- [ ] `inbox.*` built-in tools
+- [x] `message.send` built-in tool for cross-channel outbound messages
+	- Notes: Provide one channel-agnostic send surface for Slack, Telegram, Discord, and future chat transports. This should reuse channel routing, sender allowlists, message chunking, and approval policy instead of letting agents call transport-specific APIs directly.
+- [x] `inbox.*` built-in tools
 	- Notes: Add multi-channel inbox tools such as `inbox.list`, `inbox.read`, `inbox.mark_read`, `inbox.route`, and `inbox.summarize`. This should pair with multi-channel routing so agents can inspect and triage incoming messages without binding to one transport.
 - [x] `brief.*` built-in tools for brief lifecycle management
 	- Notes: Extend `brief.generate` with tools such as `brief.preview`, `brief.save`, `brief.send`, and `brief.schedule` so daily and weekly briefs can move from generated text into saved, delivered, or scheduled workflows.
@@ -196,7 +194,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Rich exec approvals UX and lifecycle
 	- Research notes: OpenClaw has strong sandbox/doctor/operator hooks around execution policy, but the current search here was less explicit on approval UX than on sandbox mechanics. PicoClaw exposes exec policy management in its web UI. IronClaw has the clearest typed approval model and gate pipeline for tool execution.
 	- References: OpenClaw `docs/gateway/sandboxing.md`, `src/commands/doctor-sandbox.warns-sandbox-enabled-without-docker.test.ts`; PicoClaw `web/frontend/src/components/config/config-sections.tsx`, `docs/configuration.md`; IronClaw `src/gate/approval.rs`, `src/tools/dispatch.rs`.
-- [ ] CLI and API management for exec allowlists
+- [ ] CLI command for exec allowlists
 	- Research notes: PicoClaw is actually the clearest visible reference here because it exposes allow/deny pattern management in config and web UI today. OpenClaw has broader sandbox policy/config surfaces. IronClaw's equivalent lives more in sandbox policies and approval defaults than in a simple allowlist UI.
 	- References: OpenClaw `docs/gateway/sandboxing.md`; PicoClaw `web/frontend/src/components/config/config-sections.tsx`, `docs/tools_configuration.md`; IronClaw `src/sandbox/config.rs`, `src/gate/approval.rs`.
 - [ ] Node-routed exec by default or per-session
@@ -401,14 +399,15 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Plugin-provided hooks
 	- Research notes: OpenClaw is the best direct reference because hooks and plugins already meet in its automation/runtime model. PicoClaw has hook interfaces, but not the same clearly plugin-owned hook pipeline in the current search. IronClaw's hook registry and extension system are the strongest secondary reference.
 	- References: OpenClaw `src/hooks/gmail.ts`, `docs/plugins/architecture.md`; PicoClaw `pkg/agent/hooks.go`; IronClaw `src/extensions/mod.rs`, `src/config/mod.rs`.
-- [ ] Plugin-provided CLI commands
+- [x] Plugin-provided CLI commands
 	- Research notes: OpenClaw is the clearest reference because bundled plugins already expose command surfaces such as pairing and browser helpers. IronClaw also has extension-aware CLI/auth flows. PicoClaw did not surface the same plugin-to-CLI registration pattern in the current search.
 	- References: OpenClaw `extensions/device-pair/index.ts`, `src/cli/skills-cli.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/cli/tool.rs`, `src/cli/skills.rs`, `src/extensions/mod.rs`.
-- [ ] Plugin-provided HTTP routes
+- [x] Plugin-provided HTTP routes
 	- Research notes: OpenClaw already uses plugin-owned gateway and browser routes, which is the clearest parity reference. PicoClaw's launcher backend is useful for route design, but not obviously plugin-owned. IronClaw's web handlers and extension config are the strongest secondary reference if Koios wants extension-provided web surfaces.
 	- References: OpenClaw `extensions/browser/src/browser/routes/agent.act.ts`, `extensions/googlechat/src/gateway.ts`; PicoClaw `web/backend/api/*`; IronClaw `src/channels/web/handlers/skills.rs`, `src/channels/web/CLAUDE.md`, `src/extensions/mod.rs`.
-- [ ] Plugin-provided channels
+- [x] Plugin-provided channels
 	- Research notes: OpenClaw is the clearest direct reference because many of its channels are already bundled plugins. IronClaw is the strongest secondary reference because its channel runtime is extension/WASM oriented. PicoClaw's channels are less obviously modeled as third-party plugin packages.
+	- Implementation notes: Koios now supports manifest-backed extension channels through the `channels` capability. An extension can register a webhook-style channel route or a polling loop, translate inbound events into normalized channel messages through MCP tools, participate in the shared channel lifecycle with optional start/shutdown hooks, suppress automatic agent replies per envelope when needed, and reuse the existing `outbound_messages` capability for replies on the same channel id.
 	- References: OpenClaw `docs/concepts/features.md`, `docs/plugins/architecture.md`; PicoClaw `docs/chat-apps.md`; IronClaw `src/channels/wasm/setup.rs`, `src/channels/wasm/schema.rs`.
 - [ ] Pluggable context engines
 	- Research notes: This is most strongly represented by IronClaw's engine-v2 architecture and OpenClaw's provider/runtime layering rather than a single drop-in context-engine API. PicoClaw has multiple context/compaction engines internally, but the current search showed them more as implementation details than as a pluggable public API.
@@ -535,7 +534,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Secret references from env, file, and exec in config
 	- Research notes: OpenClaw is the clearest direct reference because secret inputs are already treated as typed config primitives. PicoClaw is useful for its separation of app config and security config files. IronClaw has the strongest typed secrets subsystem and auth setup flows if Koios wants config references rather than raw inline values.
 	- References: OpenClaw `src/config/zod-schema.ts`, `src/config/types.secrets.ts`; PicoClaw `docs/security_configuration.md`, `docs/configuration.md`; IronClaw `src/config/mod.rs`, `src/secrets/*`, `src/cli/tool.rs`.
-- [ ] Conversation binding approvals
+- [x] Conversation binding approvals
 	- Research notes: OpenClaw's channel and device pairing flows are the clearest direct reference because they already model owner approval before a conversation becomes trusted. PicoClaw did not surface a comparable explicit approval subsystem in the current search. IronClaw has pairing-store and ownership-based approval flows that are the best secondary reference.
 	- References: OpenClaw `docs/channels/pairing.md`, `src/infra/device-pairing.ts`, `src/infra/node-pairing.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/cli/pairing.rs`, `channels-src/discord/src/lib.rs`, `src/ownership/*`.
 - [ ] Plugin safety gates for path ownership and world-writable checks
@@ -780,100 +779,44 @@ This file is a merged checklist for the feature gap between Koios and the refere
 
 ## External Service Channels Backlog
 
-- [ ] Telegram channel (bot token, long polling/webhooks)
+- [x] Telegram channel (bot token, long polling/webhooks)
 	- Research notes: OpenClaw is the clearest reference here because it already combines DM pairing, group allowlists, mention gating, topic-aware routing, and outbound message actions in a dedicated Telegram plugin. PicoClaw has a simpler long-polling Telegram channel with `allow_from`; IronClaw has a WASM Telegram channel with `dm_policy`, `allow_from`, owner-only mode, and optional polling or webhook delivery.
 	- References: OpenClaw `extensions/telegram/src/channel.ts`, `docs/channels/telegram.md`; PicoClaw `docs/channels/telegram/README.md`; IronClaw `channels-src/telegram/src/lib.rs`, `docs/channels/telegram.mdx`.
 - [ ] Discord channel (bot + intents)
 	- Research notes: OpenClaw models Discord as a full plugin channel with guild/channel allowlists and per-channel mention rules. PicoClaw already has a simpler Discord bot path with `allow_from` and `group_trigger`; IronClaw has a stronger parity point for DM pairing and Gateway message intake, but still lags OpenClaw on some richer per-guild controls.
 	- References: OpenClaw `extensions/discord/src/channel.ts`, `docs/gateway/configuration-reference.md` (Discord); PicoClaw `docs/channels/discord/README.md`, `docs/chat-apps.md`; IronClaw `channels-src/discord/src/lib.rs`, `channels-src/discord/README.md`, `FEATURE_PARITY.md`.
-- [ ] WhatsApp channel (Baileys / native QR)
 	- Research notes: OpenClaw uses WhatsApp as a first-class channel with DM policy, group allowlists, and per-channel chunking controls. PicoClaw already supports WhatsApp natively or through a bridge, so it is useful for QR/session lifecycle ideas. IronClaw's visible implementation is WhatsApp Cloud API and is more webhook-oriented than OpenClaw's Baileys-style model.
 	- References: OpenClaw `extensions/whatsapp/src/channel.ts`, `docs/gateway/configuration-reference.md` (WhatsApp); PicoClaw `docs/chat-apps.md#whatsapp`; IronClaw `channels-src/whatsapp/src/lib.rs`.
 - [ ] Slack channel (Bolt / Socket Mode)
 	- Research notes: OpenClaw has the most complete reference for Socket Mode Slack with channel allowlists, mention gating, streaming, and exec-approval targeting. PicoClaw already exposes a basic Slack channel with `allow_from`. IronClaw also has Slack channel and message-tool support, including DM pairing logic, but appears less opinionated around route allowlists than OpenClaw.
 	- References: OpenClaw `extensions/slack/src/channel.ts`, `docs/channels/slack.md`, `docs/gateway/configuration-reference.md` (Slack); PicoClaw `docs/chat-apps.md`, `pkg/migrate/sources/openclaw/openclaw_config.go`; IronClaw `channels-src/slack/src/lib.rs`, `tools-src/slack/src/lib.rs`.
-- [ ] Signal channel (signal-cli)
-	- Research notes: OpenClaw is again the strongest blueprint because it already documents DM pairing, group sender allowlists, `groupPolicy`, and `signal-cli` semantics. PicoClaw does not appear to have a native Signal channel in the current tree. IronClaw does have a substantial Signal implementation and setup flow with DM policy, group policy, and explicit sender/group allowlists.
-	- References: OpenClaw `extensions/signal/src/channel.ts`, `docs/channels/signal.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/channels/signal.rs`, `src/setup/channels.rs`, `src/config/channels.rs`.
-- [ ] Matrix channel (Sync API)
-	- Research notes: OpenClaw supports Matrix as a routed group-aware channel and documents room allowlists plus sender restrictions. PicoClaw already has a Matrix channel with homeserver credentials and mention-only group triggers by default. IronClaw did not show an obvious Matrix channel in the current repo search, so OpenClaw is the primary parity target.
-	- References: OpenClaw `docs/channels/groups.md`, `docs/concepts/features.md`; PicoClaw `docs/chat-apps.md#matrix`, `pkg/config/defaults.go`; IronClaw no obvious Matrix implementation found in current repo search.
-- [ ] IRC channel
-	- Research notes: OpenClaw has IRC-specific plugin SDK surfaces and pairing helpers, so it is the best reference for channel semantics. PicoClaw already exposes IRC as a configurable channel, which is useful for connection and TLS setup shape. IronClaw did not show an obvious IRC channel in the current repo search.
-	- References: OpenClaw `src/plugin-sdk/irc.ts`, `docs/concepts/features.md`; PicoClaw `docs/chat-apps.md`, `docs/pt-br/chat-apps.md`; IronClaw no obvious IRC implementation found in current repo search.
-- [ ] Microsoft Teams channel
-	- Research notes: OpenClaw appears to treat Teams as a routed chat channel with shared group-policy helpers. PicoClaw has a `teams_webhook` implementation, but that looks closer to outbound webhook delivery than full bidirectional Teams chat parity. IronClaw did not show an obvious Teams channel in the current repo search.
-	- References: OpenClaw `src/plugin-sdk/msteams.ts`, `docs/concepts/features.md`; PicoClaw `pkg/channels/teams_webhook/teams_webhook.go`; IronClaw no obvious Teams implementation found in current repo search.
-- [ ] Google Chat channel
-	- Research notes: OpenClaw already has a bundled Google Chat channel with setup, gateway lifecycle, access policy, and route envelope handling. PicoClaw did not show a Google Chat channel in the current repo search. IronClaw also did not show an obvious Google Chat channel, so OpenClaw should be the primary design source.
-	- References: OpenClaw `extensions/googlechat/src/channel.ts`, `extensions/googlechat/src/gateway.ts`, `extensions/googlechat/src/monitor-access.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] iMessage / BlueBubbles channel
-	- Research notes: OpenClaw supports both legacy iMessage and BlueBubbles-style paths, with allowlist and conversation-binding support visible in the iMessage channel plugin. PicoClaw does not show an iMessage equivalent. IronClaw's own parity matrix still marks iMessage/Linq as missing or incomplete, so OpenClaw is the primary reference.
-	- References: OpenClaw `extensions/imessage/src/channel.ts`, `docs/concepts/features.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `FEATURE_PARITY.md`.
-- [ ] WeChat / WeCom channel (iLink API)
-	- Research notes: OpenClaw references WeChat as an extension ecosystem path rather than a clearly visible bundled implementation in the searched tree. PicoClaw is useful here because it already has both Weixin and WeCom integration surfaces, including QR login and sender allowlists. IronClaw did not show an obvious WeChat or WeCom channel in the current repo search.
-	- References: OpenClaw `docs/concepts/features.md`, `docs/channels/pairing.md`; PicoClaw `docs/chat-apps.md#weixin`, `docs/channels/wecom/README.md`; IronClaw no obvious equivalent found in current repo search.
-- [ ] LINE channel
-	- Research notes: OpenClaw has a concrete LINE plugin with DM/group policy wiring and sender restriction helpers. PicoClaw also has LINE configuration and shared webhook-server patterns. IronClaw did not show an obvious LINE channel in the current repo search.
-	- References: OpenClaw `extensions/line/src/channel.ts`, `extensions/line/src/bot-handlers.ts`; PicoClaw `pkg/config/defaults.go`, `docs/chat-apps.md`; IronClaw no obvious LINE implementation found in current repo search.
-- [ ] Mattermost channel
-	- Research notes: OpenClaw treats Mattermost as a plugin channel with DM policy, command callback support, group mention defaults, and chunking controls. PicoClaw did not show an equivalent Mattermost channel in the current repo search. IronClaw also did not show an obvious Mattermost channel.
-	- References: OpenClaw `extensions/mattermost/src/channel.ts`, `docs/gateway/configuration-reference.md` (Mattermost); PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Feishu / Lark channel (WebSocket SDK)
-	- Research notes: OpenClaw advertises Feishu/Lark as a bundled plugin channel family, but the current repo search surfaced fewer direct source entry points than for Telegram or Slack. PicoClaw already has Feishu configuration and access-control docs. IronClaw's parity matrix marks Feishu/Lark as partial, so OpenClaw and PicoClaw together are the better design references.
-	- References: OpenClaw `docs/concepts/features.md`, `docs/channels/pairing.md`; PicoClaw `docs/fr/chat-apps.md`, `pkg/migrate/sources/openclaw/openclaw_config.go`; IronClaw `FEATURE_PARITY.md`.
-- [ ] Nostr channel
-	- Research notes: OpenClaw lists Nostr as a supported/bundled channel family and pairing docs include it in DM approval flows, but the current search did not surface a direct source file. PicoClaw and IronClaw did not show obvious Nostr implementations.
-	- References: OpenClaw `docs/concepts/features.md`, `docs/channels/pairing.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] DingTalk channel
-	- Research notes: OpenClaw includes DingTalk in its supported channel set. PicoClaw already has a concrete DingTalk channel configuration with sender allowlists, so it is a useful implementation reference. IronClaw did not show an obvious DingTalk implementation.
-	- References: OpenClaw `docs/concepts/features.md`; PicoClaw `docs/channels/dingtalk/README.md`, `docs/chat-apps.md`; IronClaw no obvious equivalent found in current repo search.
-- [ ] VK channel
-	- Research notes: OpenClaw is the only repo in the comparison set that visibly claims this channel family in the searched docs/features surfaces. PicoClaw and IronClaw did not show obvious VK channel support, so this is mostly a parity-with-OpenClaw item rather than a three-way comparison item.
-	- References: OpenClaw `docs/concepts/features.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] QQ (OneBot v11 over WebSocket)
-	- Research notes: OpenClaw references QQ Bot support; PicoClaw is useful because it already supports QQ and OneBot-style integration paths in its chat-app docs and channel config surfaces. IronClaw did not show an obvious QQ or OneBot channel in the current repo search.
-	- References: OpenClaw `docs/concepts/features.md`; PicoClaw `docs/channels/onebot/README.zh.md`, `docs/chat-apps.md`; IronClaw no obvious equivalent found in current repo search.
-- [ ] Twitch channel
-	- Research notes: OpenClaw includes Twitch in both the bundled-channel list and the pairing-support list, so it is the main reference. PicoClaw and IronClaw did not show obvious Twitch channel implementations in the current repo search.
-	- References: OpenClaw `docs/concepts/features.md`, `docs/channels/pairing.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Zalo / Zalo Personal channel
-	- Research notes: OpenClaw includes both Zalo and Zalo Personal in its channel and pairing surfaces. PicoClaw and IronClaw did not show obvious equivalents in the current repo search.
-	- References: OpenClaw `docs/concepts/features.md`, `docs/channels/pairing.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Tlon channel
-	- Research notes: OpenClaw includes Tlon in the bundled plugin channel list, but the current search did not surface an obvious direct source file. PicoClaw and IronClaw did not show equivalents.
-	- References: OpenClaw `docs/concepts/features.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Synology Chat channel
-	- Research notes: OpenClaw includes Synology Chat in its bundled plugin list and pairing docs, but the current search did not surface a direct source file. PicoClaw and IronClaw did not show equivalents.
-	- References: OpenClaw `docs/concepts/features.md`, `docs/channels/pairing.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Nextcloud Talk channel
 	- Research notes: OpenClaw includes Nextcloud Talk in its bundled plugin list and pairing docs. PicoClaw and IronClaw did not show equivalents in the current repo search.
 	- References: OpenClaw `docs/concepts/features.md`, `docs/channels/pairing.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Multi-channel inbox routing (route channels to isolated agents/sessions)
+- [x] Multi-channel inbox routing (route channels to isolated agents/sessions)
 	- Research notes: OpenClaw already formalizes channel/account/session routing terminology and supports isolated agent/session buckets, so it is the clearest design reference. PicoClaw has the beginnings of the same shape via channel bindings and `dm_scope`. IronClaw has channel-manager and owner-binding primitives, but the current search surfaced less explicit multi-channel inbox routing policy than OpenClaw.
 	- References: OpenClaw `docs/channels/channel-routing.md`; PicoClaw `pkg/migrate/sources/openclaw/openclaw_config.go`, `docs/providers.md`; IronClaw `tests/e2e_telegram_message_routing.rs`, `src/tools/builtin/message.rs`.
-- [ ] Group/channel mention gating (`mention` vs `always` activation)
+- [x] Group/channel mention gating (`mention` vs `always` activation)
 	- Research notes: OpenClaw has the richest implementation surface here, with explicit `requireMention` policies, mention regex helpers, and session-level `/activation` toggles. PicoClaw has simpler `group_trigger.mention_only` and prefix-based activation. IronClaw covers the same idea with `respond_to_all_group_messages`, `bot_username`, and mention stripping in channel handlers.
 	- References: OpenClaw `docs/gateway/configuration.md`, `docs/channels/telegram.md`, `src/plugin-sdk/googlechat.ts`; PicoClaw `docs/chat-apps.md`, `pkg/config/defaults.go`; IronClaw `docs/channels/telegram.mdx`, `channels-src/discord/src/lib.rs`, `channels-src/telegram/src/lib.rs`.
-- [ ] Per-channel sender allowlist with DM pairing codes
-	- Research notes: OpenClaw is the strongest reference because pairing and per-channel allowlists are treated as first-class cross-channel concepts rather than ad hoc behavior. PicoClaw clearly has `allow_from`, but the current search did not surface a general DM pairing-code approval flow. IronClaw does have pairing code flows and merged allowlist-plus-pairing-store checks across several channels.
-	- References: OpenClaw `docs/channels/pairing.md`, `docs/channels/signal.md`, `docs/channels/telegram.md`; PicoClaw `docs/channels/telegram/README.md`, `docs/channels/discord/README.md`; IronClaw `channels-src/discord/src/lib.rs`, `channels-src/slack/src/lib.rs`, `channels-src/telegram/src/lib.rs`, `FEATURE_PARITY.md`.
-- [ ] Group activation rules (owner-only commands, reply tags)
+- [x] Group activation rules (owner-only commands, reply tags)
 	- Research notes: OpenClaw already exposes per-group policy, per-group allowed users, and mention/reply behavior by channel. PicoClaw covers the lighter version through `group_trigger` prefixes and mention-only settings. IronClaw exposes owner-only behavior and reply-tag-like mention semantics, but less of the rich per-group rule matrix surfaced in the current search.
 	- References: OpenClaw `docs/channels/groups.md`, `docs/channels/telegram.md`, `docs/channels/slack.md`; PicoClaw `docs/chat-apps.md`, `docs/channels/discord/README.md`; IronClaw `docs/channels/telegram.mdx`, `src/settings.rs`, `channels-src/discord/src/lib.rs`.
-- [ ] Message chunking/splitting per-channel limits
+- [x] Message chunking/splitting per-channel limits
 	- Research notes: OpenClaw has the clearest cross-channel treatment with per-channel `textChunkLimit`, `chunkMode`, and streaming modes. PicoClaw has some channel max-length defaults and per-channel settings, but less visible centralized chunk-policy machinery. IronClaw did not show an equally explicit cross-channel chunking subsystem in the current search.
 	- References: OpenClaw `docs/gateway/configuration-reference.md` (Slack, WhatsApp, Mattermost), `src/config/types.queue.ts`; PicoClaw `pkg/config/defaults.go`; IronClaw `src/tools/builtin/message.rs` for outbound target abstraction, but no obvious chunk-policy equivalent found in current repo search.
-- [ ] Shared cross-channel `message` tool for outbound messages
+- [x] Shared cross-channel `message` tool for outbound messages
 	- Research notes: This is one of the clearer parity items. OpenClaw exposes a channel-agnostic outbound message surface via its CLI and channel action adapters. PicoClaw already has a shared `message` tool with per-round send tracking. IronClaw also has a built-in cross-channel `message` tool that can target Slack, Telegram, Signal, and other transports.
 	- References: OpenClaw `docs/cli/message.md`, `extensions/telegram/src/channel-actions.ts`; PicoClaw `pkg/tools/message.go`; IronClaw `src/tools/builtin/message.rs`.
-- [ ] DM pairing flow (unknown sender gets a pairing code; owner approves via CLI)
+- [x] Per-channel sender allowlist with DM pairing codes
+	- Research notes: OpenClaw is the strongest reference because pairing and per-channel allowlists are treated as first-class cross-channel concepts rather than ad hoc behavior. PicoClaw clearly has `allow_from`, but the current search did not surface a general DM pairing-code approval flow. IronClaw does have pairing code flows and merged allowlist-plus-pairing-store checks across several channels.
+	- References: OpenClaw `docs/channels/pairing.md`, `docs/channels/signal.md`, `docs/channels/telegram.md`; PicoClaw `docs/channels/telegram/README.md`, `docs/channels/discord/README.md`; IronClaw `channels-src/discord/src/lib.rs`, `channels-src/slack/src/lib.rs`, `channels-src/telegram/src/lib.rs`, `FEATURE_PARITY.md`.
+- [x] DM pairing flow (unknown sender gets a pairing code; owner approves via CLI)
 	- Research notes: OpenClaw is the strongest direct reference because DM pairing is a deliberate cross-channel security model there, not a channel-specific hack. PicoClaw did not surface a comparable general pairing-code flow in the current search. IronClaw already has pairing-store backed DM pairing in several WASM channels, which is the best implementation reference after OpenClaw.
 	- References: OpenClaw `docs/channels/pairing.md`, `docs/gateway/security/index.md`, `src/plugin-sdk/direct-dm.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `channels-src/discord/src/lib.rs`, `channels-src/slack/src/lib.rs`, `channels-src/whatsapp/src/lib.rs`, `src/cli/pairing.rs`.
-- [ ] `pairing approve <channel> <code>` CLI command
+- [x] `pairing approve <channel> <code>` CLI command
 	- Research notes: OpenClaw already exposes the exact CLI flow and should drive Koios UX here. PicoClaw did not surface an equivalent command in the current search. IronClaw already has matching `pairing` subcommands, so it is the strongest confirmation that this should be first-class CLI, not hidden behind config or the web UI.
 	- References: OpenClaw `src/cli/pairing-cli.ts`, `docs/channels/pairing.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/cli/pairing.rs`, `src/channels/web/CLAUDE.md`.
-- [ ] Per-channel `dmPolicy` enforcement (pairing / open / closed)
+- [x] Per-channel `dmPolicy` enforcement (pairing / open / closed)
 	- Research notes: OpenClaw is again the clearest direct reference because `dmPolicy` is validated centrally and reused across channel plugins. PicoClaw has `allow_from` and owner restrictions, but the current search did not surface the same shared `pairing|allowlist|open|disabled` model. IronClaw already persists and enforces `dm_policy` inside multiple channels, making it the strongest implementation reference after OpenClaw.
 	- References: OpenClaw `docs/gateway/configuration-reference.md`, `src/config/zod-schema.core.ts`, `src/plugin-sdk/direct-dm.ts`; PicoClaw `docs/chat-apps.md`; IronClaw `channels-src/discord/src/lib.rs`, `channels-src/slack/src/lib.rs`, `channels-src/whatsapp/src/lib.rs`, `src/config/channels.rs`.
 - [ ] Discord native slash commands / text command tools
@@ -947,7 +890,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 
 ## Miscellaneous Platform Gaps
 
-- [ ] X / Twitter search tool
+- [-] X / Twitter search tool (DON'T IMPLEMENT no need its using paid API)
 	- Research notes: None of the three repos surfaced a direct built-in X/Twitter search tool in the current searches. This is likely a Koios-native tool or an extension opportunity rather than a direct parity item.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
 - [x] Workflow engine comparable to Lobster
@@ -962,7 +905,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Protocol typing and codegen from a single schema source
 	- Research notes: IronClaw is the strongest architectural reference because much of its web, extension, and capability surface is already explicitly typed. OpenClaw is the best secondary reference for schema-driven config and plugin/runtime contracts. PicoClaw is less explicit here in the current search.
 	- References: OpenClaw `src/config/zod-schema.ts`, `src/plugins/types.ts`; PicoClaw `web/frontend/src/api/*`; IronClaw `src/tools/wasm/capabilities_schema.rs`, `src/channels/wasm/schema.rs`, `src/channels/web/types.rs`.
-- [ ] Config env substitution and richer secret handling
+- [-] Config env substitution and richer secret handling (DON'T IMPLEMENT only need config)
 	- Research notes: OpenClaw is the clearest direct reference because secret inputs and config validation are already first-class. PicoClaw is also useful because it splits security config from app config. IronClaw has the strongest typed secrets subsystem and config resolution stack if Koios wants richer secret references and validation.
 	- References: OpenClaw `src/config/types.secrets.ts`, `src/config/zod-schema.ts`; PicoClaw `docs/security_configuration.md`, `docs/configuration.md`; IronClaw `src/config/mod.rs`, `src/secrets/*`.
 - [x] Idempotency keys for side-effecting RPCs

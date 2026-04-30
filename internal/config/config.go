@@ -36,6 +36,11 @@ func (c *Config) RunsDir() string { return filepath.Join(c.WorkspaceRoot, "runs"
 // from WorkspaceRoot.
 func (c *Config) DBDir() string { return filepath.Join(c.WorkspaceRoot, "db") }
 
+// ChannelBindingsPath returns the path for channel binding approvals.
+func (c *Config) ChannelBindingsPath() string {
+	return filepath.Join(c.DBDir(), "channel_bindings.json")
+}
+
 // MemoryDBPath returns the path for the long-term memory SQLite database, derived from WorkspaceRoot.
 func (c *Config) MemoryDBPath() string { return filepath.Join(c.DBDir(), "memory.db") }
 
@@ -109,6 +114,39 @@ type MCPServerConfig struct {
 	// still allowing internal runtime callers such as manifest hook bindings to
 	// invoke its tools by full runtime name.
 	HideTools bool `toml:"-"`
+}
+
+type TelegramChannelConfig struct {
+	Enabled          bool
+	BotToken         string
+	Mode             string
+	WebhookURL       string
+	WebhookSecret    string
+	InboxPeerID      string
+	PollTimeout      time.Duration
+	TextChunkLimit   int
+	TextChunkMode    string
+	StreamQueueMode  string
+	StreamThrottle   time.Duration
+	AllowedChatIDs   []int64
+	AllowedSenderIDs []int64
+	CommandSenderIDs []int64
+	ActivationMode   string
+	ReplyActivation  bool
+	DMPolicy         string
+	PairingCodeTTL   time.Duration
+	ThreadMode       string
+	GroupPolicies    []TelegramGroupPolicy
+}
+
+type TelegramGroupPolicy struct {
+	ChatID           int64
+	ActivationMode   string
+	AllowedSenderIDs []int64
+	CommandSenderIDs []int64
+	ReplyActivation  *bool
+	AllowedTopicIDs  []int64
+	ThreadMode       string
 }
 
 // Config holds all runtime configuration loaded from koios.config.toml.
@@ -202,6 +240,7 @@ type Config struct {
 	ExtensionDirs                 []string
 	ExtensionAllow                []string
 	ExtensionDeny                 []string
+	Telegram                      TelegramChannelConfig
 
 	WorkspaceRoot     string
 	WorkspacePerAgent bool
@@ -256,13 +295,8 @@ type fileConfig struct {
 	} `toml:"server"`
 	LLM struct {
 		// DefaultProfile selects a named profile as the primary LLM.
-		DefaultProfile string `toml:"default_profile"`
-		IdleTimeout    string `toml:"idle_timeout"`
-		// Legacy flat fields — kept for backward compatibility.
-		Provider         string         `toml:"provider"`
-		APIKey           string         `toml:"api_key"`
-		Model            string         `toml:"model"`
-		BaseURL          string         `toml:"base_url"`
+		DefaultProfile   string         `toml:"default_profile"`
+		IdleTimeout      string         `toml:"idle_timeout"`
 		LightweightModel string         `toml:"lightweight_model"`
 		FallbackModels   []string       `toml:"fallback_models"`
 		Profiles         []ModelProfile `toml:"profiles"`
@@ -275,6 +309,38 @@ type fileConfig struct {
 		Allow []string `toml:"allow"`
 		Deny  []string `toml:"deny"`
 	} `toml:"extensions"`
+	Channels struct {
+		Telegram struct {
+			Enabled          *bool   `toml:"enabled"`
+			BotToken         string  `toml:"bot_token"`
+			Mode             string  `toml:"mode"`
+			WebhookURL       string  `toml:"webhook_url"`
+			WebhookSecret    string  `toml:"webhook_secret"`
+			InboxPeerID      string  `toml:"inbox_peer_id"`
+			PollTimeout      string  `toml:"poll_timeout"`
+			TextChunkLimit   *int    `toml:"text_chunk_limit"`
+			TextChunkMode    string  `toml:"text_chunk_mode"`
+			StreamQueueMode  string  `toml:"stream_queue_mode"`
+			StreamThrottle   string  `toml:"stream_throttle"`
+			AllowedChatIDs   []int64 `toml:"allowed_chat_ids"`
+			AllowedSenderIDs []int64 `toml:"allowed_sender_ids"`
+			CommandSenderIDs []int64 `toml:"command_sender_ids"`
+			ActivationMode   string  `toml:"activation_mode"`
+			ReplyActivation  *bool   `toml:"reply_activation"`
+			DMPolicy         string  `toml:"dm_policy"`
+			PairingCodeTTL   string  `toml:"pairing_code_ttl"`
+			ThreadMode       string  `toml:"thread_mode"`
+			Groups           []struct {
+				ChatID           int64   `toml:"chat_id"`
+				ActivationMode   string  `toml:"activation_mode"`
+				AllowedSenderIDs []int64 `toml:"allowed_sender_ids"`
+				CommandSenderIDs []int64 `toml:"command_sender_ids"`
+				ReplyActivation  *bool   `toml:"reply_activation"`
+				AllowedTopicIDs  []int64 `toml:"allowed_topic_ids"`
+				ThreadMode       string  `toml:"thread_mode"`
+			} `toml:"groups"`
+		} `toml:"telegram"`
+	} `toml:"channels"`
 	Session struct {
 		MaxMessages           *int   `toml:"max_messages"`
 		Retention             string `toml:"retention"`
@@ -389,10 +455,16 @@ type fileConfig struct {
 // Default returns sane defaults for a local-first Koios setup.
 func Default() *Config {
 	return &Config{
-		ListenAddr:                    ":8080",
-		Provider:                      "openai",
-		Model:                         "gpt-4o",
-		LLMIdleTimeout:                30 * time.Second,
+		ListenAddr:     ":8080",
+		Provider:       "openai",
+		Model:          "gpt-4o",
+		LLMIdleTimeout: 30 * time.Second,
+		DefaultProfile: "default",
+		ModelProfiles: []ModelProfile{{
+			Name:     "default",
+			Provider: "openai",
+			Model:    "gpt-4o",
+		}},
 		MaxSessionMessages:            100,
 		RequestTimeout:                2 * time.Minute,
 		SessionRetention:              0,
@@ -445,19 +517,33 @@ func Default() *Config {
 		ExtensionDirs:                 nil,
 		ExtensionAllow:                nil,
 		ExtensionDeny:                 nil,
-		WorkspaceRoot:                 "./workspace",
-		WorkspacePerAgent:             true,
-		WorkspaceMaxBytes:             1 << 20,
-		LogLevel:                      "info",
-		LogMaxSizeMB:                  20,
-		LogMaxBackups:                 5,
-		LogMaxAgeDays:                 14,
-		LogCompress:                   true,
-		HookTimeout:                   2 * time.Second,
-		HookFailClosed:                false,
-		PresenceTypingTTL:             8 * time.Second,
-		MonitorStaleThreshold:         0,
-		MonitorMaxRestarts:            5,
+		Telegram: TelegramChannelConfig{
+			Enabled:         false,
+			Mode:            "polling",
+			PollTimeout:     25 * time.Second,
+			TextChunkLimit:  4096,
+			TextChunkMode:   "paragraph",
+			StreamQueueMode: "burst",
+			StreamThrottle:  750 * time.Millisecond,
+			ActivationMode:  "always",
+			ReplyActivation: true,
+			DMPolicy:        "open",
+			PairingCodeTTL:  24 * time.Hour,
+			ThreadMode:      "topic",
+		},
+		WorkspaceRoot:         "./workspace",
+		WorkspacePerAgent:     true,
+		WorkspaceMaxBytes:     1 << 20,
+		LogLevel:              "info",
+		LogMaxSizeMB:          20,
+		LogMaxBackups:         5,
+		LogMaxAgeDays:         14,
+		LogCompress:           true,
+		HookTimeout:           2 * time.Second,
+		HookFailClosed:        false,
+		PresenceTypingTTL:     8 * time.Second,
+		MonitorStaleThreshold: 0,
+		MonitorMaxRestarts:    5,
 	}
 }
 
@@ -507,8 +593,6 @@ func DefaultTOML() string {
 
 // EncodeTOML renders a config in the current canonical schema.
 // When includeAPIKey is false and cfg.APIKey is empty, the key is omitted as a comment.
-// When ModelProfiles are set, emits the profiles-based [llm] format; otherwise
-// falls back to the legacy flat provider/model fields for backward compatibility.
 func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 	allowedOrigins := "[]"
 	if len(cfg.AllowedOrigins) > 0 {
@@ -525,6 +609,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 
 	// Build [[mcp.servers]] sections if any are configured.
 	mcpSection := encodeMCPSection(cfg)
+	channelsSection := encodeChannelsSection(cfg)
 
 	return fmt.Sprintf(encodedTOMLTemplate,
 		strconv.Quote(cfg.ListenAddr),
@@ -578,6 +663,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		inlineQuotedStringSlice(cfg.ExtensionDirs),
 		inlineQuotedStringSlice(cfg.ExtensionAllow),
 		inlineQuotedStringSlice(cfg.ExtensionDeny),
+		channelsSection,
 		cfg.ExecEnabled,
 		cfg.ExecEnableDenyPatterns,
 		inlineQuotedStringSlice(cfg.ExecCustomDenyPatterns),
@@ -602,54 +688,68 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 	)
 }
 
-// encodeLLMSection builds the [llm] (and [[llm.profiles]]) portion of the
-// config. Profiles-based format is used when profiles exist or DefaultProfile
-// is set; legacy flat format is used otherwise for backward compatibility.
+// encodeLLMSection builds the canonical [llm] and [[llm.profiles]] config.
 func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 	var b strings.Builder
-	if len(cfg.ModelProfiles) > 0 || cfg.DefaultProfile != "" {
-		b.WriteString("[llm]\n")
-		b.WriteString("idle_timeout = " + strconv.Quote(cfg.LLMIdleTimeout.String()) + "\n")
-		if cfg.DefaultProfile != "" {
-			b.WriteString("default_profile = " + strconv.Quote(cfg.DefaultProfile) + "\n")
+	defaultProfile := strings.TrimSpace(cfg.DefaultProfile)
+	profiles := append([]ModelProfile(nil), cfg.ModelProfiles...)
+	if len(profiles) == 0 {
+		if defaultProfile == "" {
+			defaultProfile = "default"
 		}
-		if cfg.LightweightModel != "" {
-			b.WriteString("lightweight_model = " + strconv.Quote(cfg.LightweightModel) + "\n")
+		profiles = []ModelProfile{{
+			Name:     defaultProfile,
+			Provider: cfg.Provider,
+			APIKey:   cfg.APIKey,
+			BaseURL:  cfg.BaseURL,
+			Model:    cfg.Model,
+		}}
+	} else if defaultProfile == "" {
+		defaultProfile = profiles[0].Name
+	}
+	selectedIndex := -1
+	for i, profile := range profiles {
+		if profile.Name == defaultProfile {
+			selectedIndex = i
+			break
 		}
-		if len(cfg.FallbackModels) > 0 {
-			b.WriteString("fallback_models = " + quoteStringSlice(cfg.FallbackModels) + "\n")
+	}
+	if selectedIndex == -1 {
+		profiles = append([]ModelProfile{{
+			Name:     defaultProfile,
+			Provider: cfg.Provider,
+			APIKey:   cfg.APIKey,
+			BaseURL:  cfg.BaseURL,
+			Model:    cfg.Model,
+		}}, profiles...)
+		selectedIndex = 0
+	}
+	profiles[selectedIndex].Provider = cfg.Provider
+	profiles[selectedIndex].APIKey = cfg.APIKey
+	profiles[selectedIndex].BaseURL = cfg.BaseURL
+	profiles[selectedIndex].Model = cfg.Model
+	b.WriteString("[llm]\n")
+	b.WriteString("idle_timeout = " + strconv.Quote(cfg.LLMIdleTimeout.String()) + "\n")
+	b.WriteString("default_profile = " + strconv.Quote(defaultProfile) + "\n")
+	if cfg.LightweightModel != "" {
+		b.WriteString("lightweight_model = " + strconv.Quote(cfg.LightweightModel) + "\n")
+	}
+	if len(cfg.FallbackModels) > 0 {
+		b.WriteString("fallback_models = " + quoteStringSlice(cfg.FallbackModels) + "\n")
+	}
+	b.WriteString("\n")
+	for _, p := range profiles {
+		b.WriteString("[[llm.profiles]]\n")
+		b.WriteString("name = " + strconv.Quote(p.Name) + "\n")
+		b.WriteString("provider = " + strconv.Quote(p.Provider) + "\n")
+		b.WriteString("model = " + strconv.Quote(p.Model) + "\n")
+		if p.APIKey != "" || includeAPIKey {
+			b.WriteString("api_key = " + strconv.Quote(p.APIKey) + "\n")
+		}
+		if p.BaseURL != "" {
+			b.WriteString("base_url = " + strconv.Quote(p.BaseURL) + "\n")
 		}
 		b.WriteString("\n")
-		for _, p := range cfg.ModelProfiles {
-			b.WriteString("[[llm.profiles]]\n")
-			b.WriteString("name = " + strconv.Quote(p.Name) + "\n")
-			b.WriteString("provider = " + strconv.Quote(p.Provider) + "\n")
-			b.WriteString("model = " + strconv.Quote(p.Model) + "\n")
-			if p.APIKey != "" || includeAPIKey {
-				b.WriteString("api_key = " + strconv.Quote(p.APIKey) + "\n")
-			}
-			if p.BaseURL != "" {
-				b.WriteString("base_url = " + strconv.Quote(p.BaseURL) + "\n")
-			}
-			b.WriteString("\n")
-		}
-	} else {
-		// Legacy flat format for backward compatibility.
-		apiKeyLine := "# api_key = \"\""
-		if includeAPIKey || strings.TrimSpace(cfg.APIKey) != "" {
-			apiKeyLine = "api_key = " + strconv.Quote(cfg.APIKey)
-		}
-		baseURLLine := "# base_url = \"\""
-		if strings.TrimSpace(cfg.BaseURL) != "" {
-			baseURLLine = "base_url = " + strconv.Quote(cfg.BaseURL)
-		}
-		b.WriteString(fmt.Sprintf("[llm]\nidle_timeout = %s\nprovider = %s\nmodel = %s\n%s\n%s\n\n",
-			strconv.Quote(cfg.LLMIdleTimeout.String()),
-			strconv.Quote(cfg.Provider),
-			strconv.Quote(cfg.Model),
-			apiKeyLine,
-			baseURLLine,
-		))
 	}
 	return b.String()
 }
@@ -683,6 +783,69 @@ func encodeMCPSection(cfg *Config) string {
 	return b.String()
 }
 
+func encodeChannelsSection(cfg *Config) string {
+	if cfg == nil {
+		return ""
+	}
+	tg := cfg.Telegram
+	if !tg.Enabled && strings.TrimSpace(tg.BotToken) == "" && strings.TrimSpace(tg.WebhookURL) == "" && strings.TrimSpace(tg.InboxPeerID) == "" && len(tg.AllowedChatIDs) == 0 && len(tg.AllowedSenderIDs) == 0 && len(tg.GroupPolicies) == 0 {
+		return ""
+	}
+	mode := strings.TrimSpace(tg.Mode)
+	if mode == "" {
+		mode = "polling"
+	}
+	activationMode := normalizeTelegramActivationMode(tg.ActivationMode)
+	dmPolicy := normalizeTelegramDMPolicy(tg.DMPolicy)
+	threadMode := normalizeTelegramThreadMode(tg.ThreadMode)
+	var b strings.Builder
+	b.WriteString("[channels.telegram]\n")
+	b.WriteString(fmt.Sprintf("enabled = %t\n", tg.Enabled))
+	b.WriteString("bot_token = " + strconv.Quote(tg.BotToken) + "\n")
+	b.WriteString("mode = " + strconv.Quote(mode) + "\n")
+	b.WriteString("poll_timeout = " + strconv.Quote(tg.PollTimeout.String()) + "\n")
+	b.WriteString("webhook_url = " + strconv.Quote(tg.WebhookURL) + "\n")
+	b.WriteString("webhook_secret = " + strconv.Quote(tg.WebhookSecret) + "\n")
+	b.WriteString("inbox_peer_id = " + strconv.Quote(strings.TrimSpace(tg.InboxPeerID)) + "\n")
+	b.WriteString("text_chunk_limit = " + strconv.Itoa(tg.TextChunkLimit) + "\n")
+	b.WriteString("text_chunk_mode = " + strconv.Quote(normalizeTelegramTextChunkMode(tg.TextChunkMode)) + "\n")
+	b.WriteString("stream_queue_mode = " + strconv.Quote(normalizeTelegramStreamQueueMode(tg.StreamQueueMode)) + "\n")
+	b.WriteString("stream_throttle = " + strconv.Quote(tg.StreamThrottle.String()) + "\n")
+	b.WriteString("allowed_chat_ids = [" + quoteInt64Slice(tg.AllowedChatIDs) + "]\n")
+	b.WriteString("allowed_sender_ids = [" + quoteInt64Slice(tg.AllowedSenderIDs) + "]\n")
+	b.WriteString("command_sender_ids = [" + quoteInt64Slice(tg.CommandSenderIDs) + "]\n")
+	b.WriteString("activation_mode = " + strconv.Quote(activationMode) + "\n")
+	b.WriteString(fmt.Sprintf("reply_activation = %t\n", tg.ReplyActivation))
+	b.WriteString("dm_policy = " + strconv.Quote(dmPolicy) + "\n")
+	b.WriteString("pairing_code_ttl = " + strconv.Quote(tg.PairingCodeTTL.String()) + "\n")
+	b.WriteString("thread_mode = " + strconv.Quote(threadMode) + "\n")
+	b.WriteString("\n")
+	for _, group := range tg.GroupPolicies {
+		b.WriteString("[[channels.telegram.groups]]\n")
+		b.WriteString("chat_id = " + strconv.FormatInt(group.ChatID, 10) + "\n")
+		if group.ActivationMode != "" {
+			b.WriteString("activation_mode = " + strconv.Quote(normalizeTelegramActivationMode(group.ActivationMode)) + "\n")
+		}
+		if len(group.AllowedSenderIDs) > 0 {
+			b.WriteString("allowed_sender_ids = [" + quoteInt64Slice(group.AllowedSenderIDs) + "]\n")
+		}
+		if len(group.CommandSenderIDs) > 0 {
+			b.WriteString("command_sender_ids = [" + quoteInt64Slice(group.CommandSenderIDs) + "]\n")
+		}
+		if group.ReplyActivation != nil {
+			b.WriteString(fmt.Sprintf("reply_activation = %t\n", *group.ReplyActivation))
+		}
+		if len(group.AllowedTopicIDs) > 0 {
+			b.WriteString("allowed_topic_ids = [" + quoteInt64Slice(group.AllowedTopicIDs) + "]\n")
+		}
+		if group.ThreadMode != "" {
+			b.WriteString("thread_mode = " + strconv.Quote(normalizeTelegramThreadMode(group.ThreadMode)) + "\n")
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func applyFileConfig(dst *Config, src *fileConfig) {
 	if src.Server.ListenAddr != "" {
 		dst.ListenAddr = src.Server.ListenAddr
@@ -699,23 +862,10 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 		dst.OwnerPeerIDs = src.Server.OwnerPeerIDs
 	}
 
-	// Apply legacy flat LLM fields first; default_profile overrides them below.
-	if src.LLM.Provider != "" {
-		dst.Provider = src.LLM.Provider
-	}
 	if src.LLM.IdleTimeout != "" {
 		if d, err := time.ParseDuration(src.LLM.IdleTimeout); err == nil && d >= 0 {
 			dst.LLMIdleTimeout = d
 		}
-	}
-	if src.LLM.APIKey != "" {
-		dst.APIKey = src.LLM.APIKey
-	}
-	if src.LLM.Model != "" {
-		dst.Model = src.LLM.Model
-	}
-	if src.LLM.BaseURL != "" {
-		dst.BaseURL = src.LLM.BaseURL
 	}
 	if src.LLM.LightweightModel != "" {
 		dst.LightweightModel = src.LLM.LightweightModel
@@ -726,12 +876,12 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	if src.LLM.Profiles != nil {
 		dst.ModelProfiles = append([]ModelProfile(nil), src.LLM.Profiles...)
 	}
-	// default_profile, when set, resolves the named profile and overrides the
-	// primary provider/model fields, taking precedence over legacy flat fields.
 	if src.LLM.DefaultProfile != "" {
 		dst.DefaultProfile = src.LLM.DefaultProfile
-		for _, p := range src.LLM.Profiles {
-			if p.Name == src.LLM.DefaultProfile {
+	}
+	if dst.DefaultProfile != "" {
+		for _, p := range dst.ModelProfiles {
+			if p.Name == dst.DefaultProfile {
 				if p.Provider != "" {
 					dst.Provider = p.Provider
 				}
@@ -759,6 +909,83 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.Extensions.Deny != nil {
 		dst.ExtensionDeny = append([]string(nil), src.Extensions.Deny...)
+	}
+	if src.Channels.Telegram.Enabled != nil {
+		dst.Telegram.Enabled = *src.Channels.Telegram.Enabled
+	}
+	if src.Channels.Telegram.BotToken != "" {
+		dst.Telegram.BotToken = src.Channels.Telegram.BotToken
+	}
+	if src.Channels.Telegram.Mode != "" {
+		dst.Telegram.Mode = src.Channels.Telegram.Mode
+	}
+	if src.Channels.Telegram.WebhookURL != "" {
+		dst.Telegram.WebhookURL = src.Channels.Telegram.WebhookURL
+	}
+	if src.Channels.Telegram.WebhookSecret != "" {
+		dst.Telegram.WebhookSecret = src.Channels.Telegram.WebhookSecret
+	}
+	if src.Channels.Telegram.InboxPeerID != "" {
+		dst.Telegram.InboxPeerID = strings.TrimSpace(src.Channels.Telegram.InboxPeerID)
+	}
+	if src.Channels.Telegram.PollTimeout != "" {
+		if d, err := time.ParseDuration(src.Channels.Telegram.PollTimeout); err == nil && d > 0 {
+			dst.Telegram.PollTimeout = d
+		}
+	}
+	if src.Channels.Telegram.TextChunkLimit != nil && *src.Channels.Telegram.TextChunkLimit > 0 {
+		dst.Telegram.TextChunkLimit = *src.Channels.Telegram.TextChunkLimit
+	}
+	if src.Channels.Telegram.TextChunkMode != "" {
+		dst.Telegram.TextChunkMode = normalizeTelegramTextChunkMode(src.Channels.Telegram.TextChunkMode)
+	}
+	if src.Channels.Telegram.StreamQueueMode != "" {
+		dst.Telegram.StreamQueueMode = normalizeTelegramStreamQueueMode(src.Channels.Telegram.StreamQueueMode)
+	}
+	if src.Channels.Telegram.StreamThrottle != "" {
+		if d, err := time.ParseDuration(src.Channels.Telegram.StreamThrottle); err == nil && d > 0 {
+			dst.Telegram.StreamThrottle = d
+		}
+	}
+	if src.Channels.Telegram.AllowedChatIDs != nil {
+		dst.Telegram.AllowedChatIDs = append([]int64(nil), src.Channels.Telegram.AllowedChatIDs...)
+	}
+	if src.Channels.Telegram.AllowedSenderIDs != nil {
+		dst.Telegram.AllowedSenderIDs = append([]int64(nil), src.Channels.Telegram.AllowedSenderIDs...)
+	}
+	if src.Channels.Telegram.CommandSenderIDs != nil {
+		dst.Telegram.CommandSenderIDs = append([]int64(nil), src.Channels.Telegram.CommandSenderIDs...)
+	}
+	if src.Channels.Telegram.ActivationMode != "" {
+		dst.Telegram.ActivationMode = normalizeTelegramActivationMode(src.Channels.Telegram.ActivationMode)
+	}
+	if src.Channels.Telegram.ReplyActivation != nil {
+		dst.Telegram.ReplyActivation = *src.Channels.Telegram.ReplyActivation
+	}
+	if src.Channels.Telegram.DMPolicy != "" {
+		dst.Telegram.DMPolicy = src.Channels.Telegram.DMPolicy
+	}
+	if src.Channels.Telegram.PairingCodeTTL != "" {
+		if d, err := time.ParseDuration(src.Channels.Telegram.PairingCodeTTL); err == nil && d > 0 {
+			dst.Telegram.PairingCodeTTL = d
+		}
+	}
+	if src.Channels.Telegram.ThreadMode != "" {
+		dst.Telegram.ThreadMode = src.Channels.Telegram.ThreadMode
+	}
+	if len(src.Channels.Telegram.Groups) > 0 {
+		dst.Telegram.GroupPolicies = make([]TelegramGroupPolicy, 0, len(src.Channels.Telegram.Groups))
+		for _, group := range src.Channels.Telegram.Groups {
+			dst.Telegram.GroupPolicies = append(dst.Telegram.GroupPolicies, TelegramGroupPolicy{
+				ChatID:           group.ChatID,
+				ActivationMode:   group.ActivationMode,
+				AllowedSenderIDs: append([]int64(nil), group.AllowedSenderIDs...),
+				CommandSenderIDs: append([]int64(nil), group.CommandSenderIDs...),
+				ReplyActivation:  group.ReplyActivation,
+				AllowedTopicIDs:  append([]int64(nil), group.AllowedTopicIDs...),
+				ThreadMode:       group.ThreadMode,
+			})
+		}
 	}
 
 	if src.Session.MaxMessages != nil && *src.Session.MaxMessages > 0 {
@@ -1080,6 +1307,72 @@ func quoteIntSlice(values []int) string {
 	return strings.Join(parts, ", ")
 }
 
+func quoteInt64Slice(values []int64) string {
+	if len(values) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, strconv.FormatInt(value, 10))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func normalizeTelegramActivationMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "inherit":
+		return "always"
+	case "mention", "always":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
+func normalizeTelegramDMPolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "", "open":
+		return "open"
+	case "pairing", "closed":
+		return strings.ToLower(strings.TrimSpace(policy))
+	default:
+		return strings.ToLower(strings.TrimSpace(policy))
+	}
+}
+
+func normalizeTelegramTextChunkMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "paragraph":
+		return "paragraph"
+	case "word", "hard":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
+func normalizeTelegramStreamQueueMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "burst":
+		return "burst"
+	case "throttle":
+		return "throttle"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
+func normalizeTelegramThreadMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "topic":
+		return "topic"
+	case "chat":
+		return "chat"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
 func inlineExecIsolationPaths(values []ExecIsolationPath) string {
 	if len(values) == 0 {
 		return ""
@@ -1112,6 +1405,30 @@ func ParseDailyResetMinutes(raw string) (int, error) {
 }
 
 func validate(cfg *Config) error {
+	if strings.TrimSpace(cfg.DefaultProfile) == "" {
+		return fmt.Errorf("llm.default_profile is required")
+	}
+	if len(cfg.ModelProfiles) == 0 {
+		return fmt.Errorf("llm.profiles must contain at least one profile")
+	}
+	selectedProfile := false
+	for i, profile := range cfg.ModelProfiles {
+		if strings.TrimSpace(profile.Name) == "" {
+			return fmt.Errorf("llm.profiles[%d].name must not be empty", i)
+		}
+		if strings.TrimSpace(profile.Provider) == "" {
+			return fmt.Errorf("llm.profiles[%d].provider must not be empty", i)
+		}
+		if strings.TrimSpace(profile.Model) == "" {
+			return fmt.Errorf("llm.profiles[%d].model must not be empty", i)
+		}
+		if profile.Name == cfg.DefaultProfile {
+			selectedProfile = true
+		}
+	}
+	if !selectedProfile {
+		return fmt.Errorf("llm.default_profile %q must match one of llm.profiles.name", cfg.DefaultProfile)
+	}
 	if cfg.Model == "" {
 		return fmt.Errorf("llm.model is required")
 	}
@@ -1228,6 +1545,76 @@ func validate(cfg *Config) error {
 			return fmt.Errorf("extensions.deny[%d] must not be empty", i)
 		}
 	}
+	if cfg.Telegram.Enabled {
+		if strings.TrimSpace(cfg.Telegram.BotToken) == "" {
+			return fmt.Errorf("channels.telegram.bot_token is required when Telegram is enabled")
+		}
+		switch strings.ToLower(strings.TrimSpace(cfg.Telegram.Mode)) {
+		case "", "polling", "webhook":
+		default:
+			return fmt.Errorf("channels.telegram.mode must be one of polling or webhook")
+		}
+		if strings.EqualFold(strings.TrimSpace(cfg.Telegram.Mode), "webhook") && strings.TrimSpace(cfg.Telegram.WebhookURL) == "" {
+			return fmt.Errorf("channels.telegram.webhook_url is required in webhook mode")
+		}
+		if inboxPeerID := strings.TrimSpace(cfg.Telegram.InboxPeerID); inboxPeerID != "" && !isValidPeerID(inboxPeerID) {
+			return fmt.Errorf("channels.telegram.inbox_peer_id must be a valid peer id")
+		}
+		if cfg.Telegram.PollTimeout <= 0 {
+			return fmt.Errorf("channels.telegram.poll_timeout must be > 0")
+		}
+		if cfg.Telegram.TextChunkLimit < 1 {
+			return fmt.Errorf("channels.telegram.text_chunk_limit must be >= 1")
+		}
+		switch normalizeTelegramTextChunkMode(cfg.Telegram.TextChunkMode) {
+		case "paragraph", "word", "hard":
+		default:
+			return fmt.Errorf("channels.telegram.text_chunk_mode must be one of paragraph, word, or hard")
+		}
+		switch normalizeTelegramStreamQueueMode(cfg.Telegram.StreamQueueMode) {
+		case "burst", "throttle":
+		default:
+			return fmt.Errorf("channels.telegram.stream_queue_mode must be one of burst or throttle")
+		}
+		if cfg.Telegram.StreamThrottle <= 0 {
+			return fmt.Errorf("channels.telegram.stream_throttle must be > 0")
+		}
+		switch normalizeTelegramActivationMode(cfg.Telegram.ActivationMode) {
+		case "mention", "always":
+		default:
+			return fmt.Errorf("channels.telegram.activation_mode must be one of mention or always")
+		}
+		switch normalizeTelegramDMPolicy(cfg.Telegram.DMPolicy) {
+		case "open", "pairing", "closed":
+		default:
+			return fmt.Errorf("channels.telegram.dm_policy must be one of open, pairing, or closed")
+		}
+		switch normalizeTelegramThreadMode(cfg.Telegram.ThreadMode) {
+		case "topic", "chat":
+		default:
+			return fmt.Errorf("channels.telegram.thread_mode must be one of topic or chat")
+		}
+		if cfg.Telegram.PairingCodeTTL <= 0 {
+			return fmt.Errorf("channels.telegram.pairing_code_ttl must be > 0")
+		}
+		for i, group := range cfg.Telegram.GroupPolicies {
+			if group.ChatID == 0 {
+				return fmt.Errorf("channels.telegram.groups[%d].chat_id must not be 0", i)
+			}
+			switch normalizeTelegramActivationMode(group.ActivationMode) {
+			case "", "mention", "always":
+			default:
+				return fmt.Errorf("channels.telegram.groups[%d].activation_mode must be one of mention or always", i)
+			}
+			switch normalizeTelegramThreadMode(group.ThreadMode) {
+			case "topic", "chat":
+			default:
+				if strings.TrimSpace(group.ThreadMode) != "" {
+					return fmt.Errorf("channels.telegram.groups[%d].thread_mode must be one of topic or chat", i)
+				}
+			}
+		}
+	}
 	if cfg.WorkspaceRoot == "" {
 		return fmt.Errorf("workspace.root must not be empty")
 	}
@@ -1243,4 +1630,19 @@ func validate(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func isValidPeerID(id string) bool {
+	if len(id) == 0 || len(id) > 256 {
+		return false
+	}
+	for _, c := range id {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '@' || c == ':' {
+			continue
+		}
+		return false
+	}
+	return true
 }

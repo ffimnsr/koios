@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/mcp"
@@ -14,14 +15,17 @@ import (
 )
 
 const (
-	ManifestFileName   = "koios-extension.toml"
-	ManifestFileSuffix = ".koios-extension.toml"
-	APIVersionV1       = "koios.extension/v1"
-	KindMCPServer      = "mcp_server"
-	CapabilityTools    = "tools"
-	CapabilityHooks    = "hooks"
-	HookModeEmit       = "emit"
-	HookModeIntercept  = "intercept"
+	ManifestFileName           = "koios-extension.toml"
+	ManifestFileSuffix         = ".koios-extension.toml"
+	APIVersionV1               = "koios.extension/v1"
+	KindMCPServer              = "mcp_server"
+	CapabilityTools            = "tools"
+	CapabilityHooks            = "hooks"
+	CapabilityHTTPRoutes       = "http_routes"
+	CapabilityOutboundMessages = "outbound_messages"
+	CapabilityChannels         = "channels"
+	HookModeEmit               = "emit"
+	HookModeIntercept          = "intercept"
 )
 
 type HookBinding struct {
@@ -33,16 +37,47 @@ type HookBinding struct {
 	Enabled  *bool  `toml:"enabled"`
 }
 
+type HTTPRouteBinding struct {
+	Name    string `toml:"name"`
+	Method  string `toml:"method"`
+	Path    string `toml:"path"`
+	Tool    string `toml:"tool"`
+	Enabled *bool  `toml:"enabled"`
+}
+
+type OutboundMessageBinding struct {
+	Name    string `toml:"name"`
+	Channel string `toml:"channel"`
+	Tool    string `toml:"tool"`
+	Enabled *bool  `toml:"enabled"`
+}
+
+type ChannelBinding struct {
+	Name         string `toml:"name"`
+	Channel      string `toml:"channel"`
+	Method       string `toml:"method"`
+	Path         string `toml:"path"`
+	Tool         string `toml:"tool"`
+	PollTool     string `toml:"poll_tool"`
+	PollInterval string `toml:"poll_interval"`
+	StartTool    string `toml:"start_tool"`
+	ShutdownTool string `toml:"shutdown_tool"`
+	Enabled      *bool  `toml:"enabled"`
+}
+
 type Manifest struct {
-	APIVersion   string        `toml:"api_version"`
-	Kind         string        `toml:"kind"`
-	ID           string        `toml:"id"`
-	Name         string        `toml:"name"`
-	Description  string        `toml:"description"`
-	Enabled      *bool         `toml:"enabled"`
-	Capabilities []string      `toml:"capabilities"`
-	Hooks        []HookBinding `toml:"hooks"`
-	MCP          struct {
+	APIVersion       string                   `toml:"api_version"`
+	Kind             string                   `toml:"kind"`
+	ID               string                   `toml:"id"`
+	Name             string                   `toml:"name"`
+	Description      string                   `toml:"description"`
+	Enabled          *bool                    `toml:"enabled"`
+	Capabilities     []string                 `toml:"capabilities"`
+	Hooks            []HookBinding            `toml:"hooks"`
+	Routes           []HTTPRouteBinding       `toml:"routes"`
+	OutboundMessages []OutboundMessageBinding `toml:"outbound_messages"`
+	Channels         []ChannelBinding         `toml:"channels"`
+	MCP              struct {
 		Transport string            `toml:"transport"`
 		Command   string            `toml:"command"`
 		Args      []string          `toml:"args"`
@@ -111,7 +146,7 @@ func MCPServers(manifests []DiscoveredManifest) ([]config.MCPServerConfig, error
 		if !manifest.Enabled() {
 			continue
 		}
-		if !manifest.HasCapability(CapabilityTools) && !manifest.HasCapability(CapabilityHooks) {
+		if !manifest.HasCapability(CapabilityTools) && !manifest.HasCapability(CapabilityHooks) && !manifest.HasCapability(CapabilityHTTPRoutes) && !manifest.HasCapability(CapabilityOutboundMessages) && !manifest.HasCapability(CapabilityChannels) {
 			continue
 		}
 		server, ok, err := manifest.MCPServerConfig()
@@ -250,6 +285,9 @@ func validateManifest(manifest *Manifest, path string) error {
 	manifest.Description = strings.TrimSpace(manifest.Description)
 	manifest.Capabilities = normalizeCapabilities(manifest.Kind, manifest.Capabilities)
 	manifest.Hooks = normalizeHookBindings(manifest.Hooks)
+	manifest.Routes = normalizeHTTPRouteBindings(manifest.Routes)
+	manifest.OutboundMessages = normalizeOutboundMessageBindings(manifest.OutboundMessages)
+	manifest.Channels = normalizeChannelBindings(manifest.Channels)
 	manifest.MCP.Transport = strings.TrimSpace(manifest.MCP.Transport)
 	manifest.MCP.Command = strings.TrimSpace(manifest.MCP.Command)
 	manifest.MCP.URL = strings.TrimSpace(manifest.MCP.URL)
@@ -272,15 +310,39 @@ func validateManifest(manifest *Manifest, path string) error {
 	}
 	if manifest.Kind == KindMCPServer {
 		for _, capability := range manifest.Capabilities {
-			if capability != CapabilityTools && capability != CapabilityHooks {
-				return fmt.Errorf("extension manifest %s: mcp_server only supports capabilities %q and %q, got %q", path, CapabilityTools, CapabilityHooks, capability)
+			if capability != CapabilityTools && capability != CapabilityHooks && capability != CapabilityHTTPRoutes && capability != CapabilityOutboundMessages && capability != CapabilityChannels {
+				return fmt.Errorf("extension manifest %s: mcp_server only supports capabilities %q, %q, %q, %q, and %q, got %q", path, CapabilityTools, CapabilityHooks, CapabilityHTTPRoutes, CapabilityOutboundMessages, CapabilityChannels, capability)
 			}
 		}
 		if len(manifest.Hooks) > 0 && !hasCapability(manifest.Capabilities, CapabilityHooks) {
 			return fmt.Errorf("extension manifest %s: hook bindings require capability %q", path, CapabilityHooks)
 		}
+		if len(manifest.Routes) > 0 && !hasCapability(manifest.Capabilities, CapabilityHTTPRoutes) {
+			return fmt.Errorf("extension manifest %s: route bindings require capability %q", path, CapabilityHTTPRoutes)
+		}
+		if len(manifest.OutboundMessages) > 0 && !hasCapability(manifest.Capabilities, CapabilityOutboundMessages) {
+			return fmt.Errorf("extension manifest %s: outbound message bindings require capability %q", path, CapabilityOutboundMessages)
+		}
+		if len(manifest.Channels) > 0 && !hasCapability(manifest.Capabilities, CapabilityChannels) {
+			return fmt.Errorf("extension manifest %s: channel bindings require capability %q", path, CapabilityChannels)
+		}
 		for _, binding := range manifest.Hooks {
 			if err := validateHookBinding(binding, path); err != nil {
+				return err
+			}
+		}
+		for _, route := range manifest.Routes {
+			if err := validateHTTPRouteBinding(route, path); err != nil {
+				return err
+			}
+		}
+		for _, binding := range manifest.OutboundMessages {
+			if err := validateOutboundMessageBinding(binding, path); err != nil {
+				return err
+			}
+		}
+		for _, binding := range manifest.Channels {
+			if err := validateChannelBinding(binding, path); err != nil {
 				return err
 			}
 		}
@@ -333,6 +395,94 @@ func normalizeHookBindings(bindings []HookBinding) []HookBinding {
 	return normalized
 }
 
+func normalizeHTTPRouteBindings(bindings []HTTPRouteBinding) []HTTPRouteBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(bindings))
+	normalized := make([]HTTPRouteBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		binding.Name = strings.TrimSpace(binding.Name)
+		binding.Method = strings.ToUpper(strings.TrimSpace(binding.Method))
+		binding.Path = normalizeHTTPRoutePath(binding.Path)
+		binding.Tool = strings.TrimSpace(binding.Tool)
+		key := binding.Method + " " + binding.Path
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, binding)
+	}
+	return normalized
+}
+
+func normalizeOutboundMessageBindings(bindings []OutboundMessageBinding) []OutboundMessageBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(bindings))
+	normalized := make([]OutboundMessageBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		binding.Name = strings.TrimSpace(binding.Name)
+		binding.Channel = strings.ToLower(strings.TrimSpace(binding.Channel))
+		binding.Tool = strings.TrimSpace(binding.Tool)
+		if binding.Channel == "" {
+			continue
+		}
+		if _, exists := seen[binding.Channel]; exists {
+			continue
+		}
+		seen[binding.Channel] = struct{}{}
+		normalized = append(normalized, binding)
+	}
+	return normalized
+}
+
+func normalizeChannelBindings(bindings []ChannelBinding) []ChannelBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(bindings))
+	normalized := make([]ChannelBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		binding.Name = strings.TrimSpace(binding.Name)
+		binding.Channel = strings.ToLower(strings.TrimSpace(binding.Channel))
+		binding.Method = strings.ToUpper(strings.TrimSpace(binding.Method))
+		if binding.Method == "" {
+			binding.Method = "POST"
+		}
+		binding.Path = normalizeHTTPRoutePath(binding.Path)
+		binding.Tool = strings.TrimSpace(binding.Tool)
+		binding.PollTool = strings.TrimSpace(binding.PollTool)
+		binding.PollInterval = strings.TrimSpace(binding.PollInterval)
+		binding.StartTool = strings.TrimSpace(binding.StartTool)
+		binding.ShutdownTool = strings.TrimSpace(binding.ShutdownTool)
+		if binding.Channel == "" {
+			continue
+		}
+		if _, exists := seen[binding.Channel]; exists {
+			continue
+		}
+		seen[binding.Channel] = struct{}{}
+		normalized = append(normalized, binding)
+	}
+	return normalized
+}
+
+func normalizeHTTPRoutePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if path != "/" {
+		path = strings.TrimRight(path, "/")
+	}
+	return path
+}
+
 func normalizeTokens(values []string) map[string]struct{} {
 	if len(values) == 0 {
 		return nil
@@ -372,6 +522,68 @@ func validateHookBinding(binding HookBinding, path string) error {
 	}
 	if binding.Mode == HookModeIntercept && !strings.HasPrefix(binding.Event, "before_") {
 		return fmt.Errorf("extension manifest %s: hooks.mode %q requires a before_* event, got %q", path, HookModeIntercept, binding.Event)
+	}
+	return nil
+}
+
+func validateHTTPRouteBinding(binding HTTPRouteBinding, path string) error {
+	if binding.Method == "" {
+		return fmt.Errorf("extension manifest %s: routes.method is required", path)
+	}
+	switch binding.Method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+	default:
+		return fmt.Errorf("extension manifest %s: unsupported routes.method %q", path, binding.Method)
+	}
+	if binding.Path == "" {
+		return fmt.Errorf("extension manifest %s: routes.path is required", path)
+	}
+	if !strings.HasPrefix(binding.Path, "/") {
+		return fmt.Errorf("extension manifest %s: routes.path must start with /", path)
+	}
+	if binding.Tool == "" {
+		return fmt.Errorf("extension manifest %s: routes.tool is required", path)
+	}
+	return nil
+}
+
+func validateOutboundMessageBinding(binding OutboundMessageBinding, path string) error {
+	if strings.TrimSpace(binding.Channel) == "" {
+		return fmt.Errorf("extension manifest %s: outbound_messages.channel is required", path)
+	}
+	if strings.TrimSpace(binding.Tool) == "" {
+		return fmt.Errorf("extension manifest %s: outbound_messages.tool is required", path)
+	}
+	return nil
+}
+
+func validateChannelBinding(binding ChannelBinding, path string) error {
+	if strings.TrimSpace(binding.Channel) == "" {
+		return fmt.Errorf("extension manifest %s: channels.channel is required", path)
+	}
+	if strings.TrimSpace(binding.Tool) == "" && strings.TrimSpace(binding.PollTool) == "" {
+		return fmt.Errorf("extension manifest %s: channels.tool or channels.poll_tool is required", path)
+	}
+	if strings.TrimSpace(binding.Tool) != "" {
+		if binding.Method == "" {
+			return fmt.Errorf("extension manifest %s: channels.method is required when channels.tool is set", path)
+		}
+		switch binding.Method {
+		case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+		default:
+			return fmt.Errorf("extension manifest %s: unsupported channels.method %q", path, binding.Method)
+		}
+		if binding.Path == "" {
+			return fmt.Errorf("extension manifest %s: channels.path is required when channels.tool is set", path)
+		}
+		if !strings.HasPrefix(binding.Path, "/") {
+			return fmt.Errorf("extension manifest %s: channels.path must start with /", path)
+		}
+	}
+	if strings.TrimSpace(binding.PollInterval) != "" {
+		if _, err := time.ParseDuration(binding.PollInterval); err != nil {
+			return fmt.Errorf("extension manifest %s: invalid channels.poll_interval %q: %w", path, binding.PollInterval, err)
+		}
 	}
 	return nil
 }

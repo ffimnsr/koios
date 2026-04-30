@@ -11,6 +11,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,10 @@ func TestResolveRepoState(t *testing.T) {
 		"request_timeout = \"45s\"",
 		"",
 		"[llm]",
+		"default_profile = \"default\"",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
 		"provider = \"openai\"",
 		"model = \"gpt-4o\"",
 		"api_key = \"test-key\"",
@@ -122,6 +127,10 @@ func TestInitWizardRewritesExistingConfig(t *testing.T) {
 		"request_timeout = \"30s\"",
 		"",
 		"[llm]",
+		"default_profile = \"default\"",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
 		"provider = \"openai\"",
 		"model = \"old-model\"",
 		"api_key = \"old-key\"",
@@ -189,7 +198,7 @@ func TestInitWizardRewritesExistingConfig(t *testing.T) {
 	}
 }
 
-func TestInitWizardBlankOptionalAPIKeyRetainsExistingValue(t *testing.T) {
+func TestInitWizardBlankOptionalAPIKeyOmitsValue(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(strings.Join([]string{
 		"[server]",
@@ -238,8 +247,8 @@ func TestInitWizardBlankOptionalAPIKeyRetainsExistingValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "api_key = \"old-key\"") {
-		t.Fatalf("expected blank api_key prompt to retain existing value\n%s", content)
+	if strings.Contains(content, "api_key = \"old-key\"") || strings.Contains(content, "api_key = \"\"") {
+		t.Fatalf("expected blank api_key prompt to omit the value from rewritten config\n%s", content)
 	}
 	if !strings.Contains(content, "model = \"new-model\"") {
 		t.Fatalf("expected later wizard prompts to continue after blank api_key\n%s", content)
@@ -254,6 +263,10 @@ func TestInitWizardNonInteractiveUsesExistingValues(t *testing.T) {
 		"request_timeout = \"30s\"",
 		"",
 		"[llm]",
+		"default_profile = \"default\"",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
 		"provider = \"openai\"",
 		"model = \"existing-model\"",
 		"api_key = \"existing-key\"",
@@ -1595,6 +1608,10 @@ func TestDoctorRepairNormalizesInvalidConfig(t *testing.T) {
 		`request_timeout = "1s"`,
 		"",
 		"[llm]",
+		`default_profile = "default"`,
+		"",
+		"[[llm.profiles]]",
+		`name = "default"`,
 		`provider = "bogus"`,
 		`model = ""`,
 		"",
@@ -1648,6 +1665,8 @@ func TestDoctorRepairNormalizesInvalidConfig(t *testing.T) {
 	}
 	text := string(data)
 	for _, expected := range []string{
+		`default_profile = "default"`,
+		`[[llm.profiles]]`,
 		`provider = "openai"`,
 		`model = "gpt-4o"`,
 		`max_messages = 100`,
@@ -1667,7 +1686,7 @@ func TestDoctorRepairNormalizesInvalidConfig(t *testing.T) {
 	if !strings.Contains(out.String(), `rewrote koios.config.toml with normalized settings`) {
 		t.Fatalf("expected rewrite repair note in output: %s", out.String())
 	}
-	if !strings.Contains(out.String(), `reset llm.provider to`) {
+	if !strings.Contains(out.String(), `reset tools.profile to \"full\"`) {
 		t.Fatalf("expected detailed repair notes in output: %s", out.String())
 	}
 }
@@ -1692,7 +1711,7 @@ func TestDoctorRepairForceReplacesUnreadableConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `[llm]`) || !strings.Contains(string(data), `provider = "openai"`) {
+	if !strings.Contains(string(data), `[llm]`) || !strings.Contains(string(data), `default_profile = "default"`) || !strings.Contains(string(data), `[[llm.profiles]]`) {
 		t.Fatalf("expected broken config to be replaced with defaults, got:\n%s", string(data))
 	}
 	backup, err := os.ReadFile(brokenPath + ".bak")
@@ -1829,6 +1848,10 @@ func TestDoctorDeepProbesMCPHTTPServer(t *testing.T) {
 	configText := strings.Join([]string{
 		fmt.Sprintf("[server]\nlisten_addr = %q\n", server.URL),
 		"[llm]",
+		`default_profile = "default"`,
+		"",
+		"[[llm.profiles]]",
+		`name = "default"`,
 		`provider = "openai"`,
 		`model = "gpt-4o"`,
 		`api_key = "test-key"`,
@@ -1862,6 +1885,243 @@ func TestDoctorDeepProbesMCPHTTPServer(t *testing.T) {
 	if !strings.Contains(out.String(), `reachable over http with 1 tool(s)`) {
 		t.Fatalf("expected successful MCP probe output: %s", out.String())
 	}
+}
+
+func TestExtensionListShowsDiscoveredNamespaces(t *testing.T) {
+	dir := t.TempDir()
+	server := newTestExtensionMCPServer(t, []map[string]any{{
+		"name":        "echo",
+		"description": "echo input",
+		"inputSchema": map[string]any{"type": "object"},
+	}}, nil)
+	defer server.Close()
+
+	writeExtensionTestConfig(t, dir)
+	writeExtensionTestManifest(t, dir, `api_version = "koios.extension/v1"
+kind = "mcp_server"
+id = "demo.echo"
+name = "echo-plugin"
+description = "Echo extension"
+capabilities = ["tools"]
+
+[mcp]
+transport = "http"
+url = "`+server.URL+`/mcp"
+timeout = "2s"
+`)
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	root := newExtensionCommand(cmdCtx)
+	root.SetArgs([]string{"list", "--json"})
+	root.SetIn(strings.NewReader(""))
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"id": "demo.echo"`) {
+		t.Fatalf("expected extension id in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"invocation_root": "koios extension run demo.echo"`) {
+		t.Fatalf("expected invocation namespace in output: %s", out.String())
+	}
+}
+
+func TestExtensionToolsAndRunInvokeScopedCommand(t *testing.T) {
+	dir := t.TempDir()
+	var (
+		mu       sync.Mutex
+		lastArgs map[string]any
+	)
+	server := newTestExtensionMCPServer(t, []map[string]any{{
+		"name":        "echo",
+		"description": "echo input",
+		"inputSchema": map[string]any{"type": "object"},
+	}}, func(name string, args map[string]any) string {
+		mu.Lock()
+		defer mu.Unlock()
+		lastArgs = args
+		if name != "echo" {
+			return "unexpected tool"
+		}
+		message, _ := args["message"].(string)
+		return "echo:" + message
+	})
+	defer server.Close()
+
+	writeExtensionTestConfig(t, dir)
+	writeExtensionTestManifest(t, dir, `api_version = "koios.extension/v1"
+kind = "mcp_server"
+id = "demo.echo"
+name = "echo-plugin"
+capabilities = ["tools"]
+
+[mcp]
+transport = "http"
+url = "`+server.URL+`/mcp"
+timeout = "2s"
+`)
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	root := newExtensionCommand(cmdCtx)
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"tools", "demo.echo", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"tool": "echo"`) {
+		t.Fatalf("expected extension tool in output: %s", out.String())
+	}
+
+	root = newExtensionCommand(cmdCtx)
+	out.Reset()
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"run", "demo.echo", "echo", "--arg", "message=hello", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"result": "echo:hello"`) {
+		t.Fatalf("expected tool result in output: %s", out.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got := lastArgs["message"]; got != "hello" {
+		t.Fatalf("expected message argument to reach extension server, got %#v", lastArgs)
+	}
+}
+
+func TestExtensionRoutesListsScopedHTTPRoutes(t *testing.T) {
+	dir := t.TempDir()
+	writeExtensionTestConfig(t, dir)
+	writeExtensionTestManifest(t, dir, `api_version = "koios.extension/v1"
+kind = "mcp_server"
+id = "demo.echo"
+name = "echo-plugin"
+capabilities = ["http_routes"]
+
+[mcp]
+transport = "http"
+url = "https://example.test/mcp"
+timeout = "2s"
+
+[[routes]]
+name = "echo"
+method = "POST"
+path = "/echo"
+tool = "http_echo"
+`)
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	root := newExtensionCommand(cmdCtx)
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs([]string{"routes", "demo.echo", "--json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"url": "/v1/extensions/demo.echo/echo"`) {
+		t.Fatalf("expected scoped route URL in output: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"tool": "http_echo"`) {
+		t.Fatalf("expected backing tool in output: %s", out.String())
+	}
+}
+
+func writeExtensionTestConfig(t *testing.T, dir string) {
+	t.Helper()
+	content := strings.Join([]string{
+		"[server]",
+		`listen_addr = ":8080"`,
+		`request_timeout = "30s"`,
+		"",
+		"[llm]",
+		`default_profile = "default"`,
+		"",
+		"[[llm.profiles]]",
+		`name = "default"`,
+		`provider = "openai"`,
+		`model = "gpt-4o"`,
+		`api_key = "test-key"`,
+		"",
+		"[workspace]",
+		`root = "./workspace"`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "workspace", "extensions", "demo"), 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace extensions: %v", err)
+	}
+}
+
+func writeExtensionTestManifest(t *testing.T, dir, content string) {
+	t.Helper()
+	path := filepath.Join(dir, "workspace", "extensions", "demo", "koios-extension.toml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile manifest: %v", err)
+	}
+}
+
+func newTestExtensionMCPServer(t *testing.T, tools []map[string]any, call func(name string, args map[string]any) string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode mcp request: %v", err)
+		}
+		method, _ := req["method"].(string)
+		switch method {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result": map[string]any{
+					"protocolVersion": "2024-11-05",
+					"capabilities":    map[string]any{},
+					"serverInfo":      map[string]any{"name": "demo", "version": "1.0.0"},
+				},
+			})
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result": map[string]any{
+					"tools": tools,
+				},
+			})
+		case "tools/call":
+			params, _ := req["params"].(map[string]any)
+			name, _ := params["name"].(string)
+			arguments, _ := params["arguments"].(map[string]any)
+			text := "ok"
+			if call != nil {
+				text = call(name, arguments)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result": map[string]any{
+					"content": []map[string]any{{"type": "text", "text": text}},
+				},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			})
+		}
+	}))
 }
 
 func TestRootNoArgsShowsHelp(t *testing.T) {

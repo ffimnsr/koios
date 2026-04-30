@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/ffimnsr/koios/internal/memory"
@@ -596,6 +597,268 @@ func (h *Handler) memoryEntityUnrelate(peerID, sourceID, targetID, relation stri
 		return nil, err
 	}
 	return map[string]any{"ok": true, "source_id": sourceID, "target_id": targetID, "relation": relation}, nil
+}
+
+type linkedContactIdentity struct {
+	Channel        string            `json:"channel"`
+	SubjectID      string            `json:"subject_id"`
+	ConversationID string            `json:"conversation_id,omitempty"`
+	Username       string            `json:"username,omitempty"`
+	DisplayName    string            `json:"display_name,omitempty"`
+	PeerID         string            `json:"peer_id,omitempty"`
+	SessionKey     string            `json:"session_key,omitempty"`
+	ApprovedAt     int64             `json:"approved_at,omitempty"`
+	ApprovedBy     string            `json:"approved_by,omitempty"`
+	Code           string            `json:"code,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+}
+
+func (h *Handler) contactList(peerID, query string, limit int, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	var (
+		entities []memory.Entity
+		err      error
+	)
+	if strings.TrimSpace(query) != "" {
+		entities, err = h.memStore.SearchEntities(ctx, peerID, query, limit)
+		if err != nil {
+			return nil, err
+		}
+		entities = filterContactEntities(entities)
+	} else {
+		entities, err = h.memStore.ListEntities(ctx, peerID, memory.EntityKindPerson, limit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return map[string]any{"count": len(entities), "contacts": entities, "query": strings.TrimSpace(query)}, nil
+}
+
+func (h *Handler) contactResolve(peerID, id, query, channel, subjectID string, limit int, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	id = strings.TrimSpace(id)
+	query = strings.TrimSpace(query)
+	channel = strings.TrimSpace(channel)
+	subjectID = strings.TrimSpace(subjectID)
+	if id == "" && query == "" && (channel == "" || subjectID == "") {
+		return nil, fmt.Errorf("id, q, or channel + subject_id is required")
+	}
+	if id != "" {
+		graph, err := h.memStore.GetEntityGraph(ctx, peerID, id)
+		if err != nil {
+			return nil, err
+		}
+		if graph.Entity.Kind != memory.EntityKindPerson {
+			return nil, fmt.Errorf("entity %q is not a person contact", id)
+		}
+		linked, err := h.contactLinkedIdentities(peerID, id)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"resolved": true, "contact": graph.Entity, "contact_graph": graph, "linked_identities": linked}, nil
+	}
+	if channel != "" || subjectID != "" {
+		if h.channelBindingStore == nil {
+			return nil, fmt.Errorf("channel bindings are not enabled")
+		}
+		binding, err := h.channelBindingStore.ApprovedBinding(channel, subjectID)
+		if err != nil {
+			return nil, err
+		}
+		if binding == nil || !bindingVisibleToPeer(peerID, *binding) {
+			return map[string]any{"resolved": false, "channel": channel, "subject_id": subjectID}, nil
+		}
+		contactID := binding.Metadata["contact_id"]
+		if strings.TrimSpace(contactID) == "" {
+			return map[string]any{"resolved": false, "channel": channel, "subject_id": subjectID, "binding": binding}, nil
+		}
+		graph, err := h.memStore.GetEntityGraph(ctx, peerID, contactID)
+		if err != nil {
+			return nil, err
+		}
+		if graph.Entity.Kind != memory.EntityKindPerson {
+			return nil, fmt.Errorf("linked entity %q is not a person contact", contactID)
+		}
+		linked, err := h.contactLinkedIdentities(peerID, contactID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"resolved": true, "contact": graph.Entity, "contact_graph": graph, "binding": binding, "linked_identities": linked}, nil
+	}
+	entities, err := h.memStore.SearchEntities(ctx, peerID, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	contacts := filterContactEntities(entities)
+	result := map[string]any{"resolved": len(contacts) == 1, "count": len(contacts), "contacts": contacts, "query": query}
+	if len(contacts) == 1 {
+		linked, err := h.contactLinkedIdentities(peerID, contacts[0].ID)
+		if err != nil {
+			return nil, err
+		}
+		result["contact"] = contacts[0]
+		result["linked_identities"] = linked
+	}
+	return result, nil
+}
+
+func (h *Handler) contactAlias(peerID, id string, aliases []string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	aliases = compactContactAliases(aliases)
+	if len(aliases) == 0 {
+		return nil, fmt.Errorf("aliases is required")
+	}
+	entity, err := h.memStore.GetEntity(ctx, peerID, id)
+	if err != nil {
+		return nil, err
+	}
+	if entity.Kind != memory.EntityKindPerson {
+		return nil, fmt.Errorf("entity %q is not a person contact", id)
+	}
+	merged := compactContactAliases(append(append([]string{}, entity.Aliases...), aliases...))
+	updated, err := h.memStore.UpdateEntity(ctx, peerID, id, memory.EntityPatch{Aliases: &merged})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "contact": updated}, nil
+}
+
+func (h *Handler) contactLinkChannelIdentity(peerID, id, channel, subjectID string, ctx context.Context) (map[string]any, error) {
+	if h.memStore == nil {
+		return nil, fmt.Errorf("memory is not enabled")
+	}
+	if h.channelBindingStore == nil {
+		return nil, fmt.Errorf("channel bindings are not enabled")
+	}
+	id = strings.TrimSpace(id)
+	channel = strings.TrimSpace(channel)
+	subjectID = strings.TrimSpace(subjectID)
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if channel == "" || subjectID == "" {
+		return nil, fmt.Errorf("channel and subject_id are required")
+	}
+	entity, err := h.memStore.GetEntity(ctx, peerID, id)
+	if err != nil {
+		return nil, err
+	}
+	if entity.Kind != memory.EntityKindPerson {
+		return nil, fmt.Errorf("entity %q is not a person contact", id)
+	}
+	binding, err := h.channelBindingStore.ApprovedBinding(channel, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	if binding == nil {
+		return nil, fmt.Errorf("approved binding for %s/%s was not found", channel, subjectID)
+	}
+	if !bindingVisibleToPeer(peerID, *binding) {
+		return nil, fmt.Errorf("binding %s/%s is not accessible to peer %q", channel, subjectID, peerID)
+	}
+	metadata := copyStringMap(binding.Metadata)
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["contact_id"] = entity.ID
+	metadata["contact_name"] = entity.Name
+	updated, err := h.channelBindingStore.UpdateApprovedMetadata(channel, subjectID, metadata)
+	if err != nil {
+		return nil, err
+	}
+	linked, err := h.contactLinkedIdentities(peerID, entity.ID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "contact": entity, "binding": updated, "linked_identities": linked}, nil
+}
+
+func (h *Handler) contactLinkedIdentities(peerID, contactID string) ([]linkedContactIdentity, error) {
+	if h.channelBindingStore == nil || strings.TrimSpace(contactID) == "" {
+		return nil, nil
+	}
+	approved, err := h.channelBindingStore.ListApproved("")
+	if err != nil {
+		return nil, err
+	}
+	linked := make([]linkedContactIdentity, 0)
+	for _, item := range approved {
+		if !bindingVisibleToPeer(peerID, item) {
+			continue
+		}
+		if strings.TrimSpace(item.Metadata["contact_id"]) != contactID {
+			continue
+		}
+		linked = append(linked, linkedContactIdentity{
+			Channel:        item.Channel,
+			SubjectID:      item.SubjectID,
+			ConversationID: item.ConversationID,
+			Username:       item.Username,
+			DisplayName:    item.DisplayName,
+			PeerID:         item.PeerID,
+			SessionKey:     item.SessionKey,
+			ApprovedAt:     item.ApprovedAt.Unix(),
+			ApprovedBy:     item.ApprovedBy,
+			Code:           item.Code,
+			Metadata:       copyStringMap(item.Metadata),
+		})
+	}
+	sort.Slice(linked, func(i, j int) bool {
+		if linked[i].Channel == linked[j].Channel {
+			return linked[i].SubjectID < linked[j].SubjectID
+		}
+		return linked[i].Channel < linked[j].Channel
+	})
+	return linked, nil
+}
+
+func filterContactEntities(entities []memory.Entity) []memory.Entity {
+	filtered := make([]memory.Entity, 0, len(entities))
+	for _, entity := range entities {
+		if entity.Kind == memory.EntityKindPerson {
+			filtered = append(filtered, entity)
+		}
+	}
+	return filtered
+}
+
+func compactContactAliases(aliases []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		trimmed := strings.TrimSpace(alias)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, trimmed)
+	}
+	return result
+}
+
+func copyStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(src))
+	for key, value := range src {
+		clone[key] = value
+	}
+	return clone
 }
 
 func (h *Handler) workspaceList(peerID, path string, recursive bool, limit int) (map[string]any, error) {

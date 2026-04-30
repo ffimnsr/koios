@@ -19,6 +19,7 @@ import (
 	"github.com/ffimnsr/koios/internal/artifacts"
 	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/calendar"
+	"github.com/ffimnsr/koios/internal/channels"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/decisions"
 	"github.com/ffimnsr/koios/internal/eventbus"
@@ -144,86 +145,10 @@ func mergedMCPServersWithManifests(servers []config.MCPServerConfig, manifests [
 	return servers, nil
 }
 
-func migrateWorkspaceDatabases(cfg *config.Config) error {
-	if cfg == nil || strings.TrimSpace(cfg.WorkspaceRoot) == "" {
-		return nil
-	}
-	if err := os.MkdirAll(cfg.DBDir(), 0o755); err != nil {
-		return fmt.Errorf("create workspace db dir: %w", err)
-	}
-	pairs := [][2]string{
-		{filepath.Join(cfg.WorkspaceRoot, "memory.db"), cfg.MemoryDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "tasks.db"), cfg.TasksDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "bookmarks.db"), cfg.BookmarksDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "calendar.db"), cfg.CalendarDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "notes.db"), cfg.NotesDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "plans.db"), cfg.PlansDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "projects.db"), cfg.ProjectsDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "artifacts.db"), cfg.ArtifactsDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "decisions.db"), cfg.DecisionsDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "preferences.db"), cfg.PreferencesDBPath()},
-		{filepath.Join(cfg.WorkspaceRoot, "reminders.db"), cfg.RemindersDBPath()},
-	}
-	for _, pair := range pairs {
-		if err := migrateWorkspaceDatabaseFile(pair[0], pair[1]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func migrateWorkspaceDatabaseFile(oldPath, newPath string) error {
-	if strings.TrimSpace(oldPath) == "" || strings.TrimSpace(newPath) == "" || oldPath == newPath {
-		return nil
-	}
-	oldInfo, err := os.Stat(oldPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stat legacy db %s: %w", oldPath, err)
-	}
-	if oldInfo.IsDir() {
-		return nil
-	}
-	if _, err := os.Stat(newPath); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat target db %s: %w", newPath, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
-		return fmt.Errorf("create target db dir for %s: %w", newPath, err)
-	}
-	for _, suffix := range []string{"", "-shm", "-wal"} {
-		from := oldPath + suffix
-		to := newPath + suffix
-		if err := renameIfExists(from, to); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func renameIfExists(from, to string) error {
-	if _, err := os.Stat(from); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stat %s: %w", from, err)
-	}
-	if err := os.Rename(from, to); err != nil {
-		return fmt.Errorf("rename %s to %s: %w", from, to, err)
-	}
-	return nil
-}
-
 // RunGateway loads configuration, starts the Koios gateway, and blocks until shutdown.
 func RunGateway(build BuildInfo) error {
 	cfg, err := config.Load()
 	if err != nil {
-		return err
-	}
-	if err := migrateWorkspaceDatabases(cfg); err != nil {
 		return err
 	}
 	logLevel := setupLogger(cfg)
@@ -505,6 +430,7 @@ func RunGateway(build BuildInfo) error {
 
 	orchRuntime := orchestrator.New(subRuntime, agentRuntime, bus)
 	orchRuntime.SetLedger(runledger.NewOrchestratorAdapter(runLedger))
+	channelMgr := channels.NewManager()
 
 	wsHandler := handler.NewHandler(store, prov, handler.HandlerOptions{
 		Model: cfg.Model,
@@ -591,18 +517,20 @@ func RunGateway(build BuildInfo) error {
 			LogTailBytes:        cfg.ProcessLogTailBytes,
 			MaxProcessesPerPeer: cfg.ProcessMaxProcessesPerPeer,
 		},
-		WorkspaceStore: wsStore,
-		Hooks:          hooks,
-		Presence:       presenceMgr,
-		MessageBus:     bus,
-		WorkspaceRoot:  cfg.WorkspaceRoot,
-		UsageStore:     usageStore,
-		Monitor:        mon,
-		LogLevel:       logLevel,
-		MCPManager:     mcpMgr,
-		WorkflowRunner: workflowRunner,
-		Orchestrator:   orchRuntime,
-		RunLedger:      runLedger,
+		WorkspaceStore:      wsStore,
+		ChannelManager:      channelMgr,
+		ChannelBindingStore: channels.NewBindingStore(cfg.ChannelBindingsPath()),
+		Hooks:               hooks,
+		Presence:            presenceMgr,
+		MessageBus:          bus,
+		WorkspaceRoot:       cfg.WorkspaceRoot,
+		UsageStore:          usageStore,
+		Monitor:             mon,
+		LogLevel:            logLevel,
+		MCPManager:          mcpMgr,
+		WorkflowRunner:      workflowRunner,
+		Orchestrator:        orchRuntime,
+		RunLedger:           runLedger,
 	})
 
 	// Wire the full agent loop into heartbeat, cron, and workflows so the LLM
@@ -618,6 +546,32 @@ func RunGateway(build BuildInfo) error {
 	webhookHandler := handler.NewWebhookHTTPHandler(store, hooks, presenceMgr, jobStore, sched, cfg.WebhookToken)
 	webhookHandler.SetAgentCoordinator(agentCoord, wsHandler)
 	mux.Handle("POST /v1/webhooks/events", webhookHandler)
+	if cfg.Telegram.Enabled {
+		telegramChannel, err := channels.NewTelegramChannel(cfg.Telegram, &channels.Dispatcher{
+			AgentCoordinator: agentCoord,
+			ToolExecutor:     wsHandler,
+			SessionPolicy:    store.Policy,
+			PatchPolicy:      store.PatchPolicy,
+		}, nil, &channels.TelegramOptions{BindingStorePath: cfg.ChannelBindingsPath(), SessionPolicy: store.Policy})
+		if err != nil {
+			return fmt.Errorf("configure telegram channel: %w", err)
+		}
+		channelMgr.Register(telegramChannel)
+	}
+	if err := extensions.RegisterChannels(channelMgr, mcpMgr, extensionManifests, &channels.Dispatcher{
+		AgentCoordinator: agentCoord,
+		ToolExecutor:     wsHandler,
+	}); err != nil {
+		return fmt.Errorf("register extension channels: %w", err)
+	}
+	if err := channelMgr.RegisterRoutes(mux); err != nil {
+		return fmt.Errorf("register channels: %w", err)
+	}
+	if extensionRouteHandler, routeErr := extensions.NewHTTPRouteHandler(mcpMgr, extensionManifests); routeErr != nil {
+		return fmt.Errorf("register extension http routes: %w", routeErr)
+	} else if extensionRouteHandler.HasRoutes() {
+		mux.Handle(extensions.HTTPRouteNamespacePrefix, extensionRouteHandler)
+	}
 	mux.HandleFunc("GET /v1/usage", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -686,6 +640,13 @@ func RunGateway(build BuildInfo) error {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      cfg.RequestTimeout + 15*time.Second,
 		IdleTimeout:       120 * time.Second,
+	}
+	if channelMgr.HasChannels() {
+		startCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := channelMgr.Start(startCtx); err != nil {
+			return err
+		}
 	}
 
 	go func() {
@@ -775,6 +736,11 @@ shutdown:
 	}
 	if hbRunner != nil {
 		hbRunner.Stop()
+	}
+	if channelMgr != nil {
+		if err := channelMgr.Shutdown(shutCtx); err != nil {
+			slog.Warn("channel shutdown failed", "err", err)
+		}
 	}
 	if memStore != nil {
 		_ = memStore.Close()

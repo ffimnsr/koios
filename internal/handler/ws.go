@@ -68,6 +68,7 @@ import (
 	"github.com/ffimnsr/koios/internal/artifacts"
 	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/calendar"
+	"github.com/ffimnsr/koios/internal/channels"
 	"github.com/ffimnsr/koios/internal/decisions"
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/heartbeat"
@@ -272,6 +273,8 @@ type Handler struct {
 	orchestrator            *orchestrator.Orchestrator
 	idempotency             *idempotencyStore
 	runLedger               *runledger.Store
+	channelManager          *channels.Manager
+	channelBindingStore     *channels.BindingStore
 
 	// fetchClient is the HTTP client used by the web_fetch tool.  When nil,
 	// a client backed by ssrfSafeTransport() is used.  Override in tests only.
@@ -330,6 +333,8 @@ type HandlerOptions struct {
 	JobStore                *scheduler.JobStore
 	Sched                   *scheduler.Scheduler
 	WorkspaceStore          *workspace.Manager
+	ChannelManager          *channels.Manager
+	ChannelBindingStore     *channels.BindingStore
 	ToolPolicy              ToolPolicy
 	ExecConfig              ExecConfig
 	CodeExecutionConfig     CodeExecutionConfig
@@ -413,6 +418,8 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		jobStore:                opts.JobStore,
 		sched:                   opts.Sched,
 		workspaceStore:          opts.WorkspaceStore,
+		channelManager:          opts.ChannelManager,
+		channelBindingStore:     opts.ChannelBindingStore,
 		toolPolicy:              opts.ToolPolicy,
 		execConfig:              execCfg,
 		codeExecutionConfig:     codeExecCfg,

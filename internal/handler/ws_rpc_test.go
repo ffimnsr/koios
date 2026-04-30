@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/channels"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/scheduler"
@@ -876,6 +877,77 @@ func TestWS_MemoryEntityGraphRPC(t *testing.T) {
 	}
 	if len(updatedGraphRes.EntityGraph.Outgoing) != 0 {
 		t.Fatalf("unexpected outgoing relationships after unrelate: %#v", updatedGraphRes.EntityGraph.Outgoing)
+	}
+}
+
+func TestWS_ContactToolsRPC(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	bindingStore := channels.NewBindingStore(filepath.Join(t.TempDir(), "bindings.json"))
+	pending, err := bindingStore.EnsurePending(channels.BindingRequest{Channel: "telegram", SubjectID: "7", ConversationID: "123", DisplayName: "Alice Sender"})
+	if err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+	if _, err := bindingStore.ApproveCodeWithRoute(pending.Code, "operator", channels.BindingRoute{PeerID: "alice"}); err != nil {
+		t.Fatalf("ApproveCodeWithRoute: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:               "test-model",
+		Timeout:             5 * time.Second,
+		MemStore:            memStore,
+		ChannelBindingStore: bindingStore,
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "c1", "memory.entity.create", map[string]any{"kind": "person", "name": "Alice Example"})
+	msg := readUntilID(t, conn, "c1")
+	if msg.Error != nil {
+		t.Fatalf("memory.entity.create error: %#v", msg.Error)
+	}
+	var createRes struct {
+		Entity struct {
+			ID string `json:"id"`
+		} `json:"entity"`
+	}
+	if err := json.Unmarshal(msg.Result, &createRes); err != nil {
+		t.Fatalf("unmarshal create result: %v", err)
+	}
+
+	sendRPC(t, conn, "c2", "contact.alias", map[string]any{"id": createRes.Entity.ID, "aliases": []string{"Ali"}})
+	msg = readUntilID(t, conn, "c2")
+	if msg.Error != nil {
+		t.Fatalf("contact.alias error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "c3", "contact.link_channel_identity", map[string]any{"id": createRes.Entity.ID, "channel": "telegram", "subject_id": "7"})
+	msg = readUntilID(t, conn, "c3")
+	if msg.Error != nil {
+		t.Fatalf("contact.link_channel_identity error: %#v", msg.Error)
+	}
+
+	sendRPC(t, conn, "c4", "contact.resolve", map[string]any{"channel": "telegram", "subject_id": "7"})
+	msg = readUntilID(t, conn, "c4")
+	if msg.Error != nil {
+		t.Fatalf("contact.resolve error: %#v", msg.Error)
+	}
+	if !strings.Contains(string(msg.Result), `"resolved":true`) || !strings.Contains(string(msg.Result), createRes.Entity.ID) {
+		t.Fatalf("unexpected contact.resolve result: %s", msg.Result)
+	}
+
+	sendRPC(t, conn, "c5", "contact.list", map[string]any{"q": "Ali"})
+	msg = readUntilID(t, conn, "c5")
+	if msg.Error != nil {
+		t.Fatalf("contact.list error: %#v", msg.Error)
+	}
+	if !strings.Contains(string(msg.Result), `"Alice Example"`) {
+		t.Fatalf("unexpected contact.list result: %s", msg.Result)
 	}
 }
 

@@ -549,15 +549,6 @@ func doctorWorkspaceDocPaths(root string) []string {
 	defaultRoot := workspace.DefaultPeerRoot(root)
 	for _, doc := range doctorWorkspaceDocs() {
 		defaultPath := filepath.Join(defaultRoot, doc)
-		if fileExists(defaultPath) {
-			paths = append(paths, defaultPath)
-			continue
-		}
-		legacyPath := filepath.Join(root, doc)
-		if fileExists(legacyPath) {
-			paths = append(paths, legacyPath)
-			continue
-		}
 		paths = append(paths, defaultPath)
 	}
 	return paths

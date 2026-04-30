@@ -44,6 +44,7 @@ Key sections:
 - `session.retention`, `session.max_entries`, `session.idle_reset_after`, and `session.daily_reset_time` control session cleanup and auto-reset
 - `[cron]`, `[heartbeat]`, `[agent]` for scheduler and agent runtime settings
 - `[tools]` chat-tool profiles, allow/deny lists, and exec approval settings
+- `[channels.telegram]` for Telegram delivery, DM policy, and optional inbox routing into an owner peer
 - `[workspace]` agent sandbox storage (`root`, `per_agent`, `max_file_bytes`)
 
 ---
@@ -796,7 +797,7 @@ Read or update the heartbeat configuration for this peer. Requires `cron.dir` an
 Heartbeat runs are modeled as background main-session awareness checks:
 - Standing orders are injected before the heartbeat-specific prompt.
 - The request is built from the current peer session history plus the configured heartbeat prompt.
-- If `<workspace>/HEARTBEAT.md` exists, its contents are injected as a system message for each heartbeat turn.
+- If `HEARTBEAT.md` exists under the peer workspace or `peers/default`, its contents are injected as a system message for each heartbeat turn.
 - `HEARTBEAT_OK` replies are suppressed.
 - Non-`HEARTBEAT_OK` replies are appended back into the peer session as `[heartbeat] ...`.
 - Saved heartbeat configs are restored on daemon startup, so heartbeats are not gated on a fresh WebSocket connection after restart.
@@ -945,6 +946,10 @@ To use a local model served by [Ollama](https://ollama.com/) or another OpenAI-c
 
 ```sh
 [llm]
+default_profile = "local"
+
+[[llm.profiles]]
+name = "local"
 provider = "openai"
 base_url = "http://localhost:11434/v1"
 api_key = "ollama" # any non-empty value

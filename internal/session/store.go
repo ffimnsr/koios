@@ -38,6 +38,20 @@ type journalEntry struct {
 // SessionPolicy captures persisted per-session behavior toggles.
 type SessionPolicy struct {
 	ReplyBack bool `json:"reply_back,omitempty"`
+	// InboxReadUserCount tracks how many inbound user messages in this session
+	// have been marked as read by inbox tools.
+	InboxReadUserCount int `json:"inbox_read_user_count,omitempty"`
+	// ActivationMode overrides inbound activation for this specific session.
+	// Valid values: mention | always
+	ActivationMode string `json:"activation_mode,omitempty"`
+	// GroupActivationMode configures the default activation policy for group
+	// conversations routed into this peer.
+	// Valid values: mention | always
+	GroupActivationMode string `json:"group_activation_mode,omitempty"`
+	// ChatActivationMode configures the default activation policy for direct
+	// conversations routed into this peer.
+	// Valid values: mention | always
+	ChatActivationMode string `json:"chat_activation_mode,omitempty"`
 	// UsageMode controls whether visible replies append a usage footer.
 	// Valid values: off | tokens
 	UsageMode string `json:"usage_mode,omitempty"`
@@ -67,6 +81,17 @@ type SessionPolicy struct {
 	// StreamCoalesceMS controls how long streamed output may be buffered before
 	// it is flushed to the client as a coalesced chunk.
 	StreamCoalesceMS int `json:"stream_coalesce_ms,omitempty"`
+}
+
+func NormalizeActivationMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "mention":
+		return "mention"
+	case "always":
+		return "always"
+	default:
+		return ""
+	}
 }
 
 // Session holds the conversation history for a single peer.

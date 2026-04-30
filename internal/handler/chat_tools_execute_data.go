@@ -527,6 +527,46 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.memoryEntityUnrelate(peerID, args.SourceID, args.TargetID, args.Relation, ctx)
+	case "contact.list":
+		var args struct {
+			Q     string `json:"q"`
+			Limit int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.contactList(peerID, args.Q, args.Limit, ctx)
+	case "contact.resolve":
+		var args struct {
+			ID        string `json:"id"`
+			Q         string `json:"q"`
+			Channel   string `json:"channel"`
+			SubjectID string `json:"subject_id"`
+			Limit     int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.contactResolve(peerID, args.ID, args.Q, args.Channel, args.SubjectID, args.Limit, ctx)
+	case "contact.alias":
+		var args struct {
+			ID      string   `json:"id"`
+			Aliases []string `json:"aliases"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.contactAlias(peerID, args.ID, args.Aliases, ctx)
+	case "contact.link_channel_identity":
+		var args struct {
+			ID        string `json:"id"`
+			Channel   string `json:"channel"`
+			SubjectID string `json:"subject_id"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.contactLinkChannelIdentity(peerID, args.ID, args.Channel, args.SubjectID, ctx)
 	case "task.create":
 		var args struct {
 			Title            string `json:"title"`

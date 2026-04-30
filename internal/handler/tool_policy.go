@@ -21,6 +21,7 @@ var toolProfiles = map[string][]string{
 	"messaging": {
 		"group:sessions",
 		"group:memory",
+		"group:messaging",
 	},
 	"minimal": {
 		"group:sessions",
@@ -78,6 +79,10 @@ var toolGroups = map[string][]string{
 		"memory.entity.delete",
 		"memory.entity.unlink_chunk",
 		"memory.entity.unrelate",
+		"contact.list",
+		"contact.resolve",
+		"contact.alias",
+		"contact.link_channel_identity",
 		"memory.candidate.create",
 		"memory.candidate.list",
 		"memory.candidate.edit",
@@ -163,6 +168,15 @@ var toolGroups = map[string][]string{
 		"system.run",
 		"system.notify",
 		"notification.send",
+	},
+	"group:messaging": {
+		"message",
+		"message.send",
+		"inbox.list",
+		"inbox.read",
+		"inbox.mark_read",
+		"inbox.route",
+		"inbox.summarize",
 	},
 	"group:web": {
 		"web_search",

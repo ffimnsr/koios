@@ -8,6 +8,7 @@ package handler
 //	/usage   [off|tokens|full]
 //	/verbose [on|off]
 //	/trace   [on|off]
+//	/activation [mention|always|group <mention|always>|chat <mention|always>]
 //	/profile [list|use <name>|clear]
 //	/status
 //	/new | /reset
@@ -120,6 +121,8 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 		return h.slashBoolToggle(wsc, req, arg, "trace", func(p *session.SessionPolicy, v bool) {
 			p.TraceMode = v
 		})
+	case "activation":
+		return h.slashActivation(wsc, req, arg)
 	case "profile", "mode":
 		h.slashProfile(wsc, req, arg)
 		return true
@@ -235,6 +238,78 @@ func usageModeLabel(mode string) string {
 	return mode
 }
 
+func activationModeLabel(mode string) string {
+	if normalized := session.NormalizeActivationMode(mode); normalized != "" {
+		return normalized
+	}
+	return "inherit"
+}
+
+func activationUsageText() string {
+	return "Usage: /activation [mention|always|group <mention|always>|chat <mention|always>]"
+}
+
+func (h *Handler) slashActivation(wsc *wsConn, req *rpcRequest, arg string) bool {
+	fields := strings.Fields(strings.TrimSpace(arg))
+	if len(fields) == 0 {
+		policy := h.store.Policy(wsc.peerID)
+		slashReply(wsc, req, strings.Join([]string{
+			fmt.Sprintf("Session activation: %s", activationModeLabel(policy.ActivationMode)),
+			fmt.Sprintf("Group activation default: %s", activationModeLabel(policy.GroupActivationMode)),
+			fmt.Sprintf("Chat activation default: %s", activationModeLabel(policy.ChatActivationMode)),
+		}, "\n"))
+		return true
+	}
+	if len(fields) == 1 {
+		mode := session.NormalizeActivationMode(fields[0])
+		if mode == "" {
+			slashReply(wsc, req, activationUsageText())
+			return true
+		}
+		if err := h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+			p.ActivationMode = mode
+		}); err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+			return true
+		}
+		slashReply(wsc, req, fmt.Sprintf("Session activation: %s", mode))
+		return true
+	}
+	if len(fields) == 2 {
+		surface := strings.ToLower(strings.TrimSpace(fields[0]))
+		mode := session.NormalizeActivationMode(fields[1])
+		if mode == "" {
+			slashReply(wsc, req, activationUsageText())
+			return true
+		}
+		var label string
+		var err error
+		switch surface {
+		case "group":
+			label = "Group activation default"
+			err = h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+				p.GroupActivationMode = mode
+			})
+		case "chat":
+			label = "Chat activation default"
+			err = h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+				p.ChatActivationMode = mode
+			})
+		default:
+			slashReply(wsc, req, activationUsageText())
+			return true
+		}
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+			return true
+		}
+		slashReply(wsc, req, fmt.Sprintf("%s: %s", label, mode))
+		return true
+	}
+	slashReply(wsc, req, activationUsageText())
+	return true
+}
+
 func (h *Handler) slashUsage(wsc *wsConn, req *rpcRequest, arg string) bool {
 	if strings.TrimSpace(arg) == "" {
 		policy := h.store.Policy(wsc.peerID)
@@ -330,6 +405,15 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	if policy.ThinkLevel != "" {
 		fmt.Fprintf(&sb, "Think level: %s\n", policy.ThinkLevel)
 	}
+	if policy.ActivationMode != "" {
+		fmt.Fprintf(&sb, "Session activation: %s\n", policy.ActivationMode)
+	}
+	if policy.GroupActivationMode != "" {
+		fmt.Fprintf(&sb, "Group activation default: %s\n", policy.GroupActivationMode)
+	}
+	if policy.ChatActivationMode != "" {
+		fmt.Fprintf(&sb, "Chat activation default: %s\n", policy.ChatActivationMode)
+	}
 	if policy.VerboseMode {
 		sb.WriteString("Verbose mode: on\n")
 	}
@@ -372,6 +456,9 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 		"resolved_profile":   resolvedProfileName,
 		"queue_mode":         policy.QueueMode,
 		"think_level":        policy.ThinkLevel,
+		"activation_mode":    activationModeLabel(policy.ActivationMode),
+		"group_activation":   activationModeLabel(policy.GroupActivationMode),
+		"chat_activation":    activationModeLabel(policy.ChatActivationMode),
 		"usage_mode":         usageModeLabel(policy.UsageMode),
 		"verbose_mode":       policy.VerboseMode,
 		"trace_mode":         policy.TraceMode,

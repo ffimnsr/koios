@@ -82,9 +82,6 @@ func normalizeExecConfig(cfg ExecConfig) ExecConfig {
 		cfg.EnableDenyPatterns = true
 	}
 	if !cfg.Enabled {
-		// zero value: treat as enabled for backward compatibility unless caller
-		// has explicitly set it via Config — app.go always sets this field so
-		// the zero value only arises in tests that don't populate ExecConfig.
 		cfg.Enabled = true
 	}
 	return cfg
@@ -327,13 +324,6 @@ func detectDangerousCommand(command string, cfg ExecConfig) (string, bool) {
 	}
 	return "", false
 }
-
-// detectDangerousExec is kept for backward compatibility with any tests that
-// call it directly; it falls back to the default built-in patterns only.
-func detectDangerousExec(command string) (string, bool) {
-	return detectDangerousCommand(command, ExecConfig{EnableDenyPatterns: true})
-}
-
 func (h *Handler) executeApprovedExec(ctx context.Context, peerID, approvalID string) (map[string]any, error) {
 	return h.approvePendingAction(ctx, peerID, approvalID, shellApprovalFilter)
 }

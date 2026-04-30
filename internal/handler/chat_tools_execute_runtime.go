@@ -12,6 +12,60 @@ import (
 
 func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
 	switch call.Name {
+	case "message", "message.send":
+		var args messageToolParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runMessageTool(ctx, peerID, args)
+	case "inbox.list":
+		var args struct {
+			Channel    string `json:"channel"`
+			Limit      int    `json:"limit"`
+			UnreadOnly bool   `json:"unread_only"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runInboxListTool(peerID, args.Channel, args.Limit, args.UnreadOnly)
+	case "inbox.read":
+		var args struct {
+			SessionKey string `json:"session_key"`
+			Limit      int    `json:"limit"`
+			UnreadOnly bool   `json:"unread_only"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runInboxReadTool(peerID, args.SessionKey, args.Limit, args.UnreadOnly)
+	case "inbox.mark_read":
+		var args struct {
+			SessionKey string `json:"session_key"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runInboxMarkReadTool(peerID, args.SessionKey)
+	case "inbox.route":
+		var args struct {
+			Channel    string `json:"channel"`
+			SubjectID  string `json:"subject_id"`
+			PeerID     string `json:"peer_id"`
+			SessionKey string `json:"session_key"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runInboxRouteTool(peerID, args.Channel, args.SubjectID, args.PeerID, args.SessionKey)
+	case "inbox.summarize":
+		var args struct {
+			SessionKey string `json:"session_key"`
+			Limit      int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runInboxSummarizeTool(peerID, args.SessionKey, args.Limit)
 	case "system.notify":
 		var args struct {
 			Title   string `json:"title"`

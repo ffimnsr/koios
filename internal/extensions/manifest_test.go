@@ -191,6 +191,143 @@ tool = "audit_event"
 	}
 }
 
+func TestLoadManifestAcceptsHTTPRouteBindings(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ManifestFileName)
+	content := []byte(`api_version = "koios.extension/v1"
+kind = "mcp_server"
+id = "demo.routes"
+name = "routes"
+capabilities = ["http_routes"]
+
+[mcp]
+transport = "http"
+url = "https://example.test/mcp"
+
+[[routes]]
+name = "echo"
+method = "post"
+path = "/echo"
+tool = "http_echo"
+`)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	manifest, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if len(manifest.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %#v", manifest.Routes)
+	}
+	if manifest.Routes[0].Method != "POST" || manifest.Routes[0].Path != "/echo" {
+		t.Fatalf("unexpected route normalization: %#v", manifest.Routes[0])
+	}
+
+	servers, err := MCPServers([]DiscoveredManifest{{Manifest: manifest, Path: path}})
+	if err != nil {
+		t.Fatalf("MCPServers: %v", err)
+	}
+	if len(servers) != 1 {
+		t.Fatalf("expected route extension to expose an MCP server, got %#v", servers)
+	}
+}
+
+func TestLoadManifestAcceptsOutboundMessageBindings(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ManifestFileName)
+	content := []byte(`api_version = "koios.extension/v1"
+kind = "mcp_server"
+id = "demo.outbound"
+name = "outbound"
+capabilities = ["outbound_messages"]
+
+[mcp]
+transport = "http"
+url = "https://example.test/mcp"
+
+[[outbound_messages]]
+channel = "signal"
+tool = "send_signal"
+`)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	manifest, err := LoadManifest(path)
+	if err != nil {
+		t.Fatalf("LoadManifest: %v", err)
+	}
+	if len(manifest.OutboundMessages) != 1 {
+		t.Fatalf("expected 1 outbound binding, got %#v", manifest.OutboundMessages)
+	}
+	if manifest.OutboundMessages[0].Channel != "signal" || manifest.OutboundMessages[0].Tool != "send_signal" {
+		t.Fatalf("unexpected outbound binding normalization: %#v", manifest.OutboundMessages[0])
+	}
+
+	servers, err := MCPServers([]DiscoveredManifest{{Manifest: manifest, Path: path}})
+	if err != nil {
+		t.Fatalf("MCPServers: %v", err)
+	}
+	if len(servers) != 1 {
+		t.Fatalf("expected outbound-message extension to expose an MCP server, got %#v", servers)
+	}
+}
+
+func TestLoadManifestRejectsOutboundBindingsWithoutCapability(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ManifestFileName)
+	content := []byte(`api_version = "koios.extension/v1"
+kind = "mcp_server"
+id = "demo.invalid-outbound"
+name = "invalid-outbound"
+capabilities = ["tools"]
+
+[mcp]
+transport = "http"
+url = "https://example.test/mcp"
+
+[[outbound_messages]]
+channel = "signal"
+tool = "send_signal"
+`)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := LoadManifest(path); err == nil {
+		t.Fatal("expected outbound message capability validation error, got nil")
+	}
+}
+
+func TestLoadManifestRejectsRoutesWithoutCapability(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ManifestFileName)
+	content := []byte(`api_version = "koios.extension/v1"
+kind = "mcp_server"
+id = "demo.invalid-routes"
+name = "invalid-routes"
+capabilities = ["tools"]
+
+[mcp]
+transport = "http"
+url = "https://example.test/mcp"
+
+[[routes]]
+method = "GET"
+path = "/status"
+tool = "route_status"
+`)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if _, err := LoadManifest(path); err == nil {
+		t.Fatal("expected route capability validation error, got nil")
+	}
+}
+
 func TestLoadManifestRejectsHooksWithoutCapability(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ManifestFileName)

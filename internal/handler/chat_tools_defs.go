@@ -699,6 +699,68 @@ var toolDefs = []toolDef{
 		available: func(h *Handler) bool { return h.memStore != nil },
 	},
 	{
+		name:        "contact.list",
+		description: "List durable person contacts for this peer, optionally filtered by a search query.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"limit": map[string]any{"type": "integer"},
+				"q":     map[string]any{"type": "string"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"q":"alice","limit":10}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "contact.resolve",
+		description: "Resolve a person contact by exact id, search query, or linked channel identity.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":         map[string]any{"type": "string"},
+				"q":          map[string]any{"type": "string"},
+				"channel":    map[string]any{"type": "string"},
+				"subject_id": map[string]any{"type": "string"},
+				"limit":      map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"q":"alice"} or {"channel":"telegram","subject_id":"7"}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "contact.alias",
+		description: "Add one or more aliases to an existing person contact.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":      map[string]any{"type": "string"},
+				"aliases": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			},
+			"required":             []string{"id", "aliases"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"contact-id","aliases":["Ali","Alice from ops"]}`,
+		available: func(h *Handler) bool { return h.memStore != nil },
+	},
+	{
+		name:        "contact.link_channel_identity",
+		description: "Link an approved channel identity to a person contact so future routing can resolve the human contact instead of a raw platform ID.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":         map[string]any{"type": "string"},
+				"channel":    map[string]any{"type": "string"},
+				"subject_id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id", "channel", "subject_id"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"id":"contact-id","channel":"telegram","subject_id":"7"}`,
+		available: func(h *Handler) bool { return h.memStore != nil && h.channelBindingStore != nil },
+	},
+	{
 		name:        "task.create",
 		description: "Create a durable task immediately by reusing the existing candidate review flow and auto-approving it in one step.",
 		parameters: mustJSONSchema(map[string]any{
@@ -1754,6 +1816,131 @@ var toolDefs = []toolDef{
 		}),
 		argHint:   `{"session_key":"peer::sender::alice","reply_back":true,"usage_mode":"tokens","model_override":"gpt4","active_profile":"focus","queue_mode":"steer","block_stream":true,"stream_chunk_chars":160,"stream_coalesce_ms":75}`,
 		available: func(h *Handler) bool { return h.agentRuntime != nil && h.agentCoord != nil },
+	},
+	{
+		name:        "message",
+		description: "Send an outbound message through a configured channel using a shared cross-channel transport. Built-in senders like Telegram and manifest-backed extension senders are both supported. Provide conversation_id directly or subject_id to resolve an approved DM binding when the channel supports it.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"channel":             map[string]any{"type": "string"},
+				"subject_id":          map[string]any{"type": "string"},
+				"conversation_id":     map[string]any{"type": "string"},
+				"thread_id":           map[string]any{"type": "string"},
+				"text":                map[string]any{"type": "string"},
+				"reply_to_message_id": map[string]any{"type": "string"},
+				"metadata":            map[string]any{"type": "object"},
+			},
+			"required": []string{"channel", "text"},
+			"anyOf": []map[string]any{
+				{"required": []string{"subject_id"}},
+				{"required": []string{"conversation_id"}},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"channel":"telegram","subject_id":"123456789","text":"Build finished successfully"}`,
+		available: func(h *Handler) bool { return h.channelManager != nil && h.channelManager.HasOutboundSenders() },
+	},
+	{
+		name:        "message.send",
+		description: "Send an outbound message through a configured channel using a shared cross-channel transport. Built-in senders like Telegram and manifest-backed extension senders are both supported. Provide conversation_id directly or subject_id to resolve an approved DM binding when the channel supports it.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"channel":             map[string]any{"type": "string"},
+				"subject_id":          map[string]any{"type": "string"},
+				"conversation_id":     map[string]any{"type": "string"},
+				"thread_id":           map[string]any{"type": "string"},
+				"text":                map[string]any{"type": "string"},
+				"reply_to_message_id": map[string]any{"type": "string"},
+				"metadata":            map[string]any{"type": "object"},
+			},
+			"required": []string{"channel", "text"},
+			"anyOf": []map[string]any{
+				{"required": []string{"subject_id"}},
+				{"required": []string{"conversation_id"}},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"channel":"telegram","subject_id":"123456789","text":"Build finished successfully"}`,
+		available: func(h *Handler) bool { return h.channelManager != nil && h.channelManager.HasOutboundSenders() },
+	},
+	{
+		name:        "inbox.list",
+		description: "List routed inbox conversations visible to the current peer across configured chat channels, including unread counts derived from stored inbound messages.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"channel":     map[string]any{"type": "string"},
+				"limit":       map[string]any{"type": "integer"},
+				"unread_only": map[string]any{"type": "boolean"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"channel":"telegram","unread_only":true,"limit":20}`,
+	},
+	{
+		name:        "inbox.read",
+		description: "Read one routed inbox conversation by session key, with optional unread-only filtering based on the inbox read marker.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session_key": map[string]any{"type": "string"},
+				"limit":       map[string]any{"type": "integer"},
+				"unread_only": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"session_key"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"session_key":"alice::channel::telegram:123","unread_only":false,"limit":50}`,
+	},
+	{
+		name:        "inbox.mark_read",
+		description: "Mark the current unread inbound messages in one routed inbox conversation as read.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session_key": map[string]any{"type": "string"},
+			},
+			"required":             []string{"session_key"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"session_key":"alice::channel::telegram:123"}`,
+	},
+	{
+		name:        "inbox.route",
+		description: "Update the persisted routing for an approved channel binding so future inbound direct messages are sent to the current peer or one of its session keys.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"channel":     map[string]any{"type": "string"},
+				"subject_id":  map[string]any{"type": "string"},
+				"peer_id":     map[string]any{"type": "string"},
+				"session_key": map[string]any{"type": "string"},
+			},
+			"required": []string{"channel", "subject_id"},
+			"anyOf": []map[string]any{
+				{"required": []string{"peer_id"}},
+				{"required": []string{"session_key"}},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"channel":"telegram","subject_id":"123456789","session_key":"alice::sender::ops"}`,
+		available: func(h *Handler) bool { return h.channelBindingStore != nil },
+	},
+	{
+		name:        "inbox.summarize",
+		description: "Return a compact structured summary for one routed inbox conversation, including unread counts and recent inbound excerpts.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session_key": map[string]any{"type": "string"},
+				"limit":       map[string]any{"type": "integer"},
+			},
+			"required":             []string{"session_key"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"session_key":"alice::channel::telegram:123","limit":10}`,
 	},
 	{
 		name:        "system.notify",

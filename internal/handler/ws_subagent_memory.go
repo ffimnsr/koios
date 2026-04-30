@@ -545,6 +545,82 @@ func (h *Handler) rpcMemoryEntityUnrelate(ctx context.Context, wsc *wsConn, req 
 	wsc.reply(req.ID, result)
 }
 
+func (h *Handler) rpcContactList(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Q     string `json:"q"`
+		Limit int    `json:"limit"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.contactList(wsc.peerID, p.Q, p.Limit, ctx)
+	if err != nil {
+		slog.Error("ws: contact list", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "contact list error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcContactResolve(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID        string `json:"id"`
+		Q         string `json:"q"`
+		Channel   string `json:"channel"`
+		SubjectID string `json:"subject_id"`
+		Limit     int    `json:"limit"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.contactResolve(wsc.peerID, p.ID, p.Q, p.Channel, p.SubjectID, p.Limit, ctx)
+	if err != nil {
+		slog.Error("ws: contact resolve", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "contact resolve error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcContactAlias(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID      string   `json:"id"`
+		Aliases []string `json:"aliases"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.contactAlias(wsc.peerID, p.ID, p.Aliases, ctx)
+	if err != nil {
+		slog.Error("ws: contact alias", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "contact alias error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
+func (h *Handler) rpcContactLinkChannelIdentity(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		ID        string `json:"id"`
+		Channel   string `json:"channel"`
+		SubjectID string `json:"subject_id"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	result, err := h.contactLinkChannelIdentity(wsc.peerID, p.ID, p.Channel, p.SubjectID, ctx)
+	if err != nil {
+		slog.Error("ws: contact link channel identity", "peer", wsc.peerID, "error", err)
+		wsc.replyErr(req.ID, errCodeServer, "contact link error: "+err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
 func (h *Handler) rpcMemoryList(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
 		Limit int `json:"limit,omitempty"`

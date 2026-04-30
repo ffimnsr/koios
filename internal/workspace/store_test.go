@@ -27,7 +27,6 @@ func TestPeerDocumentLookupPathsPreferPeerThenDefaultThenRoot(t *testing.T) {
 	want := []string{
 		filepath.Join(root, "peers", "alice", "AGENTS.md"),
 		filepath.Join(root, "peers", DefaultPeerID, "AGENTS.md"),
-		filepath.Join(root, "AGENTS.md"),
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("PeerDocumentLookupPaths() = %#v want %#v", got, want)
@@ -39,7 +38,6 @@ func TestPeerDocumentLookupPathsSanitizesPeerAndDedupesDefault(t *testing.T) {
 	got := PeerDocumentLookupPaths(root, "", "USER.md")
 	want := []string{
 		filepath.Join(root, "peers", DefaultPeerID, "USER.md"),
-		filepath.Join(root, "USER.md"),
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("PeerDocumentLookupPaths() = %#v want %#v", got, want)
@@ -51,15 +49,8 @@ func TestPeerDocumentLookupPathsSanitizesPeerAndDedupesDefault(t *testing.T) {
 	}
 }
 
-func TestManagerEnsurePeerMigratesLegacyPeerDir(t *testing.T) {
+func TestManagerEnsurePeerCreatesPeerDir(t *testing.T) {
 	dir := t.TempDir()
-	legacyDir := filepath.Join(dir, "alice")
-	if err := os.MkdirAll(filepath.Join(legacyDir, "notes"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "notes", "todo.md"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	m, err := New(dir, true, 1024)
 	if err != nil {
 		t.Fatal(err)
@@ -71,11 +62,8 @@ func TestManagerEnsurePeerMigratesLegacyPeerDir(t *testing.T) {
 	if got, want := peerDir, filepath.Join(dir, "peers", "alice"); got != want {
 		t.Fatalf("EnsurePeer() = %q want %q", got, want)
 	}
-	if _, err := os.Stat(filepath.Join(peerDir, "notes", "todo.md")); err != nil {
-		t.Fatalf("expected migrated note file: %v", err)
-	}
-	if _, err := os.Stat(legacyDir); !os.IsNotExist(err) {
-		t.Fatalf("expected legacy peer dir to be moved, err=%v", err)
+	if info, err := os.Stat(peerDir); err != nil || !info.IsDir() {
+		t.Fatalf("expected peer directory to exist, err=%v", err)
 	}
 }
 

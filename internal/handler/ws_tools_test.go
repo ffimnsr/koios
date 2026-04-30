@@ -13,6 +13,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/calendar"
+	"github.com/ffimnsr/koios/internal/channels"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/runledger"
@@ -23,6 +24,34 @@ import (
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/workspace"
 )
+
+type stubOutboundChannel struct {
+	id          string
+	lastTarget  channels.OutboundTarget
+	lastMessage channels.OutboundMessage
+	receipt     *channels.OutboundReceipt
+	err         error
+}
+
+func (s *stubOutboundChannel) ID() string { return s.id }
+
+func (s *stubOutboundChannel) Routes() []channels.Route { return nil }
+
+func (s *stubOutboundChannel) Start(context.Context) error { return nil }
+
+func (s *stubOutboundChannel) Shutdown(context.Context) error { return nil }
+
+func (s *stubOutboundChannel) SendMessage(_ context.Context, target channels.OutboundTarget, msg channels.OutboundMessage) (*channels.OutboundReceipt, error) {
+	s.lastTarget = target
+	s.lastMessage = msg
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.receipt != nil {
+		return s.receipt, nil
+	}
+	return &channels.OutboundReceipt{Channel: s.id, SubjectID: target.SubjectID, ConversationID: target.ConversationID, ThreadID: target.ThreadID, ChunkCount: 1, Deliveries: []channels.OutboundDelivery{{MessageID: "msg-1", ConversationID: target.ConversationID, ThreadID: target.ThreadID, ChunkIndex: 1}}}, nil
+}
 
 func TestToolDefinitionsHonorPolicy(t *testing.T) {
 	store := session.New(10)
@@ -269,10 +298,12 @@ func TestToolDefinitionsMessagingProfileIncludesWaitingTools(t *testing.T) {
 		t.Fatalf("tasks.New: %v", err)
 	}
 	t.Cleanup(func() { _ = taskStore.Close() })
+	channelMgr := channels.NewManager(&stubOutboundChannel{id: "telegram"})
 	h := handler.NewHandler(store, prov, handler.HandlerOptions{
-		Model:     "test-model",
-		Timeout:   5 * time.Second,
-		TaskStore: taskStore,
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		TaskStore:      taskStore,
+		ChannelManager: channelMgr,
 		ToolPolicy: handler.ToolPolicy{
 			Profile: "messaging",
 		},
@@ -284,8 +315,294 @@ func TestToolDefinitionsMessagingProfileIncludesWaitingTools(t *testing.T) {
 	if !containsString(names, "waiting.create") || !containsString(names, "waiting.list") || !containsString(names, "waiting.resolve") {
 		t.Fatalf("expected waiting tools in messaging profile, got %#v", names)
 	}
+	if !containsString(names, "message") {
+		t.Fatalf("expected message tool in messaging profile, got %#v", names)
+	}
+	for _, want := range []string{"message.send", "inbox.list", "inbox.read", "inbox.mark_read", "inbox.route", "inbox.summarize"} {
+		if !containsString(names, want) {
+			t.Fatalf("expected %s in messaging profile, got %#v", want, names)
+		}
+	}
+	for _, want := range []string{"contact.list", "contact.resolve", "contact.alias", "contact.link_channel_identity"} {
+		if !containsString(names, want) {
+			t.Fatalf("expected %s in messaging profile, got %#v", want, names)
+		}
+	}
 	if containsString(names, "exec") {
 		t.Fatalf("expected exec to remain excluded from messaging profile, got %#v", names)
+	}
+}
+
+func TestExecuteTool_Message(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	sender := &stubOutboundChannel{
+		id: "telegram",
+		receipt: &channels.OutboundReceipt{
+			Channel:        "telegram",
+			SubjectID:      "7",
+			ConversationID: "123",
+			ChunkCount:     1,
+			UsedBinding:    true,
+			Deliveries:     []channels.OutboundDelivery{{MessageID: "tg-501", ConversationID: "123", ChunkIndex: 1}},
+		},
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		ChannelManager: channels.NewManager(sender),
+	})
+
+	resultAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "message",
+		Arguments: json.RawMessage(`{"channel":"telegram","subject_id":"7","text":"Build finished successfully"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(message): %v", err)
+	}
+	if sender.lastTarget.SubjectID != "7" || sender.lastMessage.Text != "Build finished successfully" {
+		t.Fatalf("unexpected outbound send payload: target=%#v message=%#v", sender.lastTarget, sender.lastMessage)
+	}
+	if sender.lastMessage.Metadata["source_peer_id"] != "alice" {
+		t.Fatalf("expected source_peer_id metadata, got %#v", sender.lastMessage.Metadata)
+	}
+	raw, _ := json.Marshal(resultAny)
+	var result struct {
+		OK             bool     `json:"ok"`
+		Channel        string   `json:"channel"`
+		SubjectID      string   `json:"subject_id"`
+		ConversationID string   `json:"conversation_id"`
+		ChunkCount     int      `json:"chunk_count"`
+		UsedBinding    bool     `json:"used_binding"`
+		DeliveryCount  int      `json:"delivery_count"`
+		MessageIDs     []string `json:"message_ids"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal message result: %v", err)
+	}
+	if !result.OK || result.Channel != "telegram" || result.SubjectID != "7" || result.ConversationID != "123" || result.ChunkCount != 1 || !result.UsedBinding || result.DeliveryCount != 1 || len(result.MessageIDs) != 1 || result.MessageIDs[0] != "tg-501" {
+		t.Fatalf("unexpected message result: %#v", result)
+	}
+}
+
+func TestExecuteTool_MessageSendAlias(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	sender := &stubOutboundChannel{id: "telegram"}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		ChannelManager: channels.NewManager(sender),
+	})
+
+	resultAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "message.send",
+		Arguments: json.RawMessage(`{"channel":"telegram","subject_id":"7","text":"hello"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(message.send): %v", err)
+	}
+	if sender.lastMessage.Text != "hello" {
+		t.Fatalf("unexpected outbound payload: %#v", sender.lastMessage)
+	}
+	raw, _ := json.Marshal(resultAny)
+	if !strings.Contains(string(raw), `"ok":true`) {
+		t.Fatalf("expected ok result, got %s", raw)
+	}
+}
+
+func TestExecuteTool_InboxTools(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	bindingStore := channels.NewBindingStore(filepath.Join(t.TempDir(), "bindings.json"))
+	pending, err := bindingStore.EnsurePending(channels.BindingRequest{
+		Channel:        "telegram",
+		SubjectID:      "7",
+		ConversationID: "123",
+		DisplayName:    "Alice Sender",
+	})
+	if err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+	if _, err := bindingStore.ApproveCodeWithRoute(pending.Code, "operator", channels.BindingRoute{PeerID: "alice"}); err != nil {
+		t.Fatalf("ApproveCodeWithRoute: %v", err)
+	}
+	sessionKey := "alice::channel::telegram:123"
+	store.Append(sessionKey,
+		types.Message{Role: "user", Content: "Need an ETA on the build."},
+		types.Message{Role: "assistant", Content: "I am checking now."},
+		types.Message{Role: "user", Content: "Please route this to ops."},
+	)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:               "test-model",
+		Timeout:             5 * time.Second,
+		ChannelBindingStore: bindingStore,
+		ToolPolicy:          handler.ToolPolicy{Profile: "messaging"},
+	})
+
+	listAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "inbox.list",
+		Arguments: json.RawMessage(`{"channel":"telegram"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(inbox.list): %v", err)
+	}
+	listRaw, _ := json.Marshal(listAny)
+	if !strings.Contains(string(listRaw), sessionKey) || !strings.Contains(string(listRaw), `"unread_count":2`) {
+		t.Fatalf("unexpected inbox.list result: %s", listRaw)
+	}
+
+	readAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "inbox.read",
+		Arguments: json.RawMessage(`{"session_key":"` + sessionKey + `"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(inbox.read): %v", err)
+	}
+	readRaw, _ := json.Marshal(readAny)
+	if !strings.Contains(string(readRaw), `"unread_count":2`) {
+		t.Fatalf("unexpected inbox.read result: %s", readRaw)
+	}
+
+	markAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "inbox.mark_read",
+		Arguments: json.RawMessage(`{"session_key":"` + sessionKey + `"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(inbox.mark_read): %v", err)
+	}
+	markRaw, _ := json.Marshal(markAny)
+	if !strings.Contains(string(markRaw), `"remaining_unread":0`) {
+		t.Fatalf("unexpected inbox.mark_read result: %s", markRaw)
+	}
+
+	summaryAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "inbox.summarize",
+		Arguments: json.RawMessage(`{"session_key":"` + sessionKey + `"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(inbox.summarize): %v", err)
+	}
+	summaryRaw, _ := json.Marshal(summaryAny)
+	if !strings.Contains(string(summaryRaw), `"summary":`) || !strings.Contains(string(summaryRaw), `"unread_count":0`) {
+		t.Fatalf("unexpected inbox.summarize result: %s", summaryRaw)
+	}
+
+	if _, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "inbox.route",
+		Arguments: json.RawMessage(`{"channel":"telegram","subject_id":"7","session_key":"alice::sender::ops"}`),
+	}); err != nil {
+		t.Fatalf("ExecuteTool(inbox.route): %v", err)
+	}
+	approved, err := bindingStore.ApprovedBinding("telegram", "7")
+	if err != nil {
+		t.Fatalf("ApprovedBinding: %v", err)
+	}
+	if approved == nil || approved.SessionKey != "alice::sender::ops" || approved.PeerID != "alice" {
+		t.Fatalf("unexpected routed binding: %#v", approved)
+	}
+}
+
+func TestExecuteTool_ContactTools(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	bindingStore := channels.NewBindingStore(filepath.Join(t.TempDir(), "bindings.json"))
+	pending, err := bindingStore.EnsurePending(channels.BindingRequest{
+		Channel:        "telegram",
+		SubjectID:      "7",
+		ConversationID: "123",
+		DisplayName:    "Alice Sender",
+	})
+	if err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+	if _, err := bindingStore.ApproveCodeWithRoute(pending.Code, "operator", channels.BindingRoute{PeerID: "alice"}); err != nil {
+		t.Fatalf("ApproveCodeWithRoute: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:               "test-model",
+		Timeout:             5 * time.Second,
+		MemStore:            memStore,
+		ChannelBindingStore: bindingStore,
+		ToolPolicy:          handler.ToolPolicy{Profile: "messaging"},
+	})
+
+	createAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "memory.entity.create",
+		Arguments: json.RawMessage(`{"kind":"person","name":"Alice Example"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(memory.entity.create): %v", err)
+	}
+	createRaw, _ := json.Marshal(createAny)
+	var createRes struct {
+		Entity struct {
+			ID string `json:"id"`
+		} `json:"entity"`
+	}
+	if err := json.Unmarshal(createRaw, &createRes); err != nil {
+		t.Fatalf("unmarshal create result: %v", err)
+	}
+
+	aliasAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "contact.alias",
+		Arguments: json.RawMessage(`{"id":"` + createRes.Entity.ID + `","aliases":["Ali","Alice from Ops"]}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(contact.alias): %v", err)
+	}
+	aliasRaw, _ := json.Marshal(aliasAny)
+	if !strings.Contains(string(aliasRaw), `"Alice from Ops"`) {
+		t.Fatalf("unexpected contact.alias result: %s", aliasRaw)
+	}
+
+	linkAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "contact.link_channel_identity",
+		Arguments: json.RawMessage(`{"id":"` + createRes.Entity.ID + `","channel":"telegram","subject_id":"7"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(contact.link_channel_identity): %v", err)
+	}
+	linkRaw, _ := json.Marshal(linkAny)
+	if !strings.Contains(string(linkRaw), `"contact_id":"`+createRes.Entity.ID+`"`) {
+		t.Fatalf("unexpected contact.link_channel_identity result: %s", linkRaw)
+	}
+
+	resolveAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "contact.resolve",
+		Arguments: json.RawMessage(`{"channel":"telegram","subject_id":"7"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(contact.resolve): %v", err)
+	}
+	resolveRaw, _ := json.Marshal(resolveAny)
+	if !strings.Contains(string(resolveRaw), `"resolved":true`) || !strings.Contains(string(resolveRaw), `"subject_id":"7"`) {
+		t.Fatalf("unexpected contact.resolve result: %s", resolveRaw)
+	}
+
+	listAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "contact.list",
+		Arguments: json.RawMessage(`{"q":"Alice"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(contact.list): %v", err)
+	}
+	listRaw, _ := json.Marshal(listAny)
+	if !strings.Contains(string(listRaw), `"count":1`) || !strings.Contains(string(listRaw), `"Alice Example"`) {
+		t.Fatalf("unexpected contact.list result: %s", listRaw)
+	}
+
+	approved, err := bindingStore.ApprovedBinding("telegram", "7")
+	if err != nil {
+		t.Fatalf("ApprovedBinding: %v", err)
+	}
+	if approved == nil || approved.Metadata["contact_id"] != createRes.Entity.ID {
+		t.Fatalf("unexpected approved binding metadata: %#v", approved)
 	}
 }
 

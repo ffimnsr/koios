@@ -60,9 +60,11 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newVersionCommand(ctx))
 	root.AddCommand(newHealthCommand(ctx))
 	root.AddCommand(newStatusCommand(ctx))
+	root.AddCommand(newChannelCommand(ctx))
 	root.AddCommand(newInitCommand(ctx))
 	root.AddCommand(newSetupCommand(ctx))
 	root.AddCommand(newDoctorCommand(ctx))
+	root.AddCommand(newPairingCommand(ctx))
 	root.AddCommand(newSessionsCommand(ctx))
 	root.AddCommand(newBackupCommand(ctx))
 	root.AddCommand(newResetCommand(ctx))
@@ -82,6 +84,7 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newDashboardCommand(ctx))
 	root.AddCommand(newModelCommand(ctx))
 	root.AddCommand(newHostCommand(ctx))
+	root.AddCommand(newExtensionCommand(ctx))
 	configureCLICompletions(root, ctx)
 	return root
 }
@@ -1277,15 +1280,38 @@ func initWizard(cmd *cobra.Command, state *repoState, interactive bool) (string,
 		}
 		return value, nil
 	}
-	apiKey, err := prompt("llm.api_key (optional)", state.APIKey)
+	apiKeyFallback := strings.TrimSpace(state.APIKey)
+	modelFallback := fallback(state.Model, config.Default().Model)
+	providerFallback := fallback(state.Provider, config.Default().Provider)
+	if state.Config != nil && strings.TrimSpace(state.Config.DefaultProfile) != "" {
+		for _, profile := range state.Config.ModelProfiles {
+			if profile.Name != state.Config.DefaultProfile {
+				continue
+			}
+			if apiKeyFallback == "" {
+				apiKeyFallback = strings.TrimSpace(profile.APIKey)
+			}
+			if strings.TrimSpace(state.Model) == "" && strings.TrimSpace(profile.Model) != "" {
+				modelFallback = strings.TrimSpace(profile.Model)
+			}
+			if strings.TrimSpace(state.Provider) == "" && strings.TrimSpace(profile.Provider) != "" {
+				providerFallback = strings.TrimSpace(profile.Provider)
+			}
+			break
+		}
+	}
+	apiKey, err := prompt("llm.api_key (optional)", apiKeyFallback)
 	if err != nil {
 		return "", err
 	}
-	model, err := prompt("llm.model", fallback(state.Model, config.Default().Model))
+	if strings.TrimSpace(apiKey) == "" {
+		apiKey = apiKeyFallback
+	}
+	model, err := prompt("llm.model", modelFallback)
 	if err != nil {
 		return "", err
 	}
-	provider, err := prompt("llm.provider", fallback(state.Provider, config.Default().Provider))
+	provider, err := prompt("llm.provider", providerFallback)
 	if err != nil {
 		return "", err
 	}
@@ -1300,6 +1326,10 @@ func initWizard(cmd *cobra.Command, state *repoState, interactive bool) (string,
 	cfg := config.Default()
 	cfg.ListenAddr = listenAddr
 	cfg.WorkspaceRoot = workspaceRoot
+	cfg.Provider = provider
+	cfg.Model = model
+	cfg.APIKey = apiKey
+	cfg.BaseURL = state.BaseURL
 	cfg.DefaultProfile = "default"
 	cfg.ModelProfiles = []config.ModelProfile{{
 		Name:     "default",

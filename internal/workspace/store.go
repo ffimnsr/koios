@@ -64,24 +64,6 @@ var peerDocumentNames = []string{
 	"HEARTBEAT.md",
 }
 
-var reservedWorkspaceEntries = map[string]struct{}{
-	"agents":       {},
-	"cron":         {},
-	"db":           {},
-	"memory":       {},
-	"peers":        {},
-	"runs":         {},
-	"sessions":     {},
-	"workflows":    {},
-	"AGENTS.md":    {},
-	"BOOTSTRAP.md": {},
-	"HEARTBEAT.md": {},
-	"IDENTITY.md":  {},
-	"SOUL.md":      {},
-	"TOOLS.md":     {},
-	"USER.md":      {},
-}
-
 func New(root string, perAgent bool, maxFileBytes int) (*Manager, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, fmt.Errorf("workspace root is required")
@@ -145,63 +127,15 @@ func PeerDocumentLookupPaths(root, peerID, name string) []string {
 		appendPath(filepath.Join(root, "peers", safe, name))
 	}
 	appendPath(filepath.Join(DefaultPeerRoot(root), name))
-	appendPath(filepath.Join(root, name))
 	return paths
-}
-
-func (m *Manager) legacyPeerRoot(peerID string) string {
-	if !m.perAgent {
-		return m.root
-	}
-	return filepath.Join(m.root, sanitizePeerID(peerID))
 }
 
 func (m *Manager) EnsurePeer(peerID string) (string, error) {
 	dir := m.PeerRoot(peerID)
-	if err := m.migrateLegacyPeerRoot(peerID); err != nil {
-		return "", err
-	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create peer workspace: %w", err)
 	}
 	return dir, nil
-}
-
-func (m *Manager) migrateLegacyPeerRoot(peerID string) error {
-	if !m.perAgent {
-		return nil
-	}
-	safe := sanitizePeerID(peerID)
-	if _, reserved := reservedWorkspaceEntries[safe]; reserved {
-		return nil
-	}
-	legacyDir := m.legacyPeerRoot(peerID)
-	newDir := m.PeerRoot(peerID)
-	if legacyDir == newDir {
-		return nil
-	}
-	legacyInfo, err := os.Stat(legacyDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("stat legacy peer workspace: %w", err)
-	}
-	if !legacyInfo.IsDir() {
-		return nil
-	}
-	if _, err := os.Stat(newDir); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("stat peer workspace: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(newDir), 0o755); err != nil {
-		return fmt.Errorf("create peer workspace parent: %w", err)
-	}
-	if err := os.Rename(legacyDir, newDir); err != nil {
-		return fmt.Errorf("migrate legacy peer workspace: %w", err)
-	}
-	return nil
 }
 
 func (m *Manager) Read(peerID, relPath string) (string, error) {
