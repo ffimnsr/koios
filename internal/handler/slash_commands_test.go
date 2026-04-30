@@ -929,3 +929,54 @@ func TestSlashBriefDaily(t *testing.T) {
 		t.Fatalf("expected waiting item in brief, got: %s", text)
 	}
 }
+func TestSlashElevated_Toggle(t *testing.T) {
+	conn, store, _ := dialSlashServer(t, nil, "elevated-peer")
+
+	msg := sendSlashChat(t, conn, "1", "/elevated on")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "on") {
+		t.Fatalf("expected on, got: %s", got)
+	}
+	if !store.Policy("elevated-peer").ElevatedBash {
+		t.Fatal("expected ElevatedBash = true in policy")
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/elevated off")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "off") {
+		t.Fatalf("expected off, got: %s", got)
+	}
+	if store.Policy("elevated-peer").ElevatedBash {
+		t.Fatal("expected ElevatedBash = false after /elevated off")
+	}
+
+	// query without argument
+	msg = sendSlashChat(t, conn, "3", "/elevated")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "off") {
+		t.Fatalf("expected status off, got: %s", got)
+	}
+}
+
+func TestSlashSandbox_Toggle(t *testing.T) {
+	conn, store, _ := dialSlashServer(t, nil, "sandbox-peer")
+
+	msg := sendSlashChat(t, conn, "1", "/sandbox on")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "on") {
+		t.Fatalf("expected on, got: %s", got)
+	}
+	if got := store.Policy("sandbox-peer").SessionKind; got != "sandbox" {
+		t.Fatalf("expected SessionKind=sandbox, got: %q", got)
+	}
+
+	msg = sendSlashChat(t, conn, "2", "/sandbox off")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "off") {
+		t.Fatalf("expected off, got: %s", got)
+	}
+	if got := store.Policy("sandbox-peer").SessionKind; got != "" {
+		t.Fatalf("expected SessionKind empty after /sandbox off, got: %q", got)
+	}
+
+	// query without argument
+	msg = sendSlashChat(t, conn, "3", "/sandbox")
+	if got := slashAssistantText(t, msg); !strings.Contains(got, "off") {
+		t.Fatalf("expected status off, got: %s", got)
+	}
+}

@@ -123,6 +123,35 @@ func (h *Handler) rpcWorkspaceGrep(_ context.Context, wsc *wsConn, req *rpcReque
 	wsc.reply(req.ID, result)
 }
 
+func (h *Handler) rpcWorkspaceFind(_ context.Context, wsc *wsConn, req *rpcRequest) {
+	var p struct {
+		Path          string `json:"path,omitempty"`
+		Pattern       string `json:"pattern"`
+		Recursive     *bool  `json:"recursive,omitempty"`
+		Limit         int    `json:"limit,omitempty"`
+		CaseSensitive *bool  `json:"case_sensitive,omitempty"`
+		Regexp        bool   `json:"regexp,omitempty"`
+	}
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	recursive := true
+	if p.Recursive != nil {
+		recursive = *p.Recursive
+	}
+	caseSensitive := true
+	if p.CaseSensitive != nil {
+		caseSensitive = *p.CaseSensitive
+	}
+	result, err := h.workspaceFind(wsc.peerID, p.Path, p.Pattern, recursive, p.Limit, caseSensitive, p.Regexp)
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
 func (h *Handler) rpcWorkspaceSort(_ context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
 		Path          string `json:"path"`

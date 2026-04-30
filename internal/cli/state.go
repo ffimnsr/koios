@@ -194,6 +194,7 @@ func (s *repoState) validate() []doctorFinding {
 	}
 	dirs := map[string]string{
 		"workspace.root":  s.WorkspaceRoot,
+		"browser.dir":     s.browserDir(),
 		"session.dir":     s.sessionDir(),
 		"cron.dir":        s.cronDir(),
 		"agent.dir":       s.agentDir(),
@@ -223,7 +224,7 @@ func (s *repoState) validate() []doctorFinding {
 
 func (s *repoState) createStateDirs() []string {
 	created := []string{}
-	paths := []string{s.WorkspaceRoot, s.sessionDir(), s.cronDir(), s.agentDir(), s.peersDir(), s.workflowDir(), s.runsDir()}
+	paths := []string{s.WorkspaceRoot, s.browserDir(), s.sessionDir(), s.cronDir(), s.agentDir(), s.peersDir(), s.workflowDir(), s.runsDir()}
 	for _, dbPath := range []string{s.memoryDBPath(), s.tasksDBPath(), s.calendarDBPath()} {
 		if dbPath != "" {
 			paths = append(paths, filepath.Dir(dbPath))
@@ -238,6 +239,16 @@ func (s *repoState) createStateDirs() []string {
 		}
 	}
 	return created
+}
+
+func (s *repoState) browserDir() string {
+	if s.Config == nil || s.WorkspaceRoot == "" {
+		return ""
+	}
+	if len(s.Config.Browser.Profiles) == 0 {
+		return ""
+	}
+	return s.Config.BrowserDir()
 }
 
 // sessionDir returns the derived session storage path.

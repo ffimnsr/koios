@@ -188,6 +188,56 @@ func TestManagerGrep(t *testing.T) {
 	}
 }
 
+func TestManagerFind(t *testing.T) {
+	dir := t.TempDir()
+	m, err := New(dir, true, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Write("alice", "notes/todo.md", "TODO\n", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Write("alice", "notes/nested/ideas.md", "idea\n", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Mkdir("alice", "notes/archive"); err != nil {
+		t.Fatal(err)
+	}
+
+	matches, err := m.Find("alice", "notes", "todo", true, 10, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match, got %#v", matches)
+	}
+	if matches[0].Path != "notes/todo.md" || matches[0].IsDir {
+		t.Fatalf("unexpected first match: %#v", matches[0])
+	}
+
+	regexMatches, err := m.Find("alice", "notes", `nested/.+\.md$|archive$`, true, 10, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(regexMatches) != 2 {
+		t.Fatalf("expected 2 regex matches, got %#v", regexMatches)
+	}
+	if regexMatches[0].Path != "notes/archive" || !regexMatches[0].IsDir {
+		t.Fatalf("unexpected regex first match: %#v", regexMatches[0])
+	}
+	if regexMatches[1].Path != "notes/nested/ideas.md" || regexMatches[1].IsDir {
+		t.Fatalf("unexpected regex second match: %#v", regexMatches[1])
+	}
+
+	nonRecursiveMatches, err := m.Find("alice", "notes", "ideas", false, 10, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nonRecursiveMatches) != 0 {
+		t.Fatalf("expected non-recursive search to skip nested file, got %#v", nonRecursiveMatches)
+	}
+}
+
 func TestManagerDiff(t *testing.T) {
 	dir := t.TempDir()
 	m, err := New(dir, true, 1024)

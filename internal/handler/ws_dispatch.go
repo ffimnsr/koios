@@ -549,6 +549,12 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcWorkspaceGrep(ctx, wsc, req)
+	case "workspace.find":
+		if h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
+			return
+		}
+		h.rpcWorkspaceFind(ctx, wsc, req)
 	case "workspace.sort":
 		if h.workspaceStore == nil {
 			wsc.replyErr(req.ID, errCodeServer, "workspace is not enabled")
@@ -875,7 +881,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		)
 	}
 	if caps["workspace"] {
-		methods = append(methods, "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete")
+		methods = append(methods, "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.find", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete")
 	}
 	methods = append(methods, "approval.pending", "approval.approve", "approval.reject")
 	if caps["exec"] {

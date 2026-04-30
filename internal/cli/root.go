@@ -77,12 +77,14 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newRunsCommand(ctx))
 	root.AddCommand(newBookmarkCommand(ctx))
 	root.AddCommand(newMemoryCommand(ctx))
+	root.AddCommand(newExecCommand(ctx))
 	root.AddCommand(newTasksCommand(ctx))
 	root.AddCommand(newCalendarCommand(ctx))
 	root.AddCommand(newWaitingCommand(ctx))
 	root.AddCommand(newBriefCommand(ctx))
 	root.AddCommand(newDashboardCommand(ctx))
 	root.AddCommand(newModelCommand(ctx))
+	root.AddCommand(newHideSecretCommand(ctx))
 	root.AddCommand(newHostCommand(ctx))
 	root.AddCommand(newExtensionCommand(ctx))
 	configureCLICompletions(root, ctx)
@@ -996,6 +998,7 @@ func emit(cmd *cobra.Command, jsonOut bool, v any) {
 func statePaths(state *repoState) map[string]string {
 	return map[string]string{
 		"config":      state.ConfigPath,
+		"browserDir":  state.browserDir(),
 		"sessionDir":  state.sessionDir(),
 		"cronDir":     state.cronDir(),
 		"agentDir":    state.agentDir(),

@@ -45,6 +45,15 @@ type GrepMatch struct {
 	Text   string `json:"text"`
 }
 
+// FindEntry describes one file or directory whose relative path matched a
+// workspace filename/path search.
+type FindEntry struct {
+	Path      string    `json:"path"`
+	IsDir     bool      `json:"is_dir"`
+	Size      int64     `json:"size"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // Manager provides safe, peer-scoped filesystem operations.
 type Manager struct {
 	root         string
@@ -489,6 +498,95 @@ func (m *Manager) List(peerID, relPath string, recursive bool, limit int) ([]Ent
 	return entries, nil
 }
 
+func (m *Manager) Find(peerID, relPath, pattern string, recursive bool, limit int, caseSensitive, useRegexp bool) ([]FindEntry, error) {
+	target, err := m.resolve(peerID, relPath)
+	if err != nil {
+		return nil, err
+	}
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return nil, fmt.Errorf("pattern is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		return nil, err
+	}
+
+	matcher, err := compileTextMatcher(pattern, caseSensitive, useRegexp)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]FindEntry, 0, min(limit, 16))
+	addMatch := func(path string, info fs.FileInfo) {
+		rel, err := filepath.Rel(m.PeerRoot(peerID), path)
+		if err != nil {
+			rel = info.Name()
+		}
+		rel = filepath.ToSlash(rel)
+		if _, ok := matcher(rel); !ok {
+			return
+		}
+		matches = append(matches, FindEntry{
+			Path:      rel,
+			IsDir:     info.IsDir(),
+			Size:      info.Size(),
+			UpdatedAt: info.ModTime().UTC(),
+		})
+	}
+
+	if !info.IsDir() {
+		addMatch(target, info)
+		return matches, nil
+	}
+
+	if !recursive {
+		entries, err := os.ReadDir(target)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if len(matches) >= limit {
+				break
+			}
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			addMatch(filepath.Join(target, entry.Name()), info)
+		}
+		sort.Slice(matches, func(i, j int) bool { return matches[i].Path < matches[j].Path })
+		return matches, nil
+	}
+
+	walkErr := filepath.WalkDir(target, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == target {
+			return nil
+		}
+		if len(matches) >= limit {
+			return errors.New("find limit reached")
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		addMatch(path, info)
+		return nil
+	})
+	if walkErr != nil && walkErr.Error() != "find limit reached" {
+		return nil, walkErr
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Path < matches[j].Path })
+	return matches, nil
+}
+
 func (m *Manager) resolve(peerID, relPath string) (string, error) {
 	base, err := m.EnsurePeer(peerID)
 	if err != nil {
@@ -529,6 +627,10 @@ func splitLinesKeepNewline(content string) []string {
 }
 
 func compileGrepMatcher(pattern string, caseSensitive, useRegexp bool) (func(string) (int, bool), error) {
+	return compileTextMatcher(pattern, caseSensitive, useRegexp)
+}
+
+func compileTextMatcher(pattern string, caseSensitive, useRegexp bool) (func(string) (int, bool), error) {
 	if useRegexp {
 		expr := pattern
 		if !caseSensitive {

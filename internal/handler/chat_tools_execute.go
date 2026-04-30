@@ -61,6 +61,9 @@ func (h *Handler) dispatchTool(ctx context.Context, peerID string, call agent.To
 			})
 		}
 	}
+	if result, err := h.browserAliasTool(ctx, peerID, call); err == nil || !errors.Is(err, errUnhandledTool) {
+		return result, err
+	}
 	if h.mcpManager != nil {
 		if _, _, ok := mcp.ParseToolName(call.Name); ok {
 			return h.mcpManager.CallTool(ctx, call.Name, call.Arguments)

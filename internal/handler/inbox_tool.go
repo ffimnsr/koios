@@ -73,6 +73,7 @@ func (h *Handler) runInboxReadTool(peerID, sessionKey string, limit int, unreadO
 	}
 	history := h.store.Get(resolved).History()
 	readUserCount := h.store.Policy(resolved).InboxReadUserCount
+	stats := inboxHistoryStats(history)
 	unreadMessages := unreadInboxMessages(history, readUserCount)
 	returned := history
 	if unreadOnly {
@@ -81,7 +82,6 @@ func (h *Handler) runInboxReadTool(peerID, sessionKey string, limit int, unreadO
 	if limit > 0 && len(returned) > limit {
 		returned = returned[len(returned)-limit:]
 	}
-	stats := inboxHistoryStats(history)
 	return map[string]any{
 		"peer_id":            peerID,
 		"session_key":        resolved,
@@ -89,7 +89,7 @@ func (h *Handler) runInboxReadTool(peerID, sessionKey string, limit int, unreadO
 		"user_message_count": stats.userCount,
 		"assistant_count":    stats.assistantCount,
 		"read_user_count":    readUserCount,
-		"unread_count":       len(unreadMessages),
+		"unread_count":       maxInt(0, stats.userCount-readUserCount),
 		"messages":           returned,
 		"unread_messages":    unreadMessages,
 	}, nil

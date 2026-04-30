@@ -20,7 +20,9 @@ import (
 	"github.com/ffimnsr/koios/internal/app"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/config"
+	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/scheduler"
+	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/workflow"
 	"github.com/ffimnsr/koios/internal/workspace"
@@ -1887,6 +1889,171 @@ func TestDoctorDeepProbesMCPHTTPServer(t *testing.T) {
 	}
 }
 
+func TestExecPendingApproveAndRejectCommands(t *testing.T) {
+	dir := t.TempDir()
+	wsStore, err := workspace.New(filepath.Join(dir, "workspace"), true, 1024*1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	if _, err := wsStore.Write("alice", "doomed/file.txt", "hi", false); err != nil {
+		t.Fatalf("workspace.Write doomed: %v", err)
+	}
+	if _, err := wsStore.Write("alice", "rejected/file.txt", "hi", false); err != nil {
+		t.Fatalf("workspace.Write rejected: %v", err)
+	}
+	h := handler.NewHandler(session.New(10), nil, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		ExecConfig: handler.ExecConfig{
+			Enabled:            true,
+			EnableDenyPatterns: true,
+			ApprovalMode:       "dangerous",
+			ApprovalTTL:        time.Minute,
+		},
+	})
+	server := httptest.NewServer(h)
+	defer server.Close()
+	writeExecCLITestConfig(t, dir, server.URL)
+
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	state, err := cmdCtx.state()
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	client := newGatewayClient(state, 5*time.Second)
+	reqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	first := map[string]any{}
+	if err := client.rpc(reqCtx, "alice", "exec", map[string]any{"command": "rm -rf doomed"}, &first); err != nil {
+		t.Fatalf("rpc exec doomed: %v", err)
+	}
+	approvalID, _ := first["approval"].(map[string]any)["id"].(string)
+	if approvalID == "" {
+		t.Fatalf("expected approval id in first result: %#v", first)
+	}
+
+	second := map[string]any{}
+	if err := client.rpc(reqCtx, "alice", "exec", map[string]any{"command": "rm -rf rejected"}, &second); err != nil {
+		t.Fatalf("rpc exec rejected: %v", err)
+	}
+	rejectedID, _ := second["approval"].(map[string]any)["id"].(string)
+	if rejectedID == "" {
+		t.Fatalf("expected approval id in second result: %#v", second)
+	}
+
+	pendingCmd := newExecCommand(cmdCtx)
+	var out bytes.Buffer
+	pendingCmd.SetOut(&out)
+	pendingCmd.SetErr(&out)
+	pendingCmd.SetArgs([]string{"pending", "--peer", "alice", "--json"})
+	if err := pendingCmd.Execute(); err != nil {
+		t.Fatalf("exec pending: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), approvalID) || !strings.Contains(out.String(), `"policy": "builtin_deny_pattern"`) {
+		t.Fatalf("expected approval id and policy in pending output: %s", out.String())
+	}
+
+	approveCmd := newExecCommand(cmdCtx)
+	out.Reset()
+	approveCmd.SetOut(&out)
+	approveCmd.SetErr(&out)
+	approveCmd.SetArgs([]string{"approve", approvalID, "--peer", "alice", "--json"})
+	if err := approveCmd.Execute(); err != nil {
+		t.Fatalf("exec approve: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), `"approval_id": "`+approvalID+`"`) {
+		t.Fatalf("expected approval id in approve output: %s", out.String())
+	}
+	if _, err := wsStore.Read("alice", "doomed/file.txt"); err == nil {
+		t.Fatal("expected approved exec to remove doomed/file.txt")
+	}
+
+	rejectCmd := newExecCommand(cmdCtx)
+	out.Reset()
+	rejectCmd.SetOut(&out)
+	rejectCmd.SetErr(&out)
+	rejectCmd.SetArgs([]string{"reject", rejectedID, "--peer", "alice", "--json"})
+	if err := rejectCmd.Execute(); err != nil {
+		t.Fatalf("exec reject: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), `"ok": true`) {
+		t.Fatalf("expected ok in reject output: %s", out.String())
+	}
+	if _, err := wsStore.Read("alice", "rejected/file.txt"); err != nil {
+		t.Fatalf("expected rejected exec to leave file intact: %v", err)
+	}
+	if strings.Contains(out.String(), approvalID) {
+		t.Fatalf("unexpected stale approval id in reject output: %s", out.String())
+	}
+}
+
+func TestExecAllowlistCommands(t *testing.T) {
+	dir := t.TempDir()
+	writeExecCLITestConfig(t, dir, "http://127.0.0.1:18080")
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+
+	addCmd := newExecCommand(cmdCtx)
+	var out bytes.Buffer
+	addCmd.SetOut(&out)
+	addCmd.SetErr(&out)
+	addCmd.SetArgs([]string{"allowlist", "add", `^git status$`, "--json"})
+	if err := addCmd.Execute(); err != nil {
+		t.Fatalf("exec allowlist add: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), `"changed": true`) {
+		t.Fatalf("expected changed=true after add: %s", out.String())
+	}
+
+	listCmd := newExecCommand(cmdCtx)
+	out.Reset()
+	listCmd.SetOut(&out)
+	listCmd.SetErr(&out)
+	listCmd.SetArgs([]string{"allowlist", "list", "--json"})
+	if err := listCmd.Execute(); err != nil {
+		t.Fatalf("exec allowlist list: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), `^git status$`) {
+		t.Fatalf("expected pattern in list output: %s", out.String())
+	}
+
+	removeCmd := newExecCommand(cmdCtx)
+	out.Reset()
+	removeCmd.SetOut(&out)
+	removeCmd.SetErr(&out)
+	removeCmd.SetArgs([]string{"allowlist", "remove", `^git status$`, "--json"})
+	if err := removeCmd.Execute(); err != nil {
+		t.Fatalf("exec allowlist remove: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), `"changed": true`) {
+		t.Fatalf("expected changed=true after remove: %s", out.String())
+	}
+
+	cfg, err := config.LoadFromPath(filepath.Join(dir, config.DefaultConfigFile))
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+	if len(cfg.ExecCustomAllowPatterns) != 0 {
+		t.Fatalf("expected empty allowlist after remove, got %#v", cfg.ExecCustomAllowPatterns)
+	}
+}
+
+func TestExecAllowlistAddRejectsInvalidPattern(t *testing.T) {
+	dir := t.TempDir()
+	writeExecCLITestConfig(t, dir, "http://127.0.0.1:18080")
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newExecCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"allowlist", "add", "["})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "invalid regex pattern") {
+		t.Fatalf("expected invalid regex error, got %v\noutput:\n%s", err, out.String())
+	}
+}
+
 func TestExtensionListShowsDiscoveredNamespaces(t *testing.T) {
 	dir := t.TempDir()
 	server := newTestExtensionMCPServer(t, []map[string]any{{
@@ -2057,6 +2224,31 @@ func writeExtensionTestConfig(t *testing.T, dir string) {
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "workspace", "extensions", "demo"), 0o755); err != nil {
 		t.Fatalf("MkdirAll workspace extensions: %v", err)
+	}
+}
+
+func writeExecCLITestConfig(t *testing.T, dir, listenAddr string) {
+	t.Helper()
+	content := strings.Join([]string{
+		"[server]",
+		fmt.Sprintf("listen_addr = %q", listenAddr),
+		`request_timeout = "30s"`,
+		"",
+		"[llm]",
+		`default_profile = "default"`,
+		"",
+		"[[llm.profiles]]",
+		`name = "default"`,
+		`provider = "openai"`,
+		`model = "gpt-4o"`,
+		`api_key = "test-key"`,
+		"",
+		"[workspace]",
+		`root = "./workspace"`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(content), 0o600); err != nil {
+		t.Fatalf("write exec cli test config: %v", err)
 	}
 }
 

@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+func configBoolPtr(v bool) *bool { return &v }
+
 func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg := Default()
 	cfg.LLMIdleTimeout = 42 * time.Second
@@ -165,6 +167,24 @@ func TestValidateRejectsBlankExtensionDirs(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidExecAllowPattern(t *testing.T) {
+	cfg := Default()
+	cfg.ExecCustomAllowPatterns = []string{"["}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tools.exec.custom_allow_patterns[0]") {
+		t.Fatalf("expected exec allow pattern validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidExecDenyPattern(t *testing.T) {
+	cfg := Default()
+	cfg.ExecCustomDenyPatterns = []string{"("}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tools.exec.custom_deny_patterns[0]") {
+		t.Fatalf("expected exec deny pattern validation error, got %v", err)
+	}
+}
+
 func TestValidateRejectsInvalidTelegramInboxPeerID(t *testing.T) {
 	cfg := Default()
 	cfg.Telegram.Enabled = true
@@ -201,6 +221,64 @@ func TestValidateRejectsNegativeLLMIdleTimeout(t *testing.T) {
 	err := validate(cfg)
 	if err == nil || !strings.Contains(err.Error(), "llm.idle_timeout") {
 		t.Fatalf("expected llm idle timeout validation error, got %v", err)
+	}
+}
+
+func TestEncodeTOMLRoundTripsHookMappings(t *testing.T) {
+	cfg := Default()
+	cfg.WebhookToken = "hook-token"
+	cfg.HookMappings = []HookMapping{{
+		Name: "github-pr",
+		Type: "session.wake",
+		Fields: []HookFieldTransform{
+			{To: "peer_id", Value: "default"},
+			{To: "prompt", Template: "GitHub {{headers.x-github-event}}: {{body.pull_request.title}}", Required: configBoolPtr(true)},
+		},
+	}}
+	encoded := EncodeTOML(cfg, false)
+	for _, expected := range []string{
+		`[hooks]`,
+		`webhook_token = "hook-token"`,
+		`[[hooks.mappings]]`,
+		`name = "github-pr"`,
+		`type = "session.wake"`,
+		`[[hooks.mappings.fields]]`,
+		`to = "prompt"`,
+	} {
+		if !strings.Contains(encoded, expected) {
+			t.Fatalf("expected encoded config to contain %q, got:\n%s", expected, encoded)
+		}
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, DefaultConfigFile)
+	if err := os.WriteFile(path, []byte(encoded), 0o644); err != nil {
+		t.Fatalf("write encoded config: %v", err)
+	}
+	loaded, err := LoadFromPath(path)
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+	if len(loaded.HookMappings) != 1 {
+		t.Fatalf("unexpected hook mappings after round-trip: %#v", loaded.HookMappings)
+	}
+	if loaded.HookMappings[0].Name != "github-pr" || loaded.HookMappings[0].Path != "github-pr" {
+		t.Fatalf("unexpected hook mapping identity after round-trip: %#v", loaded.HookMappings[0])
+	}
+	if len(loaded.HookMappings[0].Fields) != 2 || loaded.HookMappings[0].Fields[1].Template == "" {
+		t.Fatalf("unexpected hook mapping fields after round-trip: %#v", loaded.HookMappings[0].Fields)
+	}
+}
+
+func TestValidateRejectsDuplicateHookMappingPath(t *testing.T) {
+	cfg := Default()
+	cfg.WebhookToken = "hook-token"
+	cfg.HookMappings = []HookMapping{
+		{Name: "github", Path: "shared", Type: "session.wake", Fields: []HookFieldTransform{{To: "peer_id", Value: "default"}}},
+		{Name: "github-run", Path: "shared", Type: "agent.run", Fields: []HookFieldTransform{{To: "peer_id", Value: "default"}}},
+	}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "hooks.mappings[1].path") {
+		t.Fatalf("expected duplicate hook path validation error, got %v", err)
 	}
 }
 

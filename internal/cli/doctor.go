@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	browsercfg "github.com/ffimnsr/koios/internal/browser"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/mcp"
 	"github.com/ffimnsr/koios/internal/workspace"
@@ -112,6 +114,7 @@ func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
 			findings = append(findings, doctorFinding{Level: "info", Key: "sandbox.bwrap", Message: fmt.Sprintf("bubblewrap available at %s", bwrapPath), Path: bwrapPath})
 		}
 	}
+	findings = append(findings, collectDoctorBrowserFindings(state, deep)...)
 	for index, server := range state.MCPServers {
 		if !server.Enabled {
 			continue
@@ -180,6 +183,152 @@ func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
 			} else {
 				_ = conn.Close()
 				findings = append(findings, doctorFinding{Level: "info", Key: "memory.milvus", Message: fmt.Sprintf("Milvus reachable at %s", state.MilvusURL), Path: state.ConfigPath})
+			}
+		}
+	}
+	return findings
+}
+
+func collectDoctorBrowserFindings(state *repoState, deep bool) []doctorFinding {
+	if state == nil || state.Config == nil {
+		return nil
+	}
+	enabledProfiles := browsercfg.EnabledProfiles(state.Config)
+	if len(enabledProfiles) == 0 {
+		return nil
+	}
+	findings := []doctorFinding{{
+		Level:   "info",
+		Key:     "browser.profiles",
+		Message: fmt.Sprintf("%d browser profile(s) enabled", len(enabledProfiles)),
+		Path:    state.ConfigPath,
+	}}
+	if dir := state.browserDir(); dir != "" && !dirExists(dir) {
+		findings = append(findings, doctorFinding{
+			Level:      "warn",
+			Key:        "browser.dir",
+			Message:    fmt.Sprintf("browser profile directory does not exist yet: %s", dir),
+			Path:       dir,
+			Hint:       "run koios doctor --repair to create the managed browser profile directory",
+			Repairable: true,
+		})
+	}
+	derivedServers := map[string]config.MCPServerConfig{}
+	if servers, err := browsercfg.MCPServers(state.Config); err != nil {
+		findings = append(findings, doctorFinding{
+			Level:   "error",
+			Key:     "browser.derive",
+			Message: fmt.Sprintf("could not derive browser MCP profiles: %v", err),
+			Path:    state.ConfigPath,
+		})
+	} else {
+		for _, server := range servers {
+			derivedServers[strings.ToLower(strings.TrimSpace(server.ProfileName))] = server
+		}
+	}
+	for index, profile := range state.Config.Browser.Profiles {
+		if !profile.Enabled {
+			continue
+		}
+		profileName := strings.TrimSpace(profile.Name)
+		prefix := fmt.Sprintf("browser.profiles[%d]", index)
+		mode := strings.TrimSpace(profile.Mode)
+		if mode == "" {
+			mode = "managed"
+		}
+		if command := strings.TrimSpace(profile.MCPCommand); command != "" {
+			if resolved, err := exec.LookPath(command); err != nil {
+				findings = append(findings, doctorFinding{
+					Level:   "error",
+					Key:     prefix + ".mcp_command",
+					Message: fmt.Sprintf("browser profile %q MCP command not found: %s", profileName, command),
+					Path:    state.ConfigPath,
+					Hint:    "install the configured MCP launcher or clear browser.profiles.mcp_command to use npx",
+				})
+			} else if deep {
+				findings = append(findings, doctorFinding{Level: "info", Key: prefix + ".mcp_command", Message: fmt.Sprintf("browser profile %q MCP launcher resolved", profileName), Path: resolved})
+			}
+		} else {
+			resolved, err := exec.LookPath("npx")
+			if err != nil {
+				findings = append(findings, doctorFinding{
+					Level:   "error",
+					Key:     prefix + ".mcp_command",
+					Message: fmt.Sprintf("browser profile %q requires npx to launch chrome-devtools-mcp", profileName),
+					Path:    state.ConfigPath,
+					Hint:    "install Node.js and npm so npx is available, or set browser.profiles.mcp_command",
+				})
+			} else if deep {
+				findings = append(findings, doctorFinding{Level: "info", Key: prefix + ".mcp_command", Message: fmt.Sprintf("browser profile %q uses npx launcher", profileName), Path: resolved})
+			}
+		}
+		if profile.ExperimentalScreencast {
+			ffmpegPath := strings.TrimSpace(profile.ExperimentalFfmpegPath)
+			if ffmpegPath == "" {
+				resolved, err := exec.LookPath("ffmpeg")
+				if err != nil {
+					findings = append(findings, doctorFinding{
+						Level:   "warn",
+						Key:     prefix + ".experimental_screencast",
+						Message: fmt.Sprintf("browser profile %q enables screencast tools but ffmpeg was not found", profileName),
+						Path:    state.ConfigPath,
+						Hint:    "install ffmpeg or set browser.profiles.experimental_ffmpeg_path",
+					})
+				} else if deep {
+					findings = append(findings, doctorFinding{Level: "info", Key: prefix + ".experimental_screencast", Message: fmt.Sprintf("browser profile %q screencast support ready", profileName), Path: resolved})
+				}
+			} else if !fileExists(ffmpegPath) {
+				findings = append(findings, doctorFinding{
+					Level:   "warn",
+					Key:     prefix + ".experimental_ffmpeg_path",
+					Message: fmt.Sprintf("browser profile %q ffmpeg path does not exist", profileName),
+					Path:    ffmpegPath,
+					Hint:    "fix browser.profiles.experimental_ffmpeg_path or disable screencast tools",
+				})
+			}
+		}
+		switch mode {
+		case "managed", "existing_session":
+			if executablePath := strings.TrimSpace(profile.ExecutablePath); executablePath != "" {
+				if !fileExists(executablePath) {
+					findings = append(findings, doctorFinding{
+						Level:   "error",
+						Key:     prefix + ".executable_path",
+						Message: fmt.Sprintf("browser profile %q Chrome executable not found", profileName),
+						Path:    executablePath,
+						Hint:    "fix browser.profiles.executable_path or clear it to use the default channel lookup",
+					})
+				}
+			} else if deep {
+				if resolved := doctorFindBrowserExecutable(strings.TrimSpace(profile.Channel)); resolved == "" {
+					findings = append(findings, doctorFinding{
+						Level:   "warn",
+						Key:     prefix + ".chrome",
+						Message: fmt.Sprintf("browser profile %q could not find a default Chrome executable for channel %q", profileName, strings.TrimSpace(profile.Channel)),
+						Path:    state.ConfigPath,
+						Hint:    "install Chrome or set browser.profiles.executable_path explicitly",
+					})
+				} else {
+					findings = append(findings, doctorFinding{Level: "info", Key: prefix + ".chrome", Message: fmt.Sprintf("browser profile %q Chrome executable resolved", profileName), Path: resolved})
+				}
+			}
+			if mode == "existing_session" && strings.TrimSpace(profile.UserDataDir) == "" {
+				findings = append(findings, doctorFinding{
+					Level:   "warn",
+					Key:     prefix + ".user_data_dir",
+					Message: fmt.Sprintf("browser profile %q attaches to an existing browser session without a user_data_dir hint", profileName),
+					Path:    state.ConfigPath,
+					Hint:    "set browser.profiles.user_data_dir so existing-session attach targets the intended Chrome profile",
+				})
+			}
+		case "browser_url":
+			findings = append(findings, doctorProbeBrowserEndpoint(prefix+".browser_url", profileName, profile.BrowserURL, deep))
+		case "ws_endpoint":
+			findings = append(findings, doctorProbeBrowserEndpoint(prefix+".ws_endpoint", profileName, profile.WSEndpoint, deep))
+		}
+		if deep {
+			if server, ok := derivedServers[strings.ToLower(profileName)]; ok {
+				findings = append(findings, probeDoctorMCPServer(server, prefix+".probe", profileName, "stdio"))
 			}
 		}
 	}
@@ -597,6 +746,97 @@ func maxDoctorDuration(defaultValue, minimum time.Duration) time.Duration {
 		return defaultValue
 	}
 	return minimum
+}
+
+func doctorProbeBrowserEndpoint(key, profileName, rawURL string, deep bool) doctorFinding {
+	rawURL = strings.TrimSpace(rawURL)
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return doctorFinding{
+			Level:   "error",
+			Key:     key,
+			Message: fmt.Sprintf("browser profile %q endpoint is invalid: %s", profileName, rawURL),
+			Path:    rawURL,
+			Hint:    "set a valid browser_url or ws_endpoint",
+		}
+	}
+	if !deep {
+		return doctorFinding{
+			Level:   "info",
+			Key:     key,
+			Message: fmt.Sprintf("browser profile %q remote endpoint configured", profileName),
+			Path:    rawURL,
+		}
+	}
+	host := parsed.Host
+	if !strings.Contains(host, ":") {
+		switch parsed.Scheme {
+		case "https", "wss":
+			host += ":443"
+		default:
+			host += ":80"
+		}
+	}
+	conn, err := net.DialTimeout("tcp", host, 2*time.Second)
+	if err != nil {
+		return doctorFinding{
+			Level:   "warn",
+			Key:     key,
+			Message: fmt.Sprintf("browser profile %q endpoint is not reachable: %v", profileName, err),
+			Path:    rawURL,
+			Hint:    "start the remote Chrome instance or verify the browser_url/ws_endpoint host and port",
+		}
+	}
+	_ = conn.Close()
+	return doctorFinding{
+		Level:   "info",
+		Key:     key,
+		Message: fmt.Sprintf("browser profile %q endpoint reachable", profileName),
+		Path:    rawURL,
+	}
+}
+
+func doctorFindBrowserExecutable(channel string) string {
+	for _, candidate := range doctorBrowserExecutableCandidates(channel) {
+		resolved, err := exec.LookPath(candidate)
+		if err == nil {
+			return resolved
+		}
+	}
+	return ""
+}
+
+func doctorBrowserExecutableCandidates(channel string) []string {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	if channel == "" {
+		channel = "stable"
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		base := map[string]string{
+			"stable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"beta":   "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+			"dev":    "/Applications/Google Chrome Dev.app/Contents/MacOS/Google Chrome Dev",
+			"canary": "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+		}
+		if candidate := strings.TrimSpace(base[channel]); candidate != "" {
+			return []string{candidate}
+		}
+		return []string{base["stable"]}
+	case "windows":
+		return nil
+	default:
+		switch channel {
+		case "beta":
+			return []string{"google-chrome-beta", "google-chrome"}
+		case "dev":
+			return []string{"google-chrome-unstable", "google-chrome-dev", "google-chrome"}
+		case "canary":
+			return []string{"google-chrome-canary", "google-chrome-unstable", "google-chrome"}
+		default:
+			return []string{"google-chrome-stable", "google-chrome", "chromium", "chromium-browser"}
+		}
+	}
 }
 
 func probeDoctorMCPServer(server config.MCPServerConfig, prefix, name, transport string) doctorFinding {

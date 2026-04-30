@@ -7,8 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ffimnsr/koios/internal/config"
 )
 
 func TestPluginToolPrefixSanitizesManifestID(t *testing.T) {
@@ -52,6 +55,65 @@ func TestListToolsSkipsHiddenServers(t *testing.T) {
 	}
 }
 
+func TestManagerEnsureAndStopServer(t *testing.T) {
+	var factoryCalls atomic.Int32
+	type fakeClient struct {
+		tools  []Tool
+		closed bool
+	}
+	funcNewClient := func(cfg config.MCPServerConfig) Client {
+		factoryCalls.Add(1)
+		return &fakeManagerClient{tools: []Tool{{Name: "list_pages", Description: "list pages"}}, callResult: cfg.Name}
+	}
+	mgr := NewManagerWithFactory([]config.MCPServerConfig{{
+		Name:           "browser_work",
+		Enabled:        true,
+		Transport:      "stdio",
+		Command:        "ignored",
+		ToolNamePrefix: ToolPrefix("browser_work"),
+		HideTools:      true,
+		Kind:           "browser",
+		ProfileName:    "work",
+	}}, funcNewClient)
+
+	status, ok := mgr.ServerStatus("browser", "work")
+	if !ok {
+		t.Fatal("expected browser server status")
+	}
+	if status.Connected {
+		t.Fatalf("expected disconnected server before ensure, got %#v", status)
+	}
+
+	status, err := mgr.EnsureServer(context.Background(), "browser", "work")
+	if err != nil {
+		t.Fatalf("EnsureServer: %v", err)
+	}
+	if !status.Connected || status.ToolCount != 1 {
+		t.Fatalf("unexpected ensured server status: %#v", status)
+	}
+
+	tools := mgr.AllTools()
+	if len(tools) != 1 || tools[0].ProfileName != "work" || tools[0].Kind != "browser" {
+		t.Fatalf("unexpected tool listing after ensure: %#v", tools)
+	}
+
+	status, err = mgr.StopServer("browser", "work")
+	if err != nil {
+		t.Fatalf("StopServer: %v", err)
+	}
+	if status.Connected || status.ToolCount != 0 {
+		t.Fatalf("unexpected stopped server status: %#v", status)
+	}
+	if got := factoryCalls.Load(); got < 2 {
+		t.Fatalf("expected stop to recreate client, factory calls=%d", got)
+	}
+
+	_, err = mgr.CallTool(context.Background(), ToolName("browser_work", "list_pages"), nil)
+	if err == nil || !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("expected disconnected server call failure, got %v", err)
+	}
+}
+
 // ─── encodeParams ─────────────────────────────────────────────────────────────
 
 func TestEncodeParams_StaticValues(t *testing.T) {
@@ -63,6 +125,27 @@ func TestEncodeParams_StaticValues(t *testing.T) {
 	if m["key"] != "val" {
 		t.Fatalf("unexpected result: %v", m)
 	}
+}
+
+type fakeManagerClient struct {
+	tools      []Tool
+	callResult string
+	closed     bool
+}
+
+func (c *fakeManagerClient) Initialize(context.Context) error { return nil }
+
+func (c *fakeManagerClient) ListTools(context.Context) ([]Tool, error) {
+	return append([]Tool(nil), c.tools...), nil
+}
+
+func (c *fakeManagerClient) CallTool(context.Context, string, map[string]any) (*ToolResult, error) {
+	return &ToolResult{Content: []Content{{Type: "text", Text: c.callResult}}}, nil
+}
+
+func (c *fakeManagerClient) Close() error {
+	c.closed = true
+	return nil
 }
 
 // TestEncodeParams_NonMarshalable_DoesNotPanic verifies that passing a type

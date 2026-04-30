@@ -123,7 +123,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Notes: Add a generic approval primitive for sensitive actions such as outbound messages, shell execution, cron creation, file deletion, and webhook calls. The tool should integrate with existing exec approval and policy hooks so all approval-gated built-ins share one lifecycle.
 - [x] `notification.send` built-in tool
 	- Notes: Provide a local or node-backed notification surface for reminders, completed runs, cron alerts, waiting-on follow-ups, and user-visible status changes. Keep this separate from `message.send` because notifications target the owner/device, while messages target chat conversations.
-- [ ] `git.*` built-in tools for structured repository operations
+- [x] `git.*` built-in tools for structured repository operations
 	- Notes: Add safer wrappers for common repository work such as `git.status`, `git.diff`, `git.log`, `git.branch`, `git.commit`, and `git.apply_patch`. These should produce structured outputs and enforce workspace boundaries instead of relying on raw `exec` for every git operation.
 - [x] `contact.*` built-in tools
 	- Notes: Add contact resolution and aliasing tools such as `contact.list`, `contact.resolve`, `contact.alias`, and `contact.link_channel_identity`. This becomes important once cross-channel messaging needs stable human identity rather than raw platform IDs.
@@ -191,68 +191,84 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Background process management tool
 	- Research notes: OpenClaw already separates process/runtime tools from filesystem tools. PicoClaw did not surface a comparable dedicated background-process tool in the current search. IronClaw's job subsystem is the strongest comparison point because it handles long-running execution, events, restart, and file inspection.
 	- References: OpenClaw `src/agents/tool-catalog.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/tools/builtin/job.rs`, `src/channels/web/handlers/jobs.rs`.
-- [ ] Rich exec approvals UX and lifecycle
+- [x] Rich exec approvals UX and lifecycle
 	- Research notes: OpenClaw has strong sandbox/doctor/operator hooks around execution policy, but the current search here was less explicit on approval UX than on sandbox mechanics. PicoClaw exposes exec policy management in its web UI. IronClaw has the clearest typed approval model and gate pipeline for tool execution.
 	- References: OpenClaw `docs/gateway/sandboxing.md`, `src/commands/doctor-sandbox.warns-sandbox-enabled-without-docker.test.ts`; PicoClaw `web/frontend/src/components/config/config-sections.tsx`, `docs/configuration.md`; IronClaw `src/gate/approval.rs`, `src/tools/dispatch.rs`.
-- [ ] CLI command for exec allowlists
+- [x] CLI command for exec allowlists
 	- Research notes: PicoClaw is actually the clearest visible reference here because it exposes allow/deny pattern management in config and web UI today. OpenClaw has broader sandbox policy/config surfaces. IronClaw's equivalent lives more in sandbox policies and approval defaults than in a simple allowlist UI.
 	- References: OpenClaw `docs/gateway/sandboxing.md`; PicoClaw `web/frontend/src/components/config/config-sections.tsx`, `docs/tools_configuration.md`; IronClaw `src/sandbox/config.rs`, `src/gate/approval.rs`.
 - [ ] Node-routed exec by default or per-session
 	- Research notes: This appears more Koios-specific than a direct parity item. OpenClaw has host/sandbox/browser target routing, but the current search did not surface the same exec-to-node defaulting model. PicoClaw and IronClaw also did not show an obvious equivalent in the current repo searches.
 	- References: OpenClaw `docs/tools/browser.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Browser automation (Chromium/CDP: snapshots, clicks, form fill, uploads, profiles)
+- [x] Browser automation (Chromium/CDP: snapshots, clicks, form fill, uploads, profiles)
+	- Implementation Notes: Koios exposes first-class `browser.*` built-ins over hidden browser backends. Managed and existing-session profiles both route through the active session browser profile, and Koios now adds stable action-oriented wrappers on top of the raw Chrome MCP tool surface instead of exposing raw MCP names directly.
+	- Notes: Koios now supports named browser profiles backed by hidden `chrome-devtools-mcp` servers. The active session profile exposes Chrome DevTools MCP actions through `browser.*` aliases while keeping raw MCP tool names out of the catalog.
 	- Research notes: OpenClaw is the strongest reference in the entire comparison set here, with a very complete browser stack spanning snapshots, act APIs, uploads, remote CDP, existing-session attach, and agent/browser integration. PicoClaw currently points more toward roadmap and skill-based browser automation than a built-in unified browser tool. IronClaw uses Chrome MCP/testing flows and browser-assisted QA, but not yet as broad a built-in browser control plane.
 	- References: OpenClaw `docs/tools/browser.md`, `extensions/browser/src/browser-tool.ts`, `extensions/browser/src/browser/chrome-mcp.ts`; PicoClaw `ROADMAP.md`, `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`, `docs/plans/2026-02-24-automated-qa.md`.
-- [ ] Browser profile management per session
+- [x] Browser profile management per session
+	- Notes: Sessions can now persist a `browser_profile` override via `session.patch` or `browser.profile.use`, and `browser.profile.list` / `browser.status` surface the effective browser context.
 	- Research notes: OpenClaw already has named browser profiles, attach-only modes, colors, remote CDP URLs, and session tab tracking, which is the clearest blueprint. PicoClaw's current browser references are more skill/CLI oriented. IronClaw's browser references are currently more testing-oriented than session-profile management.
 	- References: OpenClaw `extensions/browser/src/browser/client.ts`, `extensions/browser/src/browser/profile-capabilities.ts`, `src/config/types.browser.ts`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`.
-- [ ] Managed Chromium browser profile for agent use
+- [x] Managed Chromium browser profile for agent use
+	- Notes: Managed profiles derive a dedicated Chrome user-data-dir under the Koios workspace and launch `chrome-devtools-mcp` in managed mode by default; attach and remote websocket/browser-url modes are also supported per profile.
 	- Research notes: OpenClaw already supports managed local browser profiles and existing-session Chrome MCP attachment, including doctor checks for host readiness. PicoClaw does not show an equivalent managed profile subsystem in the current search. IronClaw's current browser flows rely more on external Chrome MCP/testing setups.
 	- References: OpenClaw `extensions/browser/src/browser/chrome.ts`, `extensions/browser/src/doctor-browser.ts`, `extensions/browser/src/browser/client.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `skills/local-test/SKILL.md`.
-- [ ] Browser status, start, stop, tabs, open, focus, and close commands
+- [x] Browser status, start, stop, tabs, open, focus, and close commands
+	- Notes: Koios now exposes `browser.start`, `browser.stop`, `browser.tabs`, `browser.open`, `browser.focus`, and `browser.close` as first-class built-ins layered over the active Chrome DevTools MCP profile, alongside enriched runtime state in `browser.status`.
 	- Research notes: OpenClaw already has these lifecycle operations as part of both CLI and agent tool surfaces. PicoClaw's current browser references are CLI skill commands rather than integrated gateway/browser lifecycle APIs. IronClaw did not surface an equally complete built-in browser control set in the current search.
 	- References: OpenClaw `extensions/browser/src/browser-runtime.ts`, `extensions/browser/src/browser-tool.ts`, `docs/tools/browser.md`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`.
-- [ ] Browser actions for click, type, drag, select, hover, scroll, and fill
+- [x] Browser actions for click, type, drag, select, hover, scroll, and fill
 	- Research notes: OpenClaw again has the clearest implementation references, including Chrome MCP and Playwright-backed action execution. PicoClaw's browser skill shows a similar interaction vocabulary, but not as a native built-in tool. IronClaw's browser guidance currently appears in testing/Chrome-MCP workflows rather than a general agent tool.
 	- References: OpenClaw `extensions/browser/src/browser/routes/agent.act.ts`, `extensions/browser/src/browser/chrome-mcp.ts`, `extensions/browser/src/browser/pw-tools-core.interactions.ts`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`.
-- [ ] AI snapshots with stable refs for actions
+- [x] AI snapshots with stable refs for actions
+	- Notes: Koios now exposes `browser.snapshot`, which rewrites Chrome MCP snapshot uids into stable `@eN` refs scoped to the current session/profile/page and lets ref-capable browser actions such as `browser.click`, `browser.type`, `browser.hover`, `browser.fill`, `browser.select`, and `browser.drag` resolve those refs back to the current Chrome uid.
 	- Research notes: OpenClaw has this exact pattern already and is the best direct comparison for Koios. PicoClaw's browser skill also uses stable `@eN` refs in snapshots, but as an external skill rather than a gateway-native browser service. IronClaw's current browser docs are more coordinate/Chrome-MCP oriented.
 	- References: OpenClaw `docs/tools/browser.md`, `extensions/browser/src/browser/client.ts`, `extensions/browser/src/browser/pw-tools-core.snapshot.ts`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`.
-- [ ] Accessibility and role snapshots
+- [x] Accessibility and role snapshots
+	- Notes: `browser.snapshot` now supports `format:"role"` for compact stable-ref role trees and `format:"accessibility"` for structured accessibility trees plus stable refs derived from the active Chrome MCP snapshot.
 	- Research notes: OpenClaw directly supports ARIA-style snapshots alongside its AI snapshot format, so it is the clearest accessibility-oriented reference. PicoClaw and IronClaw did not surface equivalent first-class accessibility snapshot layers in the current searches.
 	- References: OpenClaw `extensions/browser/src/browser/pw-tools-core.snapshot.ts`, `extensions/browser/src/browser/client.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Screenshot capture
+- [x] Screenshot capture
+	- Notes: Koios now exposes `browser.screenshot` for element or full-page captures, accepts stable snapshot refs, and returns the captured image content plus MIME type from the active browser backend.
 	- Research notes: OpenClaw has a mature screenshot path with element/full-page modes and Chrome MCP or Playwright backends. PicoClaw's browser skill exposes screenshots through CLI workflows. IronClaw uses screenshots heavily in its QA/testing/browser workflows.
 	- References: OpenClaw `extensions/browser/src/browser/routes/agent.snapshot.ts`, `extensions/browser/src/browser/chrome-mcp.ts`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`, `docs/plans/2026-02-24-automated-qa.md`.
-- [ ] PDF export
+- [x] PDF export
+	- Notes: Koios now exposes `browser.pdf`, which exports the active page to PDF when the current browser backend exposes a PDF-capable hidden tool and returns the resulting PDF bytes with MIME metadata.
 	- Research notes: OpenClaw already has PDF export both in browser routes and CLI commands, so it is the best direct reference. PicoClaw's browser skill also exposes `pdf` export. IronClaw's current browser references did not surface an equivalent built-in PDF flow.
 	- References: OpenClaw `extensions/browser/src/browser/routes/agent.snapshot.ts`, `extensions/browser/src/cli/browser-cli-actions-observe.ts`, `extensions/browser/src/browser-tool.ts`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw no obvious equivalent found in current repo search.
-- [ ] Multi-profile browser support
+- [x] Multi-profile browser support
+	- Notes: Koios now exposes multiple named browser profiles in config and derives one hidden Chrome MCP server per enabled profile. Sessions can inspect available profiles with `browser.profile.list`, switch the active profile with `browser.profile.use`, persist the override via `session.patch`, and see the effective profile in `browser.status`.
 	- Research notes: OpenClaw already supports named browser profiles with different transports and capabilities, making it the clearest model. PicoClaw's skill-based browser approach supports separate sessions/profiles, but not as a gateway-native profile registry. IronClaw again appears to rely on external browser contexts rather than an internal multi-profile manager.
 	- References: OpenClaw `src/config/types.browser.ts`, `extensions/browser/src/browser/client.ts`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`.
-- [ ] Existing-session attach to the user's browser
+- [x] Existing-session attach to the user's browser
+	- Notes: Koios now treats `existing_session` as a first-class browser profile mode for attaching to a user's already-running local Chrome profile. Doctor checks and browser status output surface attach-specific details such as `user_data_dir`, and the hidden Chrome MCP launcher uses auto-connect mode instead of requiring a managed browser instance.
 	- Research notes: OpenClaw already supports this explicitly through Chrome MCP existing-session attach, including doctor checks and per-profile `userDataDir`. PicoClaw's browser skill has an auto-connect/state-save workflow that is conceptually similar but less integrated. IronClaw also uses Chrome MCP for local testing workflows.
 	- References: OpenClaw `extensions/browser/src/browser/profile-capabilities.ts`, `extensions/browser/src/doctor-browser.ts`, `src/config/schema.help.ts`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`.
-- [ ] Remote CDP, Browserless, and Browserbase support
+- [x] Remote CDP support
 	- Research notes: OpenClaw already supports remote CDP profiles and documents Browserbase directly, so it is the strongest reference. PicoClaw's current browser material does not show equivalent built-in cloud-browser support. IronClaw did not surface a comparable remote-browser control plane in the current search.
 	- References: OpenClaw `docs/tools/browser.md`, `extensions/browser/src/browser/profile-capabilities.ts`, `extensions/browser/src/browser/server-context.tab-ops.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Cookie and storage inspection and editing
+- [x] Cookie and storage inspection and editing
 	- Research notes: OpenClaw's browser stack is broad enough that this belongs naturally beside its existing snapshot/evaluate/profile work, but the current search did not surface a dedicated cookie-storage UX entry point. PicoClaw and IronClaw likewise did not show an obvious equivalent in the searched trees.
 	- References: OpenClaw `docs/tools/browser.md`, `extensions/browser/src/browser/client-actions-core.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
-- [ ] Offline, header, geo, timezone, and device emulation knobs
+- [x] Offline, header, geo, timezone, and device emulation knobs
 	- Research notes: OpenClaw already supports browser-side resize/emulation building blocks and is the best fit for expanding into richer emulation controls. PicoClaw's current browser references are not integrated enough to serve as a strong direct reference. IronClaw's browser testing workflow includes viewport changes, which is the closest visible comparison point.
 	- References: OpenClaw `docs/tools/browser.md`, `extensions/browser/src/browser/pw-tools-core.snapshot.ts`; PicoClaw `workspace/skills/agent-browser/SKILL.md`; IronClaw `skills/local-test/SKILL.md`.
-- [ ] Browser-targeted SSRF protections
+- [x] Browser-targeted SSRF protections
 	- Research notes: OpenClaw already has explicit browser navigation guards and SSRF policy enforcement, which is the direct parity reference. PicoClaw has SSRF hardening on its roadmap/config docs, but not the same mature browser-specific enforcement in the current search. IronClaw enforces SSRF safety in WASM/HTTP capability layers and sandbox network policies.
 	- References: OpenClaw `extensions/browser/src/browser/server-context.tab-ops.ts`, `extensions/browser/src/browser/routes/agent.snapshot.ts`, `src/config/types.browser.ts`; PicoClaw `ROADMAP.md`, `docs/configuration.md`; IronClaw `src/tools/wasm/mod.rs`, `src/sandbox/mod.rs`.
 - [x] Vision pipeline - image/file input to multimodal LLMs (auto base64 encode)
-- [ ] Screen recording / screen snapshot tool
+- [x] Screen recording / screen snapshot tool
+	- Notes: Koios now exposes generic `screen.snapshot` and `screen.record` tools on top of the active browser-backed visual surface. `screen.snapshot` wraps the existing browser screenshot path, while `screen.record` captures a short animated GIF by sampling repeated browser screenshots from the active page or targeted element.
 	- Research notes: OpenClaw's browser/media stack is the most natural upstream reference, but the current search surfaced screenshots more clearly than full screen recording. PicoClaw and IronClaw did not show a polished equivalent in the current searches beyond testing/browser capture primitives.
 	- References: OpenClaw `extensions/browser/src/browser/routes/agent.snapshot.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `skills/local-test/SKILL.md`.
-- [ ] Camera snapshot / clip tool
+- [x] Canvas / A2UI tools (push, reset, eval, snapshot)
+	- Notes: Koios now exposes browser-backed `canvas.push`, `canvas.reset`, `canvas.eval`, and `canvas.snapshot` tools. They manage a session-scoped in-page canvas overlay, persist structured canvas state per page, and can return both structured state and an optional screenshot snapshot of the current visual workspace.
+	- Research notes: OpenClaw's browser/snapshot stack is the closest conceptual reference for structured visual state push/snapshot tools, but the current search did not surface a named A2UI/canvas subsystem. PicoClaw and IronClaw likewise did not show a direct equivalent in the searched trees.
+	- References: OpenClaw `docs/tools/browser.md`, `extensions/browser/src/browser/client.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
+- [-] Camera snapshot / clip tool (NOT Implemented)
 	- Research notes: PicoClaw's broader device/channel ecosystem and roadmap touches camera-oriented hardware more directly than the other comparison repos, but the current search did not surface a clean agent-callable camera tool. OpenClaw and IronClaw also did not show an obvious equivalent in the searched trees.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw `ROADMAP.md`, `docs/pt-br/chat-apps.md`; IronClaw no obvious equivalent found in current repo search.
-- [ ] Location tool (`location.get` via node)
+- [-] Location tool (`location.get` via node) (NOT IMPLEMENTED)
 	- Research notes: This appears more Koios-specific than something strongly represented upstream. None of the three repos surfaced a direct first-class location tool in the current searches.
 	- References: OpenClaw no obvious equivalent found in current repo search; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
 - [x] System notifications tool (`system.notify`)
@@ -263,9 +279,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] `session.spawn` tool (spawn + await sub-sessions as tool call)
 - [x] `session.patch` tool (send policy in-session; `reply_back` supported)
 - [x] File read by line ranges (not just whole file)
-- [ ] Canvas / A2UI tools (push, reset, eval, snapshot)
-	- Research notes: OpenClaw's browser/snapshot stack is the closest conceptual reference for structured visual state push/snapshot tools, but the current search did not surface a named A2UI/canvas subsystem. PicoClaw and IronClaw likewise did not show a direct equivalent in the searched trees.
-	- References: OpenClaw `docs/tools/browser.md`, `extensions/browser/src/browser/client.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
+- [x] Filename/path search tool
 - [x] MCP (Model Context Protocol) client - connect to stdio/SSE/HTTP MCP servers
 
 ## Media and Voice
@@ -409,10 +423,10 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Research notes: OpenClaw is the clearest direct reference because many of its channels are already bundled plugins. IronClaw is the strongest secondary reference because its channel runtime is extension/WASM oriented. PicoClaw's channels are less obviously modeled as third-party plugin packages.
 	- Implementation notes: Koios now supports manifest-backed extension channels through the `channels` capability. An extension can register a webhook-style channel route or a polling loop, translate inbound events into normalized channel messages through MCP tools, participate in the shared channel lifecycle with optional start/shutdown hooks, suppress automatic agent replies per envelope when needed, and reuse the existing `outbound_messages` capability for replies on the same channel id.
 	- References: OpenClaw `docs/concepts/features.md`, `docs/plugins/architecture.md`; PicoClaw `docs/chat-apps.md`; IronClaw `src/channels/wasm/setup.rs`, `src/channels/wasm/schema.rs`.
-- [ ] Pluggable context engines
+- [-] Pluggable context engines (DON'T IMPLEMENT)
 	- Research notes: This is most strongly represented by IronClaw's engine-v2 architecture and OpenClaw's provider/runtime layering rather than a single drop-in context-engine API. PicoClaw has multiple context/compaction engines internally, but the current search showed them more as implementation details than as a pluggable public API.
 	- References: OpenClaw `src/plugins/runtime/index.ts`, `docs/plugins/architecture.md`; PicoClaw `pkg/seahorse/short_engine.go`, `pkg/agent/context_manager.go`; IronClaw `docs/internal/engine-v2-architecture.md`, `src/config/mod.rs`.
-- [ ] Pluggable compaction providers
+- [-] Pluggable compaction providers (DON'T IMPLEMENT)
 	- Research notes: OpenClaw is the strongest direct reference because it already documents provider-specific compaction strategies. IronClaw is the best secondary reference for a typed engine architecture where compaction implementations can be swapped. PicoClaw currently owns compaction inside the agent stack rather than as a provider plugin.
 	- References: OpenClaw `docs/concepts/compaction.md`, `src/config/types.agent-defaults.ts`; PicoClaw `pkg/seahorse/short_engine.go`; IronClaw `src/agent/compaction.rs`, `docs/internal/engine-v2-architecture.md`.
 
@@ -430,7 +444,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Agent webhook for isolated runs
 	- Research notes: OpenClaw is again the main parity reference because its hook/webhook runtime already models isolated automation work separate from interactive chat. PicoClaw has hook and gateway infrastructure, but the current search did not surface a comparable isolated-run webhook API. IronClaw's job, routine, and webhook systems are the strongest typed reference for this split.
 	- References: OpenClaw `src/hooks/gmail.ts`, `src/hooks/gmail-ops.ts`; PicoClaw `pkg/agent/hooks.go`, `pkg/channels/webhook.go`; IronClaw `src/webhooks/mod.rs`, `src/tools/builtin/job.rs`, `src/agent/routine_engine.rs`.
-- [ ] Named and mapped hooks with payload transforms
+- [x] Named and mapped hooks with payload transforms
 	- Research notes: OpenClaw is the best direct reference because its automation and plugin systems already imply named hook ownership and transformable runtime payloads. PicoClaw has simpler pre/post hook interfaces that are still useful for shaping Koios hook signatures. IronClaw's structured webhook and extension metadata are the best typed reference if Koios wants explicit transform contracts.
 	- References: OpenClaw `src/hooks/gmail.ts`, `docs/plugins/architecture.md`; PicoClaw `pkg/agent/hooks.go`; IronClaw `src/webhooks/mod.rs`, `src/extensions/mod.rs`.
 - [ ] Dedicated webhook auth token separate from gateway auth
@@ -504,24 +518,24 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Per-session Docker sandbox (non-main sessions run inside Docker)
 	- Research notes: OpenClaw is the clearest direct reference because it already distinguishes sandbox behavior by session/runtime type and validates Docker readiness through doctor flows. PicoClaw documents a security sandbox, but the current tree exposes it more as global config than as per-session policy. IronClaw is the strongest typed runtime reference because sandbox policy, resource limits, and orchestrator behavior are already first-class.
 	- References: OpenClaw `src/commands/doctor-sandbox.ts`, `src/config/zod-schema.agent-runtime.ts`, `docs/gateway/sandboxing.md`; PicoClaw `docs/configuration.md`; IronClaw `src/sandbox/config.rs`, `src/sandbox/manager.rs`, `src/main.rs`.
-- [ ] Sandbox tool allow/deny list per session type
+- [x] Sandbox tool allow/deny list per session type
 	- Research notes: OpenClaw and PicoClaw are both useful here. OpenClaw already has tool-policy surfaces near sandbox runtime config, while PicoClaw exposes practical allow/deny pattern configuration in UI and config. IronClaw's approval and sandbox policy stack is the best reference if Koios wants typed policy enforcement rather than path-pattern heuristics only.
 	- References: OpenClaw `src/config/zod-schema.agent-runtime.ts`; PicoClaw `web/frontend/src/components/config/config-page.tsx`, `docs/configuration.md`; IronClaw `src/gate/approval.rs`, `src/sandbox/config.rs`.
-- [ ] Elevated bash toggle per session (`/elevated on|off`)
+- [x] Elevated bash toggle per session (`/elevated on|off`)
 	- Research notes: This is more Koios-specific than a direct upstream parity item. OpenClaw's sandbox and tool-policy model is still the best reference for how to separate trusted from untrusted execution. PicoClaw is useful for allow/deny UI and exec policy knobs. IronClaw's sandbox policy levels and approval gates are the strongest reference if Koios wants explicit escalation semantics.
 	- References: OpenClaw `docs/gateway/sandboxing.md`, `src/config/zod-schema.agent-runtime.ts`; PicoClaw `docs/configuration.md`, `web/frontend/src/components/config/config-page.tsx`; IronClaw `src/sandbox/config.rs`, `src/gate/approval.rs`.
-- [ ] Gateway lock file (prevent duplicate daemon instances)
+- [x] Sandbox-specific least-privilege tool defaults
+	- Research notes: OpenClaw is the clearest direct reference because it already blocks dangerous network modes and validates sandbox policy at config time. PicoClaw documents the same intent in its security sandbox and exec policy config. IronClaw has the best explicit policy table for readonly, workspace-write, and full-access modes.
+	- References: OpenClaw `src/config/zod-schema.agent-runtime.ts`, `docs/gateway/sandboxing.md`; PicoClaw `docs/configuration.md`; IronClaw `src/sandbox/config.rs`, `src/sandbox/mod.rs`.
+- [x] Gateway lock file (prevent duplicate daemon instances)
 	- Research notes: PicoClaw is the clearest operational reference here because its launcher/gateway packaging already has to deal with single-instance desktop/service behavior. OpenClaw and IronClaw both have daemon-like flows and health checks, but the current searches surfaced fewer direct single-instance lock references.
 	- References: OpenClaw `docs/gateway/security/index.md`, `src/commands/doctor-state-integrity.ts`; PicoClaw `web/README.md`, `web/backend/launcherconfig/config.go`; IronClaw `src/main.rs`, `src/cli/doctor.rs`.
-- [ ] Sensitive data filtering in logs (credential/token scrubbing)
+- [x] Sensitive data filtering in logs (credential/token scrubbing)
 	- Research notes: OpenClaw is the clearest reference because its config schemas already classify sensitive inputs and its security docs are explicit about secret handling. PicoClaw also separates security config and launcher auth concerns. IronClaw is the strongest typed reference because secrets, observability, and logging are first-class subsystems.
 	- References: OpenClaw `src/config/zod-schema.ts`, `docs/gateway/security/index.md`; PicoClaw `docs/security_configuration.md`, `web/backend/api/auth.go`; IronClaw `docs/drafts/ops/logging.mdx`, `src/config/mod.rs`, `src/secrets/*`.
 - [ ] Reject known-weak credentials at startup
 	- Research notes: OpenClaw and PicoClaw are the most practical references because both already run validation during setup/config load. IronClaw's wizard and doctor flows are the strongest typed reference if Koios wants startup validation plus remediation guidance.
 	- References: OpenClaw `src/commands/doctor-sandbox.ts`, `src/config/zod-schema.ts`; PicoClaw `web/backend/api/auth.go`, `web/frontend/src/routes/launcher-setup.tsx`; IronClaw `src/setup/wizard.rs`, `src/cli/doctor.rs`, `src/setup/README.md`.
-- [ ] Sandbox-specific least-privilege tool defaults
-	- Research notes: OpenClaw is the clearest direct reference because it already blocks dangerous network modes and validates sandbox policy at config time. PicoClaw documents the same intent in its security sandbox and exec policy config. IronClaw has the best explicit policy table for readonly, workspace-write, and full-access modes.
-	- References: OpenClaw `src/config/zod-schema.agent-runtime.ts`, `docs/gateway/sandboxing.md`; PicoClaw `docs/configuration.md`; IronClaw `src/sandbox/config.rs`, `src/sandbox/mod.rs`.
 - [ ] More complete gateway auth modes
 	- Research notes: OpenClaw is the strongest reference because its control UI already distinguishes `none`, `token`, `password`, and `trusted-proxy` modes. PicoClaw has launcher password and legacy token flows. IronClaw has bearer-token, OAuth, and web gateway auth surfaces that are the best secondary reference if Koios wants a richer matrix.
 	- References: OpenClaw `src/config/zod-schema.ts`, `src/gateway/server.auth.shared.ts`; PicoClaw `web/backend/api/auth.go`, `docs/configuration.md`; IronClaw `docs/drafts/setup/configuration.mdx`, `src/channels/web/CLAUDE.md`, `src/config/mod.rs`.
@@ -537,7 +551,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Conversation binding approvals
 	- Research notes: OpenClaw's channel and device pairing flows are the clearest direct reference because they already model owner approval before a conversation becomes trusted. PicoClaw did not surface a comparable explicit approval subsystem in the current search. IronClaw has pairing-store and ownership-based approval flows that are the best secondary reference.
 	- References: OpenClaw `docs/channels/pairing.md`, `src/infra/device-pairing.ts`, `src/infra/node-pairing.ts`; PicoClaw no obvious equivalent found in current repo search; IronClaw `src/cli/pairing.rs`, `channels-src/discord/src/lib.rs`, `src/ownership/*`.
-- [ ] Plugin safety gates for path ownership and world-writable checks
+- [x] Plugin safety gates for path ownership and world-writable checks
 	- Research notes: OpenClaw and IronClaw are the strongest security references because both have plugin/extension systems where trust and file ownership matter. PicoClaw's current tree is much stronger on skill install UX than on deep filesystem trust gates. IronClaw is especially relevant if Koios wants install-time and load-time trust enforcement.
 	- References: OpenClaw `docs/plugins/architecture.md`, `docs/tools/skills.md`; PicoClaw `pkg/tools/skills_install.go`; IronClaw `docs/capabilities/skills.mdx`, `src/config/skills.rs`, `crates/ironclaw_skills/src/catalog.rs`.
 - [x] SSRF redirect bypass blocking (browser tool)
@@ -716,7 +730,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 
 - [x] Per-session token (queryable)
 - [x] Usage API / query endpoint (`/v1/usage`)
-- [ ] Structured metrics export (Prometheus / OpenTelemetry)
+- [-] Structured metrics export (Prometheus / OpenTelemetry) (DON'T IMPLEMENT)
 	- Research notes: IronClaw is the strongest visible reference because its observability and ops API layers are more explicit, even though the current search surfaced SSE/logging more clearly than Prometheus exporters. OpenClaw is a useful secondary reference for rich status/run metrics. PicoClaw provides practical dashboard/log surfaces, but not an obvious dedicated metrics exporter in the current search.
 	- References: OpenClaw `src/commands/status.types.ts`, `src/agents/pi-embedded-runner/runs.ts`; PicoClaw `web/README.md`; IronClaw `src/config/mod.rs`, `docs/drafts/ops/api.mdx`, `docs/drafts/ops/logging.mdx`.
 - [ ] Per-run timing breakdown in run records

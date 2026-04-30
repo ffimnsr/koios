@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/sandbox"
 )
 
@@ -40,6 +41,12 @@ type execParams struct {
 	Command string `json:"command"`
 	Workdir string `json:"workdir,omitempty"`
 	Timeout int    `json:"timeout_seconds,omitempty"`
+}
+
+type execApprovalDecision struct {
+	reason         string
+	policy         string
+	matchedPattern string
 }
 
 var dangerousExecPatterns = []struct {
@@ -113,20 +120,45 @@ func (h *Handler) runExecTool(ctx context.Context, peerID string, p execParams) 
 	if err != nil {
 		return nil, err
 	}
-	if reason, ok := h.execNeedsApproval(command); ok {
-		return h.requestApproval(peerID, pendingApproval{
-			Kind:    "shell_execution",
-			Action:  "exec",
-			Summary: command,
-			Reason:  reason,
-			Command: command,
-			Workdir: absWorkdir,
-			Timeout: int(timeout / time.Second),
-		}, func(runCtx context.Context, approvedPeerID string, approval pendingApproval) (map[string]any, error) {
-			return h.executeCommand(runCtx, approvedPeerID, approval.Command, approval.Workdir, time.Duration(approval.Timeout)*time.Second)
-		}), nil
+
+	// When the session has elevated bash enabled, dangerous-pattern checks are
+	// skipped for this session (the operator has explicitly opted in).
+	elevated := h.sessionElevatedBash(ctx, peerID)
+	if !elevated {
+		if decision, ok := h.execNeedsApproval(command); ok {
+			return h.requestApproval(peerID, pendingApproval{
+				Kind:    "shell_execution",
+				Action:  "exec",
+				Summary: command,
+				Reason:  decision.reason,
+				Command: command,
+				Workdir: absWorkdir,
+				Timeout: int(timeout / time.Second),
+				Metadata: map[string]any{
+					"approval_mode":   h.execConfig.ApprovalMode,
+					"policy":          decision.policy,
+					"matched_pattern": decision.matchedPattern,
+				},
+			}, func(runCtx context.Context, approvedPeerID string, approval pendingApproval) (map[string]any, error) {
+				return h.executeCommand(runCtx, approvedPeerID, approval.Command, approval.Workdir, time.Duration(approval.Timeout)*time.Second)
+			}), nil
+		}
 	}
 	return h.executeCommand(ctx, peerID, command, absWorkdir, timeout)
+}
+
+// sessionElevatedBash returns true when the session associated with ctx (or
+// peerID as fallback) has ElevatedBash enabled.
+func (h *Handler) sessionElevatedBash(ctx context.Context, peerID string) bool {
+	toolCtx, _ := agent.ToolRunContextFromContext(ctx)
+	key := toolCtx.SessionKey
+	if key == "" {
+		key = peerID
+	}
+	if key == "" {
+		return false
+	}
+	return h.store.Policy(key).ElevatedBash
 }
 
 func (h *Handler) runSystemNotifyTool(ctx context.Context, title, message string) (map[string]any, error) {
@@ -290,39 +322,39 @@ func notificationSendCommand(title, message, urgency string) (string, []string, 
 	}
 }
 
-func (h *Handler) execNeedsApproval(command string) (string, bool) {
+func (h *Handler) execNeedsApproval(command string) (execApprovalDecision, bool) {
 	switch h.execConfig.ApprovalMode {
 	case "never", "off":
-		return "", false
+		return execApprovalDecision{}, false
 	case "always":
-		return "command requires approval by policy", true
+		return execApprovalDecision{reason: "command requires approval by policy", policy: "approval_mode_always"}, true
 	default:
 		return detectDangerousCommand(command, h.execConfig)
 	}
 }
 
-func detectDangerousCommand(command string, cfg ExecConfig) (string, bool) {
+func detectDangerousCommand(command string, cfg ExecConfig) (execApprovalDecision, bool) {
 	// Custom allow patterns take priority — matching commands bypass all deny checks.
 	for _, re := range cfg.CustomAllowPatterns {
 		if re.MatchString(command) {
-			return "", false
+			return execApprovalDecision{}, false
 		}
 	}
 	// Built-in dangerous command patterns (enabled by default).
 	if cfg.EnableDenyPatterns {
 		for _, pattern := range dangerousExecPatterns {
 			if pattern.re.MatchString(command) {
-				return pattern.reason, true
+				return execApprovalDecision{reason: pattern.reason, policy: "builtin_deny_pattern", matchedPattern: pattern.re.String()}, true
 			}
 		}
 	}
 	// User-supplied custom deny patterns.
 	for _, re := range cfg.CustomDenyPatterns {
 		if re.MatchString(command) {
-			return "blocked by custom deny pattern", true
+			return execApprovalDecision{reason: "blocked by custom deny pattern", policy: "custom_deny_pattern", matchedPattern: re.String()}, true
 		}
 	}
-	return "", false
+	return execApprovalDecision{}, false
 }
 func (h *Handler) executeApprovedExec(ctx context.Context, peerID, approvalID string) (map[string]any, error) {
 	return h.approvePendingAction(ctx, peerID, approvalID, shellApprovalFilter)

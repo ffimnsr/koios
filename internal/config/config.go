@@ -3,8 +3,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +26,9 @@ func (c *Config) AgentDir() string { return filepath.Join(c.WorkspaceRoot, "agen
 
 // ExtensionsDir returns the path where user-installed extension manifests are stored.
 func (c *Config) ExtensionsDir() string { return filepath.Join(c.WorkspaceRoot, "extensions") }
+
+// BrowserDir returns the path where managed browser profile data is stored.
+func (c *Config) BrowserDir() string { return filepath.Join(c.WorkspaceRoot, "browser") }
 
 // WorkflowDir returns the path where workflow definitions and run records are
 // stored, derived from WorkspaceRoot.
@@ -67,6 +73,9 @@ func (c *Config) DecisionsDBPath() string   { return filepath.Join(c.DBDir(), "d
 func (c *Config) PreferencesDBPath() string { return filepath.Join(c.DBDir(), "preferences.db") }
 func (c *Config) RemindersDBPath() string   { return filepath.Join(c.DBDir(), "reminders.db") }
 func (c *Config) ToolResultsDBPath() string { return filepath.Join(c.DBDir(), "tool_results.db") }
+
+// LockFilePath returns the path of the single-instance gateway lock file.
+func (c *Config) LockFilePath() string { return filepath.Join(c.WorkspaceRoot, "koios.lock") }
 
 const (
 	// DefaultConfigFile is the default runtime config path in the repo root.
@@ -114,6 +123,44 @@ type MCPServerConfig struct {
 	// still allowing internal runtime callers such as manifest hook bindings to
 	// invoke its tools by full runtime name.
 	HideTools bool `toml:"-"`
+	// Kind carries internal server classification such as "browser".
+	Kind string `toml:"-"`
+	// ProfileName carries an internal profile selector for kind-specific routing.
+	ProfileName string `toml:"-"`
+}
+
+// BrowserProfileConfig describes one named Chrome DevTools MCP-backed browser profile.
+type BrowserProfileConfig struct {
+	Name                   string            `toml:"name"`
+	Mode                   string            `toml:"mode"`
+	Enabled                bool              `toml:"enabled"`
+	HostAllowlist          []string          `toml:"host_allowlist"`
+	HostDenylist           []string          `toml:"host_denylist"`
+	Headless               bool              `toml:"headless"`
+	Isolated               bool              `toml:"isolated"`
+	Slim                   bool              `toml:"slim"`
+	Channel                string            `toml:"channel"`
+	ExecutablePath         string            `toml:"executable_path"`
+	UserDataDir            string            `toml:"user_data_dir"`
+	Viewport               string            `toml:"viewport"`
+	BrowserURL             string            `toml:"browser_url"`
+	WSEndpoint             string            `toml:"ws_endpoint"`
+	WSHeaders              map[string]string `toml:"ws_headers"`
+	ChromeArgs             []string          `toml:"chrome_args"`
+	AcceptInsecureCerts    bool              `toml:"accept_insecure_certs"`
+	ExperimentalVision     bool              `toml:"experimental_vision"`
+	ExperimentalScreencast bool              `toml:"experimental_screencast"`
+	ExperimentalFfmpegPath string            `toml:"experimental_ffmpeg_path"`
+	PerformanceCrux        *bool             `toml:"performance_crux"`
+	UsageStatistics        *bool             `toml:"usage_statistics"`
+	RedactNetworkHeaders   *bool             `toml:"redact_network_headers"`
+	MCPCommand             string            `toml:"mcp_command"`
+	MCPPackage             string            `toml:"mcp_package"`
+}
+
+type BrowserConfig struct {
+	DefaultProfile string                 `toml:"default_profile"`
+	Profiles       []BrowserProfileConfig `toml:"profiles"`
 }
 
 type TelegramChannelConfig struct {
@@ -149,6 +196,22 @@ type TelegramGroupPolicy struct {
 	ThreadMode       string
 }
 
+type HookFieldTransform struct {
+	To       string `toml:"to"`
+	From     string `toml:"from"`
+	Value    string `toml:"value"`
+	Template string `toml:"template"`
+	Required *bool  `toml:"required"`
+}
+
+type HookMapping struct {
+	Name    string               `toml:"name"`
+	Path    string               `toml:"path"`
+	Type    string               `toml:"type"`
+	Enabled *bool                `toml:"enabled"`
+	Fields  []HookFieldTransform `toml:"fields"`
+}
+
 // Config holds all runtime configuration loaded from koios.config.toml.
 type Config struct {
 	ListenAddr     string
@@ -172,6 +235,8 @@ type Config struct {
 	ModelProfiles []ModelProfile
 	// MCPServers holds the list of MCP servers to connect to at startup.
 	MCPServers []MCPServerConfig
+	// Browser holds Chrome DevTools MCP-backed browser profiles.
+	Browser BrowserConfig
 
 	MaxSessionMessages           int
 	RequestTimeout               time.Duration
@@ -209,9 +274,16 @@ type Config struct {
 	// the listed peer IDs. An empty list grants the commands to all peers.
 	OwnerPeerIDs []string
 
-	ToolProfile                   string
-	ToolsAllow                    []string
-	ToolsDeny                     []string
+	ToolProfile string
+	ToolsAllow  []string
+	ToolsDeny   []string
+	// SandboxToolProfile is the base tool profile applied to sessions whose
+	// SessionKind is "sandbox". Defaults to "sandbox" when empty.
+	SandboxToolProfile string
+	// SandboxToolsAllow are additional tools allowed on top of the sandbox profile.
+	SandboxToolsAllow []string
+	// SandboxToolsDeny are tools denied for sandbox sessions (merged last, wins over allow).
+	SandboxToolsDeny              []string
 	ExecEnabled                   bool
 	ExecEnableDenyPatterns        bool
 	ExecCustomDenyPatterns        []string
@@ -266,8 +338,13 @@ type Config struct {
 	HookWebhookSecret string
 	// HookInterceptorURL, when set, registers an HTTP interceptor on before-hooks.
 	HookInterceptorURL string
-	// WebhookToken is the bearer token required on POST /v1/webhooks/events.
+	// WebhookToken is the bearer token required on POST /v1/webhooks/events and
+	// POST /v1/hooks/{name}.
 	WebhookToken string
+	// HookMappings declares named inbound webhook routes under /v1/hooks/{name}
+	// that transform arbitrary request payloads into existing webhook event
+	// requests such as session.wake or cron.schedule.
+	HookMappings []HookMapping
 
 	// PresenceTypingTTL controls how long a "typing" indicator is held (default 8s).
 	PresenceTypingTTL time.Duration
@@ -277,6 +354,10 @@ type Config struct {
 	MonitorStaleThreshold time.Duration
 	// MonitorMaxRestarts caps automatic subsystem restarts; 0 = unlimited.
 	MonitorMaxRestarts int
+
+	// hiddenSecrets preserves encoded secret literals so config rewrites do not
+	// leak decrypted values back into koios.config.toml.
+	hiddenSecrets map[string]string
 }
 
 // ExecIsolationPath is a host→sandbox bind-mount entry for bubblewrap isolation.
@@ -309,6 +390,7 @@ type fileConfig struct {
 		Allow []string `toml:"allow"`
 		Deny  []string `toml:"deny"`
 	} `toml:"extensions"`
+	Browser  BrowserConfig `toml:"browser"`
 	Channels struct {
 		Telegram struct {
 			Enabled          *bool   `toml:"enabled"`
@@ -388,7 +470,12 @@ type fileConfig struct {
 		Profile string   `toml:"profile"`
 		Allow   []string `toml:"allow"`
 		Deny    []string `toml:"deny"`
-		Exec    struct {
+		Sandbox struct {
+			Profile string   `toml:"profile"`
+			Allow   []string `toml:"allow"`
+			Deny    []string `toml:"deny"`
+		} `toml:"sandbox"`
+		Exec struct {
 			Enabled             *bool    `toml:"enabled"`
 			EnableDenyPatterns  *bool    `toml:"enable_deny_patterns"`
 			CustomDenyPatterns  []string `toml:"custom_deny_patterns"`
@@ -440,12 +527,13 @@ type fileConfig struct {
 		MaxRestarts    *int   `toml:"max_restarts"`
 	} `toml:"monitor"`
 	Hooks struct {
-		WebhookURL     string `toml:"webhook_url"`
-		WebhookSecret  string `toml:"webhook_secret"`
-		InterceptorURL string `toml:"interceptor_url"`
-		WebhookToken   string `toml:"webhook_token"`
-		Timeout        string `toml:"timeout"`
-		FailClosed     *bool  `toml:"fail_closed"`
+		WebhookURL     string        `toml:"webhook_url"`
+		WebhookSecret  string        `toml:"webhook_secret"`
+		InterceptorURL string        `toml:"interceptor_url"`
+		WebhookToken   string        `toml:"webhook_token"`
+		Timeout        string        `toml:"timeout"`
+		FailClosed     *bool         `toml:"fail_closed"`
+		Mappings       []HookMapping `toml:"mappings"`
 	} `toml:"hooks"`
 	Presence struct {
 		TypingTTL string `toml:"typing_ttl"`
@@ -465,6 +553,9 @@ func Default() *Config {
 			Provider: "openai",
 			Model:    "gpt-4o",
 		}},
+		Browser: BrowserConfig{
+			Profiles: nil,
+		},
 		MaxSessionMessages:            100,
 		RequestTimeout:                2 * time.Minute,
 		SessionRetention:              0,
@@ -541,6 +632,7 @@ func Default() *Config {
 		LogCompress:           true,
 		HookTimeout:           2 * time.Second,
 		HookFailClosed:        false,
+		HookMappings:          nil,
 		PresenceTypingTTL:     8 * time.Second,
 		MonitorStaleThreshold: 0,
 		MonitorMaxRestarts:    5,
@@ -565,6 +657,9 @@ func LoadOptionalFromPath(path string) (*Config, bool, error) {
 	fileCfg := fileConfig{}
 	if err := toml.Unmarshal(data, &fileCfg); err != nil {
 		return nil, true, fmt.Errorf("parse config file %s: %w", path, err)
+	}
+	if err := decodeHiddenSecrets(cfg, &fileCfg); err != nil {
+		return nil, true, fmt.Errorf("decode hidden secrets in config file %s: %w", path, err)
 	}
 	applyFileConfig(cfg, &fileCfg)
 	resolveRelativePaths(cfg, filepath.Dir(path))
@@ -609,6 +704,8 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 
 	// Build [[mcp.servers]] sections if any are configured.
 	mcpSection := encodeMCPSection(cfg)
+	browserSection := encodeBrowserSection(cfg)
+	hooksSection := encodeHooksSection(cfg)
 	channelsSection := encodeChannelsSection(cfg)
 
 	return fmt.Sprintf(encodedTOMLTemplate,
@@ -617,6 +714,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		allowedOrigins,
 		llmSection,
 		mcpSection,
+		browserSection,
 		cfg.MaxSessionMessages,
 		strconv.Quote(cfg.SessionRetention.String()),
 		cfg.SessionMaxEntries,
@@ -663,6 +761,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		inlineQuotedStringSlice(cfg.ExtensionDirs),
 		inlineQuotedStringSlice(cfg.ExtensionAllow),
 		inlineQuotedStringSlice(cfg.ExtensionDeny),
+		hooksSection,
 		channelsSection,
 		cfg.ExecEnabled,
 		cfg.ExecEnableDenyPatterns,
@@ -686,6 +785,78 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		}(),
 		cfg.MonitorMaxRestarts,
 	)
+}
+
+func (c *Config) hiddenSecret(path string) string {
+	if c == nil || c.hiddenSecrets == nil {
+		return ""
+	}
+	return c.hiddenSecrets[path]
+}
+
+func (c *Config) setHiddenSecret(path, raw string) {
+	if c == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		if c.hiddenSecrets != nil {
+			delete(c.hiddenSecrets, path)
+		}
+		return
+	}
+	if c.hiddenSecrets == nil {
+		c.hiddenSecrets = make(map[string]string)
+	}
+	c.hiddenSecrets[path] = trimmed
+}
+
+func encodeHooksSection(cfg *Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if strings.TrimSpace(cfg.HookWebhookURL) == "" && strings.TrimSpace(cfg.HookWebhookSecret) == "" && strings.TrimSpace(cfg.HookInterceptorURL) == "" && strings.TrimSpace(cfg.WebhookToken) == "" && cfg.HookTimeout <= 0 && !cfg.HookFailClosed && len(cfg.HookMappings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[hooks]\n")
+	b.WriteString("webhook_url = " + strconv.Quote(strings.TrimSpace(cfg.HookWebhookURL)) + "\n")
+	b.WriteString("webhook_secret = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathHooksWebhookSecret, cfg.HookWebhookSecret) + "\n")
+	b.WriteString("interceptor_url = " + strconv.Quote(strings.TrimSpace(cfg.HookInterceptorURL)) + "\n")
+	b.WriteString("webhook_token = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathHooksWebhookToken, strings.TrimSpace(cfg.WebhookToken)) + "\n")
+	b.WriteString("timeout = " + strconv.Quote(cfg.HookTimeout.String()) + "\n")
+	b.WriteString(fmt.Sprintf("fail_closed = %t\n", cfg.HookFailClosed))
+	b.WriteString("\n")
+	for _, mapping := range cfg.HookMappings {
+		b.WriteString("[[hooks.mappings]]\n")
+		b.WriteString("name = " + strconv.Quote(strings.TrimSpace(mapping.Name)) + "\n")
+		if strings.TrimSpace(mapping.Path) != "" {
+			b.WriteString("path = " + strconv.Quote(strings.TrimSpace(mapping.Path)) + "\n")
+		}
+		b.WriteString("type = " + strconv.Quote(strings.TrimSpace(mapping.Type)) + "\n")
+		if mapping.Enabled != nil {
+			b.WriteString(fmt.Sprintf("enabled = %t\n", *mapping.Enabled))
+		}
+		b.WriteString("\n")
+		for _, field := range mapping.Fields {
+			b.WriteString("[[hooks.mappings.fields]]\n")
+			b.WriteString("to = " + strconv.Quote(strings.TrimSpace(field.To)) + "\n")
+			if strings.TrimSpace(field.From) != "" {
+				b.WriteString("from = " + strconv.Quote(strings.TrimSpace(field.From)) + "\n")
+			}
+			if field.Value != "" {
+				b.WriteString("value = " + strconv.Quote(field.Value) + "\n")
+			}
+			if field.Template != "" {
+				b.WriteString("template = " + strconv.Quote(field.Template) + "\n")
+			}
+			if field.Required != nil {
+				b.WriteString(fmt.Sprintf("required = %t\n", *field.Required))
+			}
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
 }
 
 // encodeLLMSection builds the canonical [llm] and [[llm.profiles]] config.
@@ -744,7 +915,7 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 		b.WriteString("provider = " + strconv.Quote(p.Provider) + "\n")
 		b.WriteString("model = " + strconv.Quote(p.Model) + "\n")
 		if p.APIKey != "" || includeAPIKey {
-			b.WriteString("api_key = " + strconv.Quote(p.APIKey) + "\n")
+			b.WriteString("api_key = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathModelProfileAPIKey(p.Name), p.APIKey) + "\n")
 		}
 		if p.BaseURL != "" {
 			b.WriteString("base_url = " + strconv.Quote(p.BaseURL) + "\n")
@@ -801,11 +972,11 @@ func encodeChannelsSection(cfg *Config) string {
 	var b strings.Builder
 	b.WriteString("[channels.telegram]\n")
 	b.WriteString(fmt.Sprintf("enabled = %t\n", tg.Enabled))
-	b.WriteString("bot_token = " + strconv.Quote(tg.BotToken) + "\n")
+	b.WriteString("bot_token = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathTelegramBotToken, tg.BotToken) + "\n")
 	b.WriteString("mode = " + strconv.Quote(mode) + "\n")
 	b.WriteString("poll_timeout = " + strconv.Quote(tg.PollTimeout.String()) + "\n")
 	b.WriteString("webhook_url = " + strconv.Quote(tg.WebhookURL) + "\n")
-	b.WriteString("webhook_secret = " + strconv.Quote(tg.WebhookSecret) + "\n")
+	b.WriteString("webhook_secret = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathTelegramWebhookSecret, tg.WebhookSecret) + "\n")
 	b.WriteString("inbox_peer_id = " + strconv.Quote(strings.TrimSpace(tg.InboxPeerID)) + "\n")
 	b.WriteString("text_chunk_limit = " + strconv.Itoa(tg.TextChunkLimit) + "\n")
 	b.WriteString("text_chunk_mode = " + strconv.Quote(normalizeTelegramTextChunkMode(tg.TextChunkMode)) + "\n")
@@ -900,6 +1071,12 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.MCP.Servers != nil {
 		dst.MCPServers = append([]MCPServerConfig(nil), src.MCP.Servers...)
+	}
+	if src.Browser.DefaultProfile != "" {
+		dst.Browser.DefaultProfile = strings.TrimSpace(src.Browser.DefaultProfile)
+	}
+	if src.Browser.Profiles != nil {
+		dst.Browser.Profiles = append([]BrowserProfileConfig(nil), src.Browser.Profiles...)
 	}
 	if src.Extensions.Dirs != nil {
 		dst.ExtensionDirs = append([]string(nil), src.Extensions.Dirs...)
@@ -1093,6 +1270,15 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	if src.Tools.Deny != nil {
 		dst.ToolsDeny = src.Tools.Deny
 	}
+	if src.Tools.Sandbox.Profile != "" {
+		dst.SandboxToolProfile = src.Tools.Sandbox.Profile
+	}
+	if src.Tools.Sandbox.Allow != nil {
+		dst.SandboxToolsAllow = src.Tools.Sandbox.Allow
+	}
+	if src.Tools.Sandbox.Deny != nil {
+		dst.SandboxToolsDeny = src.Tools.Sandbox.Deny
+	}
 	if src.Tools.Exec.Enabled != nil {
 		dst.ExecEnabled = *src.Tools.Exec.Enabled
 	}
@@ -1227,6 +1413,9 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	if src.Hooks.WebhookToken != "" {
 		dst.WebhookToken = src.Hooks.WebhookToken
 	}
+	if src.Hooks.Mappings != nil {
+		dst.HookMappings = normalizeHookMappings(src.Hooks.Mappings)
+	}
 	if src.Hooks.Timeout != "" {
 		if d, err := time.ParseDuration(src.Hooks.Timeout); err == nil && d > 0 {
 			dst.HookTimeout = d
@@ -1242,10 +1431,147 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 }
 
+func normalizeHookMappings(mappings []HookMapping) []HookMapping {
+	if len(mappings) == 0 {
+		return nil
+	}
+	normalized := make([]HookMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		mapping.Name = strings.TrimSpace(mapping.Name)
+		mapping.Path = normalizeHookMappingPath(mapping.Path)
+		mapping.Type = strings.ToLower(strings.TrimSpace(mapping.Type))
+		if mapping.Path == "" {
+			mapping.Path = normalizeHookMappingPath(mapping.Name)
+		}
+		if len(mapping.Fields) > 0 {
+			fields := make([]HookFieldTransform, 0, len(mapping.Fields))
+			for _, field := range mapping.Fields {
+				field.To = strings.ToLower(strings.TrimSpace(field.To))
+				field.From = strings.TrimSpace(field.From)
+				field.Template = strings.TrimSpace(field.Template)
+				fields = append(fields, field)
+			}
+			mapping.Fields = fields
+		}
+		normalized = append(normalized, mapping)
+	}
+	return normalized
+}
+
+func normalizeHookMappingPath(raw string) string {
+	path := strings.Trim(strings.TrimSpace(raw), "/")
+	return strings.ToLower(path)
+}
+
+func validHookMappingType(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "message.append", "presence.set", "cron.trigger", "cron.schedule", "agent.run", "session.wake":
+		return true
+	default:
+		return false
+	}
+}
+
+func validHookMappingFieldTarget(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "peer_id", "source", "prompt", "model", "profile", "timeout_seconds", "status", "typing", "job_id", "name", "description", "enabled", "delete_after_run", "message.role", "message.content", "schedule.kind", "schedule.at", "schedule.every_ms", "schedule.expr", "schedule.tz", "schedule.stagger_ms", "payload.kind", "payload.text", "payload.message", "payload.include_history", "payload.profile", "payload.preload_urls":
+		return true
+	default:
+		return false
+	}
+}
+
+func encodeBrowserSection(cfg *Config) string {
+	if cfg == nil {
+		return ""
+	}
+	profiles := cfg.Browser.Profiles
+	defaultProfile := strings.TrimSpace(cfg.Browser.DefaultProfile)
+	if defaultProfile == "" && len(profiles) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[browser]\n")
+	b.WriteString("default_profile = " + strconv.Quote(defaultProfile) + "\n\n")
+	for _, profile := range profiles {
+		b.WriteString("[[browser.profiles]]\n")
+		b.WriteString("name = " + strconv.Quote(profile.Name) + "\n")
+		b.WriteString("mode = " + strconv.Quote(normalizeBrowserProfileMode(profile.Mode)) + "\n")
+		b.WriteString(fmt.Sprintf("enabled = %t\n", profile.Enabled))
+		if len(profile.HostAllowlist) > 0 {
+			b.WriteString("host_allowlist = " + quoteStringSlice(profile.HostAllowlist) + "\n")
+		}
+		if len(profile.HostDenylist) > 0 {
+			b.WriteString("host_denylist = " + quoteStringSlice(profile.HostDenylist) + "\n")
+		}
+		b.WriteString(fmt.Sprintf("headless = %t\n", profile.Headless))
+		b.WriteString(fmt.Sprintf("isolated = %t\n", profile.Isolated))
+		b.WriteString(fmt.Sprintf("slim = %t\n", profile.Slim))
+		if profile.Channel != "" {
+			b.WriteString("channel = " + strconv.Quote(strings.TrimSpace(profile.Channel)) + "\n")
+		}
+		if profile.ExecutablePath != "" {
+			b.WriteString("executable_path = " + strconv.Quote(profile.ExecutablePath) + "\n")
+		}
+		if profile.UserDataDir != "" {
+			b.WriteString("user_data_dir = " + strconv.Quote(profile.UserDataDir) + "\n")
+		}
+		if profile.Viewport != "" {
+			b.WriteString("viewport = " + strconv.Quote(profile.Viewport) + "\n")
+		}
+		if profile.BrowserURL != "" {
+			b.WriteString("browser_url = " + strconv.Quote(profile.BrowserURL) + "\n")
+		}
+		if profile.WSEndpoint != "" {
+			b.WriteString("ws_endpoint = " + strconv.Quote(profile.WSEndpoint) + "\n")
+		}
+		if len(profile.WSHeaders) > 0 {
+			b.WriteString("ws_headers = " + quoteStringMap(profile.WSHeaders) + "\n")
+		}
+		if len(profile.ChromeArgs) > 0 {
+			b.WriteString("chrome_args = " + quoteStringSlice(profile.ChromeArgs) + "\n")
+		}
+		if profile.AcceptInsecureCerts {
+			b.WriteString("accept_insecure_certs = true\n")
+		}
+		if profile.ExperimentalVision {
+			b.WriteString("experimental_vision = true\n")
+		}
+		if profile.ExperimentalScreencast {
+			b.WriteString("experimental_screencast = true\n")
+		}
+		if profile.ExperimentalFfmpegPath != "" {
+			b.WriteString("experimental_ffmpeg_path = " + strconv.Quote(profile.ExperimentalFfmpegPath) + "\n")
+		}
+		if profile.PerformanceCrux != nil {
+			b.WriteString(fmt.Sprintf("performance_crux = %t\n", *profile.PerformanceCrux))
+		}
+		if profile.UsageStatistics != nil {
+			b.WriteString(fmt.Sprintf("usage_statistics = %t\n", *profile.UsageStatistics))
+		}
+		if profile.RedactNetworkHeaders != nil {
+			b.WriteString(fmt.Sprintf("redact_network_headers = %t\n", *profile.RedactNetworkHeaders))
+		}
+		if profile.MCPCommand != "" {
+			b.WriteString("mcp_command = " + strconv.Quote(profile.MCPCommand) + "\n")
+		}
+		if profile.MCPPackage != "" {
+			b.WriteString("mcp_package = " + strconv.Quote(profile.MCPPackage) + "\n")
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func resolveRelativePaths(cfg *Config, root string) {
 	cfg.WorkspaceRoot = makeAbs(root, cfg.WorkspaceRoot)
 	for i, dir := range cfg.ExtensionDirs {
 		cfg.ExtensionDirs[i] = makeAbs(root, dir)
+	}
+	for i := range cfg.Browser.Profiles {
+		cfg.Browser.Profiles[i].UserDataDir = makeAbs(root, cfg.Browser.Profiles[i].UserDataDir)
+		cfg.Browser.Profiles[i].ExecutablePath = makeAbs(root, cfg.Browser.Profiles[i].ExecutablePath)
+		cfg.Browser.Profiles[i].ExperimentalFfmpegPath = makeAbs(root, cfg.Browser.Profiles[i].ExperimentalFfmpegPath)
 	}
 }
 
@@ -1281,6 +1607,37 @@ func quoteStringSlice(values []string) string {
 		return "[]"
 	}
 	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
+func quoteStringMap(values map[string]string) string {
+	if len(values) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, strconv.Quote(strings.TrimSpace(key))+" = "+strconv.Quote(values[key]))
+	}
+	return "{ " + strings.Join(parts, ", ") + " }"
+}
+
+func normalizeBrowserProfileMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "managed":
+		return "managed"
+	case "auto_connect", "existing_session":
+		return "existing_session"
+	case "browser_url":
+		return "browser_url"
+	case "ws_endpoint":
+		return "ws_endpoint"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
 }
 
 func inlineQuotedStringSlice(values []string) string {
@@ -1476,9 +1833,14 @@ func validate(cfg *Config) error {
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.ToolProfile)) {
-	case "", "full", "coding", "messaging", "minimal":
+	case "", "full", "coding", "messaging", "minimal", "sandbox":
 	default:
-		return fmt.Errorf("tools.profile must be one of full, coding, messaging, or minimal")
+		return fmt.Errorf("tools.profile must be one of full, coding, messaging, minimal, or sandbox")
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.SandboxToolProfile)) {
+	case "", "full", "coding", "messaging", "minimal", "sandbox":
+	default:
+		return fmt.Errorf("tools.sandbox.profile must be one of full, coding, messaging, minimal, or sandbox")
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.ExecApprovalMode)) {
 	case "", "off", "never", "dangerous", "always":
@@ -1493,6 +1855,16 @@ func validate(cfg *Config) error {
 	}
 	if cfg.ExecApprovalTTL <= 0 {
 		return fmt.Errorf("tools.exec.approval_ttl must be > 0")
+	}
+	for i, pattern := range cfg.ExecCustomAllowPatterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("tools.exec.custom_allow_patterns[%d] is not a valid regex: %w", i, err)
+		}
+	}
+	for i, pattern := range cfg.ExecCustomDenyPatterns {
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("tools.exec.custom_deny_patterns[%d] is not a valid regex: %w", i, err)
+		}
 	}
 	if cfg.CodeExecutionDefaultTimeout <= 0 {
 		return fmt.Errorf("tools.code_execution.default_timeout must be > 0")
@@ -1543,6 +1915,128 @@ func validate(cfg *Config) error {
 	for i, value := range cfg.ExtensionDeny {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("extensions.deny[%d] must not be empty", i)
+		}
+	}
+	if len(cfg.HookMappings) > 0 && strings.TrimSpace(cfg.WebhookToken) == "" {
+		return fmt.Errorf("hooks.webhook_token is required when hooks.mappings are configured")
+	}
+	hookMappingNames := make(map[string]struct{}, len(cfg.HookMappings))
+	hookMappingPaths := make(map[string]struct{}, len(cfg.HookMappings))
+	for i, mapping := range cfg.HookMappings {
+		if strings.TrimSpace(mapping.Name) == "" {
+			return fmt.Errorf("hooks.mappings[%d].name is required", i)
+		}
+		if _, exists := hookMappingNames[strings.ToLower(mapping.Name)]; exists {
+			return fmt.Errorf("hooks.mappings[%d].name %q is duplicated", i, mapping.Name)
+		}
+		hookMappingNames[strings.ToLower(mapping.Name)] = struct{}{}
+		if !validHookMappingType(mapping.Type) {
+			return fmt.Errorf("hooks.mappings[%d].type %q is unsupported", i, mapping.Type)
+		}
+		path := normalizeHookMappingPath(mapping.Path)
+		if path == "" {
+			path = normalizeHookMappingPath(mapping.Name)
+		}
+		if path == "" {
+			return fmt.Errorf("hooks.mappings[%d].path resolved empty", i)
+		}
+		if strings.Contains(path, "/") {
+			return fmt.Errorf("hooks.mappings[%d].path must be a single path segment", i)
+		}
+		if _, exists := hookMappingPaths[path]; exists {
+			return fmt.Errorf("hooks.mappings[%d].path %q is duplicated", i, path)
+		}
+		hookMappingPaths[path] = struct{}{}
+		for j, field := range mapping.Fields {
+			if !validHookMappingFieldTarget(field.To) {
+				return fmt.Errorf("hooks.mappings[%d].fields[%d].to %q is unsupported", i, j, field.To)
+			}
+			sourceCount := 0
+			if strings.TrimSpace(field.From) != "" {
+				sourceCount++
+			}
+			if field.Value != "" {
+				sourceCount++
+			}
+			if strings.TrimSpace(field.Template) != "" {
+				sourceCount++
+			}
+			if sourceCount != 1 {
+				return fmt.Errorf("hooks.mappings[%d].fields[%d] must set exactly one of from, value, or template", i, j)
+			}
+		}
+	}
+	if strings.TrimSpace(cfg.Browser.DefaultProfile) != "" {
+		selected := false
+		for i, profile := range cfg.Browser.Profiles {
+			if strings.TrimSpace(profile.Name) == "" {
+				return fmt.Errorf("browser.profiles[%d].name must not be empty", i)
+			}
+			if strings.EqualFold(profile.Name, cfg.Browser.DefaultProfile) {
+				selected = true
+			}
+		}
+		if !selected {
+			return fmt.Errorf("browser.default_profile %q must match one of browser.profiles.name", cfg.Browser.DefaultProfile)
+		}
+	}
+	browserNames := make(map[string]struct{}, len(cfg.Browser.Profiles))
+	for i, profile := range cfg.Browser.Profiles {
+		name := strings.TrimSpace(profile.Name)
+		if name == "" {
+			return fmt.Errorf("browser.profiles[%d].name must not be empty", i)
+		}
+		if _, exists := browserNames[strings.ToLower(name)]; exists {
+			return fmt.Errorf("browser.profiles[%d].name %q is duplicated", i, name)
+		}
+		browserNames[strings.ToLower(name)] = struct{}{}
+		switch normalizeBrowserProfileMode(profile.Mode) {
+		case "managed", "existing_session", "browser_url", "ws_endpoint":
+		default:
+			return fmt.Errorf("browser.profiles[%d].mode must be one of managed, existing_session, browser_url, or ws_endpoint", i)
+		}
+		if strings.TrimSpace(profile.Channel) != "" {
+			switch strings.ToLower(strings.TrimSpace(profile.Channel)) {
+			case "stable", "beta", "dev", "canary":
+			default:
+				return fmt.Errorf("browser.profiles[%d].channel must be one of stable, beta, dev, or canary", i)
+			}
+		}
+		for hostIndex, host := range profile.HostAllowlist {
+			if strings.TrimSpace(host) == "" {
+				return fmt.Errorf("browser.profiles[%d].host_allowlist[%d] must not be empty", i, hostIndex)
+			}
+		}
+		for hostIndex, host := range profile.HostDenylist {
+			if strings.TrimSpace(host) == "" {
+				return fmt.Errorf("browser.profiles[%d].host_denylist[%d] must not be empty", i, hostIndex)
+			}
+		}
+		switch normalizeBrowserProfileMode(profile.Mode) {
+		case "existing_session":
+			if strings.TrimSpace(profile.UserDataDir) == "" && strings.TrimSpace(profile.ExecutablePath) == "" {
+				return fmt.Errorf("browser.profiles[%d] in existing_session mode should set user_data_dir or executable_path", i)
+			}
+		case "browser_url":
+			if strings.TrimSpace(profile.BrowserURL) == "" {
+				return fmt.Errorf("browser.profiles[%d].browser_url is required in browser_url mode", i)
+			}
+			if _, err := url.ParseRequestURI(profile.BrowserURL); err != nil {
+				return fmt.Errorf("browser.profiles[%d].browser_url is invalid: %w", i, err)
+			}
+		case "ws_endpoint":
+			if strings.TrimSpace(profile.WSEndpoint) == "" {
+				return fmt.Errorf("browser.profiles[%d].ws_endpoint is required in ws_endpoint mode", i)
+			}
+			if _, err := url.ParseRequestURI(profile.WSEndpoint); err != nil {
+				return fmt.Errorf("browser.profiles[%d].ws_endpoint is invalid: %w", i, err)
+			}
+		}
+		if strings.TrimSpace(profile.MCPCommand) == "" {
+			profile.MCPCommand = "npx"
+		}
+		if strings.TrimSpace(profile.MCPPackage) == "" {
+			profile.MCPPackage = "chrome-devtools-mcp@latest"
 		}
 	}
 	if cfg.Telegram.Enabled {

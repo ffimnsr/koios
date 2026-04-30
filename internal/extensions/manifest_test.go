@@ -3,6 +3,7 @@ package extensions
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ffimnsr/koios/internal/config"
@@ -83,6 +84,59 @@ command = "echo"
 
 	if _, err := Discover([]string{root}); err == nil {
 		t.Fatal("expected duplicate extension id error, got nil")
+	}
+}
+
+func TestDiscoverRejectsWorldWritableExtensionPath(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "workspace", "extensions", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	manifestPath := filepath.Join(dir, ManifestFileName)
+	content := []byte(`api_version = "koios.extension/v1"
+kind = "mcp_server"
+id = "demo.unsafe"
+name = "unsafe"
+
+[mcp]
+transport = "stdio"
+command = "echo"
+`)
+	if err := os.WriteFile(manifestPath, content, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	_, err := Discover([]string{filepath.Join(root, "workspace", "extensions")})
+	if err == nil || !strings.Contains(err.Error(), "world-writable") {
+		t.Fatalf("expected world-writable safety error, got %v", err)
+	}
+}
+
+func TestValidatePathTrustRejectsUnexpectedOwner(t *testing.T) {
+	metadata := map[string]pathTrustMetadata{
+		"/trusted":                           {Mode: 0o755, OwnerUID: 1000, OwnerKnown: true},
+		"/trusted/demo":                      {Mode: 0o755, OwnerUID: 1000, OwnerKnown: true},
+		"/trusted/demo/koios-extension.toml": {Mode: 0o644, OwnerUID: 2000, OwnerKnown: true},
+	}
+	err := validatePathTrust("/trusted/demo/koios-extension.toml", "/trusted", 1000, true, fakePathTrustStat(metadata))
+	if err == nil || !strings.Contains(err.Error(), "owned by uid 2000") {
+		t.Fatalf("expected ownership safety error, got %v", err)
+	}
+}
+
+func TestValidatePathTrustAllowsRootOwnedComponents(t *testing.T) {
+	metadata := map[string]pathTrustMetadata{
+		"/trusted":                           {Mode: 0o755, OwnerUID: 0, OwnerKnown: true},
+		"/trusted/demo":                      {Mode: 0o755, OwnerUID: 1000, OwnerKnown: true},
+		"/trusted/demo/koios-extension.toml": {Mode: 0o644, OwnerUID: 1000, OwnerKnown: true},
+	}
+	err := validatePathTrust("/trusted/demo/koios-extension.toml", "/trusted", 1000, true, fakePathTrustStat(metadata))
+	if err != nil {
+		t.Fatalf("expected root-owned path components to pass, got %v", err)
 	}
 }
 
@@ -387,3 +441,13 @@ func TestConfigExtensionSearchPathsIncludesWorkspaceAndExtras(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func fakePathTrustStat(metadata map[string]pathTrustMetadata) pathTrustStatFunc {
+	return func(path string) (pathTrustMetadata, error) {
+		meta, ok := metadata[path]
+		if !ok {
+			return pathTrustMetadata{}, os.ErrNotExist
+		}
+		return meta, nil
+	}
+}

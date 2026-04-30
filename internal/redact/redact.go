@@ -1,8 +1,10 @@
 package redact
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"regexp"
 	"strings"
@@ -222,5 +224,64 @@ func reflectValue(v reflect.Value) any {
 		return String(v.String())
 	default:
 		return v.Interface()
+	}
+}
+
+// Handler is an slog.Handler wrapper that scrubs sensitive values from log
+// records before forwarding them to the inner handler.
+type Handler struct {
+	inner slog.Handler
+}
+
+// NewHandler returns an slog.Handler that redacts sensitive attribute values
+// before passing log records to inner.
+func NewHandler(inner slog.Handler) *Handler {
+	return &Handler{inner: inner}
+}
+
+func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.inner.Enabled(ctx, level)
+}
+
+// Handle scrubs each attribute value and the message before forwarding.
+func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
+	clean := slog.NewRecord(r.Time, r.Level, String(r.Message), r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		clean.AddAttrs(scrubAttr(a))
+		return true
+	})
+	return h.inner.Handle(ctx, clean)
+}
+
+func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	scrubbed := make([]slog.Attr, len(attrs))
+	for i, a := range attrs {
+		scrubbed[i] = scrubAttr(a)
+	}
+	return &Handler{inner: h.inner.WithAttrs(scrubbed)}
+}
+
+func (h *Handler) WithGroup(name string) slog.Handler {
+	return &Handler{inner: h.inner.WithGroup(name)}
+}
+
+func scrubAttr(a slog.Attr) slog.Attr {
+	switch a.Value.Kind() {
+	case slog.KindString:
+		if isSensitiveKey(a.Key) {
+			return slog.String(a.Key, placeholder)
+		}
+		return slog.String(a.Key, String(a.Value.String()))
+	case slog.KindGroup:
+		grp := a.Value.Group()
+		scrubbed := make([]slog.Attr, len(grp))
+		for i, ga := range grp {
+			scrubbed[i] = scrubAttr(ga)
+		}
+		return slog.Attr{Key: a.Key, Value: slog.GroupValue(scrubbed...)}
+	case slog.KindAny:
+		return slog.Attr{Key: a.Key, Value: slog.AnyValue(Value(a.Value.Any()))}
+	default:
+		return a
 	}
 }

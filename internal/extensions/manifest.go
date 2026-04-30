@@ -93,6 +93,19 @@ type DiscoveredManifest struct {
 	Path     string
 }
 
+type manifestFileCandidate struct {
+	Path      string
+	TrustRoot string
+}
+
+type pathTrustMetadata struct {
+	Mode       os.FileMode
+	OwnerUID   int
+	OwnerKnown bool
+}
+
+type pathTrustStatFunc func(path string) (pathTrustMetadata, error)
+
 type FilterPolicy struct {
 	Allow []string
 	Deny  []string
@@ -106,20 +119,23 @@ func Discover(paths []string) ([]DiscoveredManifest, error) {
 	manifests := make([]DiscoveredManifest, 0, len(files))
 	ids := make(map[string]string)
 	names := make(map[string]string)
-	for _, path := range files {
-		manifest, err := LoadManifest(path)
+	for _, candidate := range files {
+		if err := validateManifestPathTrust(candidate.Path, candidate.TrustRoot); err != nil {
+			return nil, err
+		}
+		manifest, err := LoadManifest(candidate.Path)
 		if err != nil {
 			return nil, err
 		}
 		if prev, ok := ids[manifest.ID]; ok {
-			return nil, fmt.Errorf("extension id %q is declared by both %s and %s", manifest.ID, prev, path)
+			return nil, fmt.Errorf("extension id %q is declared by both %s and %s", manifest.ID, prev, candidate.Path)
 		}
 		if prev, ok := names[manifest.Name]; ok {
-			return nil, fmt.Errorf("extension name %q is declared by both %s and %s", manifest.Name, prev, path)
+			return nil, fmt.Errorf("extension name %q is declared by both %s and %s", manifest.Name, prev, candidate.Path)
 		}
-		ids[manifest.ID] = path
-		names[manifest.Name] = path
-		manifests = append(manifests, DiscoveredManifest{Manifest: manifest, Path: path})
+		ids[manifest.ID] = candidate.Path
+		names[manifest.Name] = candidate.Path
+		manifests = append(manifests, DiscoveredManifest{Manifest: manifest, Path: candidate.Path})
 	}
 	return manifests, nil
 }
@@ -224,9 +240,9 @@ func (d DiscoveredManifest) MCPServerConfig() (config.MCPServerConfig, bool, err
 	return server, true, nil
 }
 
-func discoverManifestFiles(paths []string) ([]string, error) {
+func discoverManifestFiles(paths []string) ([]manifestFileCandidate, error) {
 	seen := make(map[string]struct{})
-	var files []string
+	var files []manifestFileCandidate
 	for _, raw := range paths {
 		path := strings.TrimSpace(raw)
 		if path == "" {
@@ -251,7 +267,7 @@ func discoverManifestFiles(paths []string) ([]string, error) {
 					return nil
 				}
 				seen[candidate] = struct{}{}
-				files = append(files, candidate)
+				files = append(files, manifestFileCandidate{Path: candidate, TrustRoot: path})
 				return nil
 			})
 			if err != nil {
@@ -266,10 +282,71 @@ func discoverManifestFiles(paths []string) ([]string, error) {
 			continue
 		}
 		seen[path] = struct{}{}
-		files = append(files, path)
+		files = append(files, manifestFileCandidate{Path: path, TrustRoot: filepath.Dir(path)})
 	}
-	sort.Strings(files)
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
 	return files, nil
+}
+
+func validateManifestPathTrust(path, trustRoot string) error {
+	uid, enforceOwner := currentProcessUID()
+	return validatePathTrust(path, trustRoot, uid, enforceOwner, statPathTrust)
+}
+
+func validatePathTrust(path, trustRoot string, processUID int, enforceOwner bool, statFn pathTrustStatFunc) error {
+	chain, err := manifestTrustChain(path, trustRoot)
+	if err != nil {
+		return fmt.Errorf("extension manifest %s: %w", path, err)
+	}
+	for _, candidate := range chain {
+		metadata, err := statFn(candidate)
+		if err != nil {
+			return fmt.Errorf("extension manifest %s: inspect %s: %w", path, candidate, err)
+		}
+		if metadata.Mode.Perm()&0o002 != 0 {
+			return fmt.Errorf("extension manifest %s: path %s is world-writable", path, candidate)
+		}
+		if enforceOwner && metadata.OwnerKnown && metadata.OwnerUID != processUID && metadata.OwnerUID != 0 {
+			return fmt.Errorf("extension manifest %s: path %s is owned by uid %d, expected current uid %d or root", path, candidate, metadata.OwnerUID, processUID)
+		}
+	}
+	return nil
+}
+
+func manifestTrustChain(path, trustRoot string) ([]string, error) {
+	cleanPath := filepath.Clean(path)
+	cleanRoot := filepath.Clean(strings.TrimSpace(trustRoot))
+	if cleanRoot == "" {
+		cleanRoot = filepath.Dir(cleanPath)
+	}
+	chain := make([]string, 0, 4)
+	current := cleanPath
+	for {
+		chain = append(chain, current)
+		if current == cleanRoot {
+			return chain, nil
+		}
+		next := filepath.Dir(current)
+		if next == current {
+			return nil, fmt.Errorf("path %s escapes trust root %s", cleanPath, cleanRoot)
+		}
+		current = next
+	}
+}
+
+func statPathTrust(path string) (pathTrustMetadata, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return pathTrustMetadata{}, err
+	}
+	ownerUID, ownerKnown := fileOwnerUID(info)
+	return pathTrustMetadata{
+		Mode:       info.Mode(),
+		OwnerUID:   ownerUID,
+		OwnerKnown: ownerKnown,
+	}, nil
 }
 
 func isManifestFile(name string) bool {

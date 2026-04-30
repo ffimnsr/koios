@@ -147,6 +147,73 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.workspaceApplyPatch(peerID, args.Patch)
+	case "git.status":
+		var args struct {
+			RepoPath string `json:"repo_path"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runGitStatusTool(ctx, peerID, args.RepoPath)
+	case "git.diff":
+		var args struct {
+			RepoPath string `json:"repo_path"`
+			Path     string `json:"path"`
+			Base     string `json:"base"`
+			Head     string `json:"head"`
+			Staged   bool   `json:"staged"`
+			Context  int    `json:"context"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runGitDiffTool(ctx, peerID, args.RepoPath, args.Path, args.Base, args.Head, args.Staged, args.Context)
+	case "git.log":
+		var args struct {
+			RepoPath string `json:"repo_path"`
+			Ref      string `json:"ref"`
+			Path     string `json:"path"`
+			Limit    int    `json:"limit"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runGitLogTool(ctx, peerID, args.RepoPath, args.Ref, args.Path, args.Limit)
+	case "git.branch":
+		var args struct {
+			RepoPath   string `json:"repo_path"`
+			Action     string `json:"action"`
+			Name       string `json:"name"`
+			Target     string `json:"target"`
+			StartPoint string `json:"start_point"`
+			All        bool   `json:"all"`
+			Force      bool   `json:"force"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runGitBranchTool(ctx, peerID, args.RepoPath, args.Action, args.Name, args.Target, args.StartPoint, args.All, args.Force)
+	case "git.commit":
+		var args struct {
+			RepoPath string `json:"repo_path"`
+			Message  string `json:"message"`
+			All      bool   `json:"all"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runGitCommitTool(ctx, peerID, args.RepoPath, args.Message, args.All)
+	case "git.apply_patch":
+		var args struct {
+			RepoPath  string `json:"repo_path"`
+			Patch     string `json:"patch"`
+			CheckOnly bool   `json:"check_only"`
+			Index     bool   `json:"index"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runGitApplyPatchTool(ctx, peerID, args.RepoPath, args.Patch, args.CheckOnly, args.Index)
 	case "workspace.mkdir":
 		var args struct {
 			Path string `json:"path"`

@@ -58,6 +58,12 @@ func (h *Handler) activeDefs(peerID, sessionKey, activeProfile string) []toolDef
 			})
 		}
 	}
+	for _, d := range h.browserAliasDefs(sessionKey) {
+		if !policy.Allows(d.name) {
+			continue
+		}
+		active = append(active, d)
+	}
 	return active
 }
 
@@ -95,6 +101,10 @@ func (h *Handler) ToolPromptForRun(peerID, sessionKey, activeProfile string) str
 	if profileName := h.resolveStandingProfileName(peerID, sessionKey, activeProfile); profileName != "" {
 		profileLine = "Active persona profile: " + profileName + "\n"
 	}
+	browserLine := ""
+	if browserProfile := h.resolveActiveBrowserProfile(sessionKey); browserProfile != "" {
+		browserLine = "Active browser profile: " + browserProfile + "\n"
+	}
 
 	domainSection := "### Tools by Domain\n"
 	for _, domain := range domains {
@@ -104,6 +114,7 @@ func (h *Handler) ToolPromptForRun(peerID, sessionKey, activeProfile string) str
 	return "You can use server-side tools to take actions for the current peer.\n" +
 		"Current peer_id: " + peerID + "\n" +
 		profileLine +
+		browserLine +
 		"Current UTC time: " + time.Now().UTC().Format(time.RFC3339) + "\n" +
 		"\n## ⚠️ CRITICAL: Tool Naming\n" +
 		"**ALWAYS use the EXACT FULL tool name.** Tool names follow the pattern `domain.operation`.\n" +
@@ -162,18 +173,42 @@ func (h *Handler) resolveStandingProfileName(peerID, sessionKey, activeProfile s
 
 func (h *Handler) effectiveToolPolicy(peerID, sessionKey, activeProfile string) ToolPolicy {
 	policy := h.toolPolicy
-	if h.standingManager == nil || strings.TrimSpace(peerID) == "" {
-		return policy
+	if h.standingManager != nil && strings.TrimSpace(peerID) != "" {
+		resolved, err := h.standingManager.ResolveProfile(peerID, h.resolveStandingProfileName(peerID, sessionKey, activeProfile))
+		if err == nil && resolved != nil {
+			if resolved.Profile.ToolProfile != "" {
+				policy.Profile = resolved.Profile.ToolProfile
+			}
+			policy.Allow = append(append([]string(nil), policy.Allow...), resolved.Profile.ToolsAllow...)
+			policy.Deny = append(append([]string(nil), policy.Deny...), resolved.Profile.ToolsDeny...)
+		}
 	}
-	resolved, err := h.standingManager.ResolveProfile(peerID, h.resolveStandingProfileName(peerID, sessionKey, activeProfile))
-	if err != nil || resolved == nil {
-		return policy
+
+	// Apply sandbox-specific policy overrides when the session is marked sandbox.
+	sandboxKey := sessionKey
+	if sandboxKey == "" {
+		sandboxKey = peerID
 	}
-	if resolved.Profile.ToolProfile != "" {
-		policy.Profile = resolved.Profile.ToolProfile
+	if sandboxKey != "" {
+		sp := h.store.Policy(sandboxKey)
+		if sp.SessionKind == "sandbox" {
+			sbx := h.sandboxToolPolicy
+			// Default sandbox profile when none is configured.
+			if sbx.Profile == "" && len(sbx.Allow) == 0 {
+				sbx.Profile = "sandbox"
+			}
+			if sbx.Profile != "" {
+				policy.Profile = sbx.Profile
+			}
+			policy.Allow = append(append([]string(nil), policy.Allow...), sbx.Allow...)
+			policy.Deny = append(append([]string(nil), policy.Deny...), sbx.Deny...)
+		}
+
+		// Layer in per-session allow/deny overrides regardless of kind.
+		policy.Allow = append(policy.Allow, sp.ToolsAllow...)
+		policy.Deny = append(policy.Deny, sp.ToolsDeny...)
 	}
-	policy.Allow = append(append([]string(nil), policy.Allow...), resolved.Profile.ToolsAllow...)
-	policy.Deny = append(append([]string(nil), policy.Deny...), resolved.Profile.ToolsDeny...)
+
 	return policy
 }
 func (h *Handler) NormalizeToolName(peerID, name string) string {

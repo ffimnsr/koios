@@ -21,6 +21,7 @@ default_profile = "default"
 name = "default"
 provider = "openai"
 model = "gpt-4o"
+# Plaintext works, but you can also paste a value from `koios hide-secret`.
 # api_key = ""
 # base_url = ""
 
@@ -73,6 +74,33 @@ model = "gpt-4o"
 # transport = "http"
 # url = "http://localhost:3000/mcp"
 # enabled = true
+
+# [browser]
+# default_profile = "work"
+#
+# [[browser.profiles]]
+# name = "work"
+# mode = "managed"
+# enabled = true
+# # Optional host policy. Deny wins; allowlist only narrows access further.
+# # host_allowlist = ["example.com", "*.example.org"]
+# # host_denylist = ["admin.example.com"]
+# headless = true
+# # Optional dedicated profile dir. Defaults to ./workspace/browser/<profile>.
+# # user_data_dir = "./workspace/browser/work"
+#
+# [[browser.profiles]]
+# name = "personal"
+# mode = "existing_session"
+# enabled = true
+# # Point at the Chrome profile you want Koios to attach to.
+# user_data_dir = "~/.config/google-chrome"
+
+# [[browser.profiles]]
+# name = "remote-debug"
+# mode = "browser_url"
+# enabled = true
+# browser_url = "http://127.0.0.1:9222"
 
 [session]
 max_messages = 100
@@ -146,6 +174,23 @@ dirs = []
 # Optional extension id/name allowlist and denylist. Deny wins.
 allow = []
 deny = []
+
+# [hooks]
+# webhook_token = "replace-me"
+# timeout = "2s"
+# fail_closed = false
+#
+# [[hooks.mappings]]
+# name = "github-pr"
+# type = "session.wake"
+#
+# [[hooks.mappings.fields]]
+# to = "peer_id"
+# value = "default"
+#
+# [[hooks.mappings.fields]]
+# to = "prompt"
+# template = "GitHub {{headers.x-github-event}}: {{body.pull_request.title}}"
 
 [channels.telegram]
 enabled = false

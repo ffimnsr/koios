@@ -39,6 +39,7 @@ This creates `koios.config.toml` with sane defaults and without private keys.
 Key sections:
 - `[server]` listen address, request timeout, allowed origins
 - `[llm]` provider/model/base URL and optional `api_key`
+- `koios hide-secret` emits a machine-bound encrypted blob you can paste into secret-valued fields such as `api_key`
 - `[session]`, `[compaction]`, `[memory]` for context and storage behavior
 - `session.prune_keep_tool_messages` prunes older tool chatter from active request context without compacting the whole session
 - `session.retention`, `session.max_entries`, `session.idle_reset_after`, and `session.daily_reset_time` control session cleanup and auto-reset
@@ -286,8 +287,8 @@ Example response:
       "exec": true,
       "web": true
     },
-    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
-    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "head", "tail", "grep", "sort", "uniq", "diff", "write", "edit", "apply_patch", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
+    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.find", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
+    "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.find", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "head", "tail", "grep", "find", "sort", "uniq", "diff", "write", "edit", "apply_patch", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
     "idempotency": {
       "params_field": "idempotency_key",
       "methods": ["chat", "session.reset", "presence.set", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.cancel", "agent.steer", "subagent.spawn", "subagent.kill", "subagent.steer", "memory.insert", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.approve", "exec.reject", "cron.create", "cron.update", "cron.delete", "cron.trigger", "heartbeat.set", "heartbeat.wake", "server.set_log_level"]
@@ -721,11 +722,32 @@ Read the run history for a job.
 
 `POST /v1/webhooks/events` accepts authenticated external events when `KOIOS_WEBHOOK_TOKEN` is configured.
 
+`POST /v1/hooks/{name}` accepts authenticated named hook routes declared in `[hooks]` / `[[hooks.mappings]]`. Each mapping can transform request body, headers, query parameters, and request metadata into an existing webhook event request such as `session.wake`, `agent.run`, or `cron.schedule`.
+
 Supported webhook `type` values:
 - `message.append`
 - `presence.set`
 - `cron.trigger`
 - `cron.schedule`
+
+Example named hook mapping in `koios.config.toml`:
+
+```toml
+[hooks]
+webhook_token = "replace-me"
+
+[[hooks.mappings]]
+name = "github-pr"
+type = "session.wake"
+
+[[hooks.mappings.fields]]
+to = "peer_id"
+value = "alice"
+
+[[hooks.mappings.fields]]
+to = "prompt"
+template = "GitHub {{headers.x-github-event}}: {{body.pull_request.title}}"
+```
 
 Example one-shot webhook scheduling:
 
@@ -821,7 +843,7 @@ Trigger an immediate out-of-schedule heartbeat run.
 {"id": "17", "method": "heartbeat.wake"}
 ```
 
-### `workspace.list` / `workspace.read` / `workspace.head` / `workspace.tail` / `workspace.grep` / `workspace.sort` / `workspace.uniq` / `workspace.diff` / `workspace.write` / `workspace.edit` / `workspace.mkdir` / `workspace.delete`
+### `workspace.list` / `workspace.read` / `workspace.head` / `workspace.tail` / `workspace.grep` / `workspace.find` / `workspace.sort` / `workspace.uniq` / `workspace.diff` / `workspace.write` / `workspace.edit` / `workspace.mkdir` / `workspace.delete`
 
 Direct workspace RPC methods for peer sandbox operations. These target the same
 workspace sandbox used by agent tools.
@@ -836,6 +858,10 @@ workspace sandbox used by agent tools.
 
 ```json
 {"id":"20","method":"workspace.grep","params":{"path":"project","pattern":"Hello","recursive":true,"limit":50,"case_sensitive":true,"regexp":false}}
+```
+
+```json
+{"id":"20a","method":"workspace.find","params":{"path":"project","pattern":"readme|range","recursive":true,"limit":50,"case_sensitive":false,"regexp":true}}
 ```
 
 ```json
@@ -869,6 +895,8 @@ workspace sandbox used by agent tools.
 ### `exec` / `exec.pending` / `exec.approve` / `exec.reject`
 
 Run shell commands on the host with the peer workspace as the default working directory. Commands that match the configured dangerous-command policy can return `status: "approval_required"` instead of executing; operators can inspect or resolve those pending requests through the companion exec approval RPC methods.
+
+The operator CLI exposes the same lifecycle as `koios exec pending`, `koios exec approve <id>`, and `koios exec reject <id>`. Exec regex allowlists can be managed with `koios exec allowlist list|add|remove`, which edits `tools.exec.custom_allow_patterns` in `koios.config.toml`.
 
 ```json
 {"id":"28","method":"exec","params":{"command":"go test ./...","workdir":".","timeout_seconds":30}}
@@ -908,6 +936,7 @@ When workspace is enabled, the agent can call:
 - `workspace.head`
 - `workspace.tail`
 - `workspace.grep`
+- `workspace.find`
 - `workspace.sort`
 - `workspace.uniq`
 - `workspace.diff`

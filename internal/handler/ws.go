@@ -69,6 +69,7 @@ import (
 	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/channels"
+	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/decisions"
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/heartbeat"
@@ -256,6 +257,7 @@ type Handler struct {
 	sched                   *scheduler.Scheduler
 	workspaceStore          *workspace.Manager
 	toolPolicy              ToolPolicy
+	sandboxToolPolicy       ToolPolicy
 	execConfig              ExecConfig
 	codeExecutionConfig     CodeExecutionConfig
 	backgroundProcessConfig BackgroundProcessConfig
@@ -268,6 +270,7 @@ type Handler struct {
 	monitor                 *monitor.Monitor
 	logLevel                *slog.LevelVar
 	mcpManager              *mcp.Manager
+	browserConfig           config.BrowserConfig
 	pluginRegistry          *pluginRegistry
 	workflowRunner          *workflow.Runner
 	orchestrator            *orchestrator.Orchestrator
@@ -299,43 +302,51 @@ type Handler struct {
 	codeExecutionRuns     map[string]context.CancelFunc
 	backgroundProcessesMu sync.Mutex
 	backgroundProcesses   map[string]*managedBackgroundProcess
+	browserSnapshotsMu    sync.Mutex
+	browserSnapshots      map[string]*browserSnapshotRefState
+	browserCanvasMu       sync.Mutex
+	browserCanvas         map[string]*browserCanvasState
 	clientsMu             sync.RWMutex
 	clients               map[*wsConn]struct{}
 }
 
 // HandlerOptions holds all optional subsystem references.
 type HandlerOptions struct {
-	Model                   string
-	ModelCatalog            ModelCatalog
-	Timeout                 time.Duration
-	MemStore                *memory.Store
-	TaskStore               *tasks.Store
-	BookmarkStore           *bookmarks.Store
-	CalendarStore           *calendar.Store
-	NoteStore               *notes.Store
-	ScratchpadStore         *scratchpad.Store
-	PlanStore               *plans.Store
-	ProjectStore            *projects.Store
-	ArtifactStore           *artifacts.Store
-	DecisionStore           *decisions.Store
-	PreferenceStore         *preferences.Store
-	ReminderStore           *reminder.Store
-	ToolResultStore         *toolresults.Store
-	MemTopK                 int
-	MemInject               bool
-	HBRunner                *heartbeat.Runner
-	HBConfigStore           *heartbeat.ConfigStore
-	HBDefaultEvery          time.Duration
-	StandingManager         *standing.Manager
-	AgentRuntime            *agent.Runtime
-	AgentCoord              *agent.Coordinator
-	SubRuntime              *subagent.Runtime
-	JobStore                *scheduler.JobStore
-	Sched                   *scheduler.Scheduler
-	WorkspaceStore          *workspace.Manager
-	ChannelManager          *channels.Manager
-	ChannelBindingStore     *channels.BindingStore
-	ToolPolicy              ToolPolicy
+	Model               string
+	ModelCatalog        ModelCatalog
+	Timeout             time.Duration
+	MemStore            *memory.Store
+	TaskStore           *tasks.Store
+	BookmarkStore       *bookmarks.Store
+	CalendarStore       *calendar.Store
+	NoteStore           *notes.Store
+	ScratchpadStore     *scratchpad.Store
+	PlanStore           *plans.Store
+	ProjectStore        *projects.Store
+	ArtifactStore       *artifacts.Store
+	DecisionStore       *decisions.Store
+	PreferenceStore     *preferences.Store
+	ReminderStore       *reminder.Store
+	ToolResultStore     *toolresults.Store
+	MemTopK             int
+	MemInject           bool
+	HBRunner            *heartbeat.Runner
+	HBConfigStore       *heartbeat.ConfigStore
+	HBDefaultEvery      time.Duration
+	StandingManager     *standing.Manager
+	AgentRuntime        *agent.Runtime
+	AgentCoord          *agent.Coordinator
+	SubRuntime          *subagent.Runtime
+	JobStore            *scheduler.JobStore
+	Sched               *scheduler.Scheduler
+	WorkspaceStore      *workspace.Manager
+	ChannelManager      *channels.Manager
+	ChannelBindingStore *channels.BindingStore
+	ToolPolicy          ToolPolicy
+	// SandboxToolPolicy is the tool policy applied to sessions whose SessionKind
+	// is "sandbox". Its Allow/Deny/Profile fields are layered on top of ToolPolicy
+	// after any standing-profile overrides.
+	SandboxToolPolicy       ToolPolicy
 	ExecConfig              ExecConfig
 	CodeExecutionConfig     CodeExecutionConfig
 	BackgroundProcessConfig BackgroundProcessConfig
@@ -360,6 +371,8 @@ type HandlerOptions struct {
 	LogLevel *slog.LevelVar
 	// MCPManager, when non-nil, provides tools from external MCP servers.
 	MCPManager *mcp.Manager
+	// BrowserConfig enables named browser profile routing for browser.* tools.
+	BrowserConfig config.BrowserConfig
 	// WorkflowRunner, when non-nil, enables the workflow.* tool family.
 	WorkflowRunner *workflow.Runner
 	// Orchestrator, when non-nil, enables the orchestrator.* tool family.
@@ -421,6 +434,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		channelManager:          opts.ChannelManager,
 		channelBindingStore:     opts.ChannelBindingStore,
 		toolPolicy:              opts.ToolPolicy,
+		sandboxToolPolicy:       opts.SandboxToolPolicy,
 		execConfig:              execCfg,
 		codeExecutionConfig:     codeExecCfg,
 		backgroundProcessConfig: processCfg,
@@ -432,6 +446,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		monitor:                 opts.Monitor,
 		logLevel:                opts.LogLevel,
 		mcpManager:              opts.MCPManager,
+		browserConfig:           opts.BrowserConfig,
 		pluginRegistry:          pluginRegistry,
 		workflowRunner:          opts.WorkflowRunner,
 		orchestrator:            opts.Orchestrator,
@@ -440,6 +455,8 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		syncRuns:                make(map[string]context.CancelFunc),
 		codeExecutionRuns:       make(map[string]context.CancelFunc),
 		backgroundProcesses:     make(map[string]*managedBackgroundProcess),
+		browserSnapshots:        make(map[string]*browserSnapshotRefState),
+		browserCanvas:           make(map[string]*browserCanvasState),
 		clients:                 make(map[*wsConn]struct{}),
 		approvals:               newApprovalStore(execCfg.ApprovalTTL),
 		idempotency:             newIdempotencyStore(idempotencyTTL),

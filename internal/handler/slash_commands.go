@@ -8,6 +8,8 @@ package handler
 //	/usage   [off|tokens|full]
 //	/verbose [on|off]
 //	/trace   [on|off]
+//	/elevated [on|off]
+//	/sandbox  [on|off]
 //	/activation [mention|always|group <mention|always>|chat <mention|always>]
 //	/profile [list|use <name>|clear]
 //	/status
@@ -114,13 +116,19 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 	case "usage":
 		return h.slashUsage(wsc, req, arg)
 	case "verbose":
-		return h.slashBoolToggle(wsc, req, arg, "verbose", func(p *session.SessionPolicy, v bool) {
-			p.VerboseMode = v
-		})
+		return h.slashBoolToggle(wsc, req, arg, "verbose",
+			func(p *session.SessionPolicy) bool { return p.VerboseMode },
+			func(p *session.SessionPolicy, v bool) { p.VerboseMode = v })
 	case "trace":
-		return h.slashBoolToggle(wsc, req, arg, "trace", func(p *session.SessionPolicy, v bool) {
-			p.TraceMode = v
-		})
+		return h.slashBoolToggle(wsc, req, arg, "trace",
+			func(p *session.SessionPolicy) bool { return p.TraceMode },
+			func(p *session.SessionPolicy, v bool) { p.TraceMode = v })
+	case "elevated":
+		return h.slashBoolToggle(wsc, req, arg, "elevated",
+			func(p *session.SessionPolicy) bool { return p.ElevatedBash },
+			func(p *session.SessionPolicy, v bool) { p.ElevatedBash = v })
+	case "sandbox":
+		return h.slashSandbox(wsc, req, arg)
 	case "activation":
 		return h.slashActivation(wsc, req, arg)
 	case "profile", "mode":
@@ -333,7 +341,7 @@ func (h *Handler) slashUsage(wsc *wsConn, req *rpcRequest, arg string) bool {
 
 // ── /verbose and /trace (bool toggles) ───────────────────────────────────────
 
-func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string, apply func(*session.SessionPolicy, bool)) bool {
+func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string, get func(*session.SessionPolicy) bool, apply func(*session.SessionPolicy, bool)) bool {
 	var desired bool
 	switch arg {
 	case "on", "true", "1", "yes":
@@ -343,18 +351,8 @@ func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string
 	case "":
 		// Report current setting.
 		policy := h.store.Policy(wsc.peerID)
-		var current bool
-		tmp := policy
-		apply(&tmp, !current) // flip to detect default
-		// Re-read the actual toggle.
-		switch name {
-		case "verbose":
-			current = policy.VerboseMode
-		case "trace":
-			current = policy.TraceMode
-		}
 		state := "off"
-		if current {
+		if get(&policy) {
 			state = "on"
 		}
 		slashReply(wsc, req, fmt.Sprintf("%s mode: %s", strings.Title(name), state)) //nolint:staticcheck
@@ -375,6 +373,45 @@ func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string
 	}
 	slashReply(wsc, req, fmt.Sprintf("%s mode: %s", strings.Title(name), state)) //nolint:staticcheck
 	return true
+}
+
+// ── /sandbox ──────────────────────────────────────────────────────────────────
+
+// slashSandbox handles `/sandbox [on|off]`. Turning sandbox on marks the
+// session as SessionKind="sandbox" so that the sandbox-specific least-privilege
+// tool policy is enforced. Turning it off clears the kind back to the default.
+func (h *Handler) slashSandbox(wsc *wsConn, req *rpcRequest, arg string) bool {
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "":
+		policy := h.store.Policy(wsc.peerID)
+		if policy.SessionKind == "sandbox" {
+			slashReply(wsc, req, "Sandbox mode: on")
+		} else {
+			slashReply(wsc, req, "Sandbox mode: off")
+		}
+		return true
+	case "on", "true", "1", "yes":
+		if err := h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+			p.SessionKind = "sandbox"
+		}); err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+			return true
+		}
+		slashReply(wsc, req, "Sandbox mode: on (least-privilege tool policy active)")
+		return true
+	case "off", "false", "0", "no":
+		if err := h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+			p.SessionKind = ""
+		}); err != nil {
+			wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+			return true
+		}
+		slashReply(wsc, req, "Sandbox mode: off")
+		return true
+	default:
+		slashReply(wsc, req, "Usage: /sandbox [on|off]")
+		return true
+	}
 }
 
 // ── /status ───────────────────────────────────────────────────────────────────
@@ -420,6 +457,12 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	if policy.TraceMode {
 		sb.WriteString("Trace mode: on\n")
 	}
+	if policy.ElevatedBash {
+		sb.WriteString("Elevated bash: on\n")
+	}
+	if policy.SessionKind != "" {
+		fmt.Fprintf(&sb, "Session kind: %s\n", policy.SessionKind)
+	}
 	if policy.UsageMode != "" {
 		fmt.Fprintf(&sb, "Usage footer: %s\n", policy.UsageMode)
 	}
@@ -462,6 +505,8 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 		"usage_mode":         usageModeLabel(policy.UsageMode),
 		"verbose_mode":       policy.VerboseMode,
 		"trace_mode":         policy.TraceMode,
+		"elevated_bash":      policy.ElevatedBash,
+		"session_kind":       policy.SessionKind,
 		"block_stream":       policy.BlockStream,
 		"stream_chunk_chars": policy.StreamChunkChars,
 		"stream_coalesce_ms": policy.StreamCoalesceMS,

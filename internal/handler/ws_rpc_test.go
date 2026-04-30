@@ -325,7 +325,7 @@ func TestWS_ServerCapabilities_WorkspaceMethods(t *testing.T) {
 	if !result.Capabilities["workspace"] {
 		t.Fatalf("expected workspace capability, got %#v", result.Capabilities)
 	}
-	if !containsString(result.Methods, "workspace.list") || !containsString(result.Methods, "workspace.head") || !containsString(result.Methods, "workspace.tail") || !containsString(result.Methods, "workspace.grep") || !containsString(result.Methods, "workspace.sort") || !containsString(result.Methods, "workspace.uniq") || !containsString(result.Methods, "workspace.diff") || !containsString(result.Methods, "workspace.write") {
+	if !containsString(result.Methods, "workspace.list") || !containsString(result.Methods, "workspace.head") || !containsString(result.Methods, "workspace.tail") || !containsString(result.Methods, "workspace.grep") || !containsString(result.Methods, "workspace.find") || !containsString(result.Methods, "workspace.sort") || !containsString(result.Methods, "workspace.uniq") || !containsString(result.Methods, "workspace.diff") || !containsString(result.Methods, "workspace.write") {
 		t.Fatalf("expected workspace methods in capabilities, got %#v", result.Methods)
 	}
 }
@@ -476,6 +476,28 @@ func TestWS_WorkspaceRPC(t *testing.T) {
 	}
 	if grepRes.Matches[0].Path != "project/range.txt" || grepRes.Matches[0].Line != 3 {
 		t.Fatalf("unexpected grep match: %#v", grepRes.Matches[0])
+	}
+
+	sendRPC(t, conn, "w4c", "workspace.find", map[string]any{"path": "project", "pattern": "range", "recursive": true, "case_sensitive": false})
+	msg = readUntilID(t, conn, "w4c")
+	if msg.Error != nil {
+		t.Fatalf("workspace.find error: %#v", msg.Error)
+	}
+	var findRes struct {
+		Count   int `json:"count"`
+		Matches []struct {
+			Path  string `json:"path"`
+			IsDir bool   `json:"is_dir"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal(msg.Result, &findRes); err != nil {
+		t.Fatalf("unmarshal workspace.find result: %v", err)
+	}
+	if findRes.Count != 1 || len(findRes.Matches) != 1 {
+		t.Fatalf("unexpected find result: %#v", findRes)
+	}
+	if findRes.Matches[0].Path != "project/range.txt" || findRes.Matches[0].IsDir {
+		t.Fatalf("unexpected find match: %#v", findRes.Matches[0])
 	}
 
 	sendRPC(t, conn, "w4d", "workspace.sort", map[string]any{"path": "project/range.txt"})

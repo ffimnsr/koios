@@ -986,7 +986,7 @@ func (rt *Runtime) normalizeSessionKey(sessionKey string) string {
 
 func (rt *Runtime) sessionPolicy(sessionKey string) session.SessionPolicy {
 	policy := rt.store.Policy(sessionKey)
-	if policy != (session.SessionPolicy{}) {
+	if !session.IsZeroPolicy(policy) {
 		return policy
 	}
 	normalized := rt.normalizeSessionKey(sessionKey)

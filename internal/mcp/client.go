@@ -43,8 +43,9 @@ type Content struct {
 
 // ToolResult is the value returned by a tools/call response.
 type ToolResult struct {
-	Content []Content `json:"content"`
-	IsError bool      `json:"isError,omitempty"`
+	Content           []Content       `json:"content"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
+	IsError           bool            `json:"isError,omitempty"`
 }
 
 // Client is the minimal interface a transport must implement to communicate

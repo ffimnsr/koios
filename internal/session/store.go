@@ -62,6 +62,9 @@ type SessionPolicy struct {
 	// ActiveProfile selects a named standing/persona profile for this session.
 	// Empty falls back to the peer document's default profile.
 	ActiveProfile string `json:"active_profile,omitempty"`
+	// BrowserProfile selects the named browser profile used for browser.* tools
+	// in this session. Empty falls back to the configured browser default.
+	BrowserProfile string `json:"browser_profile,omitempty"`
 	// QueueMode controls how mid-run steering notes are applied.
 	// Valid values: steer | followup | collect
 	QueueMode string `json:"queue_mode,omitempty"`
@@ -81,6 +84,19 @@ type SessionPolicy struct {
 	// StreamCoalesceMS controls how long streamed output may be buffered before
 	// it is flushed to the client as a coalesced chunk.
 	StreamCoalesceMS int `json:"stream_coalesce_ms,omitempty"`
+	// SessionKind marks the execution context type for this session.
+	// Valid values: "" (main/default), "sandbox"
+	SessionKind string `json:"session_kind,omitempty"`
+	// ElevatedBash, when true, allows exec tool calls in this session to bypass
+	// dangerous-pattern approval requirements. Intended for trusted operator
+	// sessions only; off by default.
+	ElevatedBash bool `json:"elevated_bash,omitempty"`
+	// ToolsAllow is a per-session allow-list that is merged on top of the global
+	// tool policy. Empty means no session-level additions.
+	ToolsAllow []string `json:"tools_allow,omitempty"`
+	// ToolsDeny is a per-session deny-list that is merged on top of the global
+	// tool policy. Empty means no session-level overrides.
+	ToolsDeny []string `json:"tools_deny,omitempty"`
 }
 
 func NormalizeActivationMode(mode string) string {
@@ -833,7 +849,7 @@ func pruneSessionMessages(sess *Session, keep int) bool {
 func (st *Store) SetPolicy(sessionKey string, policy SessionPolicy) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if policy == (SessionPolicy{}) {
+	if isZeroPolicy(policy) {
 		delete(st.policies, sessionKey)
 	} else {
 		st.policies[sessionKey] = policy
@@ -848,12 +864,41 @@ func (st *Store) PatchPolicy(sessionKey string, patch func(*SessionPolicy)) erro
 	defer st.mu.Unlock()
 	p := st.policies[sessionKey]
 	patch(&p)
-	if p == (SessionPolicy{}) {
+	if isZeroPolicy(p) {
 		delete(st.policies, sessionKey)
 	} else {
 		st.policies[sessionKey] = p
 	}
 	return st.savePoliciesLocked()
+}
+
+// IsZeroPolicy reports whether p has no meaningful fields set.
+func IsZeroPolicy(p SessionPolicy) bool {
+	return isZeroPolicy(p)
+}
+
+// isZeroPolicy reports whether p has no meaningful fields set.
+func isZeroPolicy(p SessionPolicy) bool {
+	return p.ReplyBack == false &&
+		p.InboxReadUserCount == 0 &&
+		p.ActivationMode == "" &&
+		p.GroupActivationMode == "" &&
+		p.ChatActivationMode == "" &&
+		p.UsageMode == "" &&
+		p.ModelOverride == "" &&
+		p.ActiveProfile == "" &&
+		p.BrowserProfile == "" &&
+		p.QueueMode == "" &&
+		p.ThinkLevel == "" &&
+		p.VerboseMode == false &&
+		p.TraceMode == false &&
+		p.BlockStream == false &&
+		p.StreamChunkChars == 0 &&
+		p.StreamCoalesceMS == 0 &&
+		p.SessionKind == "" &&
+		p.ElevatedBash == false &&
+		len(p.ToolsAllow) == 0 &&
+		len(p.ToolsDeny) == 0
 }
 
 func (st *Store) Policy(sessionKey string) SessionPolicy {

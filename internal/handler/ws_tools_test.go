@@ -279,6 +279,9 @@ func TestToolDefinitionsIncludeApplyPatch(t *testing.T) {
 	if !containsString(names, "grep") || !containsString(names, "workspace.grep") {
 		t.Fatalf("expected grep tools, got %#v", names)
 	}
+	if !containsString(names, "find") || !containsString(names, "workspace.find") {
+		t.Fatalf("expected find tools, got %#v", names)
+	}
 	if !containsString(names, "head") || !containsString(names, "workspace.head") || !containsString(names, "tail") || !containsString(names, "workspace.tail") {
 		t.Fatalf("expected head/tail tools, got %#v", names)
 	}
@@ -293,17 +296,25 @@ func TestToolDefinitionsIncludeApplyPatch(t *testing.T) {
 func TestToolDefinitionsMessagingProfileIncludesWaitingTools(t *testing.T) {
 	store := session.New(10)
 	prov := &stubProvider{response: &types.ChatResponse{}}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
 	taskStore, err := tasks.New(filepath.Join(t.TempDir(), "tasks.db"))
 	if err != nil {
 		t.Fatalf("tasks.New: %v", err)
 	}
 	t.Cleanup(func() { _ = taskStore.Close() })
 	channelMgr := channels.NewManager(&stubOutboundChannel{id: "telegram"})
+	bindingStore := channels.NewBindingStore(filepath.Join(t.TempDir(), "bindings.json"))
 	h := handler.NewHandler(store, prov, handler.HandlerOptions{
-		Model:          "test-model",
-		Timeout:        5 * time.Second,
-		TaskStore:      taskStore,
-		ChannelManager: channelMgr,
+		Model:               "test-model",
+		Timeout:             5 * time.Second,
+		MemStore:            memStore,
+		TaskStore:           taskStore,
+		ChannelManager:      channelMgr,
+		ChannelBindingStore: bindingStore,
 		ToolPolicy: handler.ToolPolicy{
 			Profile: "messaging",
 		},

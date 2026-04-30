@@ -14,9 +14,14 @@ import (
 
 // serverEntry holds a connected MCP server client along with its discovered tools.
 type serverEntry struct {
+	cfg        config.MCPServerConfig
 	name       string
 	toolPrefix string
 	hideTools  bool
+	kind       string
+	profile    string
+	connected  bool
+	lastError  string
 	client     Client
 	tools      []Tool // cached after Initialize
 }
@@ -24,14 +29,24 @@ type serverEntry struct {
 // Manager manages connections to multiple MCP servers and exposes their tools
 // to the handler layer.
 type Manager struct {
-	mu      sync.RWMutex
-	servers []*serverEntry
+	mu            sync.RWMutex
+	servers       []*serverEntry
+	clientFactory func(config.MCPServerConfig) Client
 }
 
 // NewManager constructs a Manager from the given server configs. Servers with
 // Enabled=false are skipped. Call Start to connect to the servers.
 func NewManager(cfgs []config.MCPServerConfig) *Manager {
-	m := &Manager{}
+	return NewManagerWithFactory(cfgs, newClient)
+}
+
+// NewManagerWithFactory constructs a Manager with a custom client factory.
+// It is primarily useful for tests and alternate client implementations.
+func NewManagerWithFactory(cfgs []config.MCPServerConfig, factory func(config.MCPServerConfig) Client) *Manager {
+	if factory == nil {
+		factory = newClient
+	}
+	m := &Manager{clientFactory: factory}
 	for _, c := range cfgs {
 		if !c.Enabled {
 			continue
@@ -41,7 +56,15 @@ func NewManager(cfgs []config.MCPServerConfig) *Manager {
 		if prefix == "" {
 			prefix = ToolPrefix(c.Name)
 		}
-		m.servers = append(m.servers, &serverEntry{name: c.Name, toolPrefix: prefix, hideTools: c.HideTools, client: newClient(c)})
+		m.servers = append(m.servers, &serverEntry{
+			cfg:        c,
+			name:       c.Name,
+			toolPrefix: prefix,
+			hideTools:  c.HideTools,
+			kind:       strings.TrimSpace(c.Kind),
+			profile:    strings.TrimSpace(c.ProfileName),
+			client:     factory(c),
+		})
 	}
 	return m
 }
@@ -66,30 +89,107 @@ func newClient(c config.MCPServerConfig) Client {
 // discovers their tools. Errors for individual servers are logged but do not
 // prevent other servers from starting.
 func (m *Manager) Start(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	servers := append([]*serverEntry(nil), m.servers...)
+	m.mu.RUnlock()
 
 	var wg sync.WaitGroup
-	for _, s := range m.servers {
+	for _, s := range servers {
 		s := s
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := s.client.Initialize(ctx); err != nil {
+			if err := m.connectServer(ctx, s); err != nil {
 				slog.Warn("mcp: server init failed", "server", s.name, "err", err)
-				return
 			}
-			tools, err := s.client.ListTools(ctx)
-			if err != nil {
-				slog.Warn("mcp: tools/list failed", "server", s.name, "err", err)
-				return
-			}
-			s.tools = tools
-			slog.Info("mcp: server connected", "server", s.name, "tools", len(tools))
 		}()
 	}
 	wg.Wait()
 	return nil
+}
+
+// ServerStatus is the runtime state of one configured MCP server.
+type ServerStatus struct {
+	Name        string
+	Kind        string
+	ProfileName string
+	Hidden      bool
+	Connected   bool
+	ToolCount   int
+	LastError   string
+}
+
+// ServerStatuses returns the runtime state for all configured MCP servers.
+func (m *Manager) ServerStatuses() []ServerStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]ServerStatus, 0, len(m.servers))
+	for _, s := range m.servers {
+		out = append(out, serverStatusSnapshot(s))
+	}
+	return out
+}
+
+// ServerStatus returns the runtime state for one configured MCP server.
+func (m *Manager) ServerStatus(kind, profile string) (ServerStatus, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.findServerLocked(kind, profile)
+	if !ok {
+		return ServerStatus{}, false
+	}
+	return serverStatusSnapshot(s), true
+}
+
+// EnsureServer initializes a configured server when it is not connected yet.
+func (m *Manager) EnsureServer(ctx context.Context, kind, profile string) (ServerStatus, error) {
+	m.mu.RLock()
+	s, ok := m.findServerLocked(kind, profile)
+	if !ok {
+		m.mu.RUnlock()
+		return ServerStatus{}, fmt.Errorf("mcp: server kind=%q profile=%q not found", kind, profile)
+	}
+	if s.connected {
+		status := serverStatusSnapshot(s)
+		m.mu.RUnlock()
+		return status, nil
+	}
+	m.mu.RUnlock()
+	if err := m.connectServer(ctx, s); err != nil {
+		m.mu.RLock()
+		status := serverStatusSnapshot(s)
+		m.mu.RUnlock()
+		return status, err
+	}
+	m.mu.RLock()
+	status := serverStatusSnapshot(s)
+	m.mu.RUnlock()
+	return status, nil
+}
+
+// StopServer disconnects one configured server and resets it so it can be
+// started again later via EnsureServer or Start.
+func (m *Manager) StopServer(kind, profile string) (ServerStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.findServerLocked(kind, profile)
+	if !ok {
+		return ServerStatus{}, fmt.Errorf("mcp: server kind=%q profile=%q not found", kind, profile)
+	}
+	if s.client != nil {
+		if err := s.client.Close(); err != nil {
+			s.lastError = err.Error()
+			s.connected = false
+			s.tools = nil
+			s.client = m.clientFactory(s.cfg)
+			return serverStatusSnapshot(s), err
+		}
+	}
+	s.connected = false
+	s.lastError = ""
+	s.tools = nil
+	s.client = m.clientFactory(s.cfg)
+	return serverStatusSnapshot(s), nil
 }
 
 // ToolPrefix returns the default runtime tool prefix for a plain configured
@@ -143,16 +243,28 @@ type RegisteredTool struct {
 	ToolName    string
 	Description string
 	InputSchema json.RawMessage
+	Kind        string
+	ProfileName string
+	Hidden      bool
 }
 
 // ListTools returns all tools from all connected servers with their prefixed names.
 func (m *Manager) ListTools() []RegisteredTool {
+	return m.listTools(false)
+}
+
+// AllTools returns all tools from all connected servers, including hidden tools.
+func (m *Manager) AllTools() []RegisteredTool {
+	return m.listTools(true)
+}
+
+func (m *Manager) listTools(includeHidden bool) []RegisteredTool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var out []RegisteredTool
 	for _, s := range m.servers {
-		if s.hideTools {
+		if s.hideTools && !includeHidden {
 			continue
 		}
 		for _, t := range s.tools {
@@ -162,6 +274,9 @@ func (m *Manager) ListTools() []RegisteredTool {
 				ToolName:    t.Name,
 				Description: t.Description,
 				InputSchema: t.InputSchema,
+				Kind:        s.kind,
+				ProfileName: s.profile,
+				Hidden:      s.hideTools,
 			})
 		}
 	}
@@ -171,6 +286,16 @@ func (m *Manager) ListTools() []RegisteredTool {
 // CallTool invokes a tool on the appropriate MCP server. fullName must match
 // one of the prefixes returned by ToolName or PluginToolPrefix.
 func (m *Manager) CallTool(ctx context.Context, fullName string, rawArgs json.RawMessage) (any, error) {
+	result, err := m.CallToolResult(ctx, fullName, rawArgs)
+	if err != nil {
+		return nil, err
+	}
+	return extractText(result), nil
+}
+
+// CallToolResult invokes a tool on the appropriate MCP server and returns the
+// raw MCP tool result content.
+func (m *Manager) CallToolResult(ctx context.Context, fullName string, rawArgs json.RawMessage) (*ToolResult, error) {
 	var args map[string]any
 	if len(rawArgs) > 0 {
 		if err := json.Unmarshal(rawArgs, &args); err != nil {
@@ -196,6 +321,9 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, rawArgs json.Ra
 	if target == nil {
 		return nil, fmt.Errorf("mcp: invalid tool name %q", fullName)
 	}
+	if !target.connected {
+		return nil, fmt.Errorf("mcp: server %q is not connected", target.name)
+	}
 	if strings.TrimSpace(toolName) == "" {
 		return nil, fmt.Errorf("mcp: invalid tool name %q", fullName)
 	}
@@ -209,7 +337,7 @@ func (m *Manager) CallTool(ctx context.Context, fullName string, rawArgs json.Ra
 		text := extractText(result)
 		return nil, fmt.Errorf("mcp tool error: %s", text)
 	}
-	return extractText(result), nil
+	return result, nil
 }
 
 // Close shuts down all MCP server connections.
@@ -220,6 +348,80 @@ func (m *Manager) Close() {
 		if err := s.client.Close(); err != nil {
 			slog.Warn("mcp: close error", "server", s.name, "err", err)
 		}
+		s.connected = false
+		s.tools = nil
+		s.lastError = ""
+	}
+}
+
+func (m *Manager) connectServer(ctx context.Context, s *serverEntry) error {
+	if s == nil {
+		return fmt.Errorf("mcp: nil server entry")
+	}
+	if s.client == nil {
+		s.client = m.clientFactory(s.cfg)
+	}
+	if err := s.client.Initialize(ctx); err != nil {
+		if s.client != nil {
+			_ = s.client.Close()
+		}
+		s.client = m.clientFactory(s.cfg)
+		m.mu.Lock()
+		s.connected = false
+		s.tools = nil
+		s.lastError = err.Error()
+		m.mu.Unlock()
+		return err
+	}
+	tools, err := s.client.ListTools(ctx)
+	if err != nil {
+		if s.client != nil {
+			_ = s.client.Close()
+		}
+		s.client = m.clientFactory(s.cfg)
+		m.mu.Lock()
+		s.connected = false
+		s.tools = nil
+		s.lastError = err.Error()
+		m.mu.Unlock()
+		return err
+	}
+	m.mu.Lock()
+	s.connected = true
+	s.lastError = ""
+	s.tools = tools
+	m.mu.Unlock()
+	slog.Info("mcp: server connected", "server", s.name, "tools", len(tools))
+	return nil
+}
+
+func (m *Manager) findServerLocked(kind, profile string) (*serverEntry, bool) {
+	kind = strings.TrimSpace(kind)
+	profile = strings.TrimSpace(profile)
+	for _, s := range m.servers {
+		if kind != "" && !strings.EqualFold(s.kind, kind) {
+			continue
+		}
+		if profile != "" && !strings.EqualFold(s.profile, profile) {
+			continue
+		}
+		return s, true
+	}
+	return nil, false
+}
+
+func serverStatusSnapshot(s *serverEntry) ServerStatus {
+	if s == nil {
+		return ServerStatus{}
+	}
+	return ServerStatus{
+		Name:        s.name,
+		Kind:        s.kind,
+		ProfileName: s.profile,
+		Hidden:      s.hideTools,
+		Connected:   s.connected,
+		ToolCount:   len(s.tools),
+		LastError:   s.lastError,
 	}
 }
 

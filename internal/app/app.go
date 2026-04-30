@@ -18,6 +18,7 @@ import (
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/artifacts"
 	"github.com/ffimnsr/koios/internal/bookmarks"
+	"github.com/ffimnsr/koios/internal/browser"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/channels"
 	"github.com/ffimnsr/koios/internal/config"
@@ -108,6 +109,11 @@ func buildCompactionMemoryCheckpoint(messages []types.Message) string {
 
 func mergedMCPServers(cfg *config.Config) ([]config.MCPServerConfig, error) {
 	servers := append([]config.MCPServerConfig(nil), cfg.MCPServers...)
+	browserServers, err := browser.MCPServers(cfg)
+	if err != nil {
+		return nil, err
+	}
+	servers = append(servers, browserServers...)
 	manifests, err := discoveredExtensions(cfg)
 	if err != nil {
 		return nil, err
@@ -152,6 +158,15 @@ func RunGateway(build BuildInfo) error {
 		return err
 	}
 	logLevel := setupLogger(cfg)
+
+	// Prevent duplicate daemon instances by holding an exclusive flock on the
+	// workspace lock file for the lifetime of this process.
+	lockFile, err := acquireGatewayLock(cfg.LockFilePath())
+	if err != nil {
+		return err
+	}
+	defer releaseGatewayLock(lockFile, cfg.LockFilePath())
+	slog.Info("gateway lock acquired", "lock", cfg.LockFilePath())
 
 	workspaceDir, err := os.Getwd()
 	if err != nil {
@@ -398,7 +413,13 @@ func RunGateway(build BuildInfo) error {
 	if err != nil {
 		return err
 	}
-	allMCPServers, err := mergedMCPServersWithManifests(append([]config.MCPServerConfig(nil), cfg.MCPServers...), extensionManifests)
+	browserServers, err := browser.MCPServers(cfg)
+	if err != nil {
+		return err
+	}
+	baseMCPServers := append([]config.MCPServerConfig(nil), cfg.MCPServers...)
+	baseMCPServers = append(baseMCPServers, browserServers...)
+	allMCPServers, err := mergedMCPServersWithManifests(baseMCPServers, extensionManifests)
 	if err != nil {
 		return err
 	}
@@ -486,6 +507,11 @@ func RunGateway(build BuildInfo) error {
 			Allow:   cfg.ToolsAllow,
 			Deny:    cfg.ToolsDeny,
 		},
+		SandboxToolPolicy: handler.ToolPolicy{
+			Profile: cfg.SandboxToolProfile,
+			Allow:   cfg.SandboxToolsAllow,
+			Deny:    cfg.SandboxToolsDeny,
+		},
 		ExecConfig: handler.ExecConfig{
 			Enabled:             cfg.ExecEnabled,
 			EnableDenyPatterns:  cfg.ExecEnableDenyPatterns,
@@ -528,6 +554,7 @@ func RunGateway(build BuildInfo) error {
 		Monitor:             mon,
 		LogLevel:            logLevel,
 		MCPManager:          mcpMgr,
+		BrowserConfig:       cfg.Browser,
 		WorkflowRunner:      workflowRunner,
 		Orchestrator:        orchRuntime,
 		RunLedger:           runLedger,
@@ -543,9 +570,10 @@ func RunGateway(build BuildInfo) error {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /v1/ws", wsHandler)
-	webhookHandler := handler.NewWebhookHTTPHandler(store, hooks, presenceMgr, jobStore, sched, cfg.WebhookToken)
+	webhookHandler := handler.NewWebhookHTTPHandler(store, hooks, presenceMgr, jobStore, sched, cfg.WebhookToken, cfg.HookMappings)
 	webhookHandler.SetAgentCoordinator(agentCoord, wsHandler)
 	mux.Handle("POST /v1/webhooks/events", webhookHandler)
+	mux.Handle("POST /v1/hooks/{name}", webhookHandler)
 	if cfg.Telegram.Enabled {
 		telegramChannel, err := channels.NewTelegramChannel(cfg.Telegram, &channels.Dispatcher{
 			AgentCoordinator: agentCoord,
@@ -788,7 +816,7 @@ func setupLogger(cfg *config.Config) *slog.LevelVar {
 			output = io.MultiWriter(os.Stdout, fileWriter)
 		}
 	}
-	logger := slog.New(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: level}))
+	logger := slog.New(redact.NewHandler(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: level})))
 	slog.SetDefault(logger)
 	return level
 }
@@ -837,4 +865,32 @@ func compilePatterns(patterns []string) []*regexp.Regexp {
 		out = append(out, re)
 	}
 	return out
+}
+
+// acquireGatewayLock opens (or creates) the lock file at lockPath, acquires an
+// exclusive non-blocking flock on it, and writes the current PID for
+// diagnostics.  If another live process already holds the lock the call returns
+// a descriptive error immediately.  The returned *os.File must be kept open for
+// as long as the lock should be held; call releaseGatewayLock to release it.
+func acquireGatewayLock(lockPath string) (*os.File, error) {
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("gateway lock: open %s: %w", lockPath, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("gateway lock: another koios instance appears to be running (lock file: %s)", lockPath)
+	}
+	// Truncate and stamp with current PID so operators can inspect with `cat`.
+	if err := f.Truncate(0); err == nil {
+		_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+	}
+	return f, nil
+}
+
+// releaseGatewayLock unlocks and closes f, then removes the lock file.
+func releaseGatewayLock(f *os.File, lockPath string) {
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+	_ = os.Remove(lockPath)
 }

@@ -960,6 +960,31 @@ func (h *Handler) workspaceGrep(peerID, path, pattern string, recursive bool, li
 	}, nil
 }
 
+func (h *Handler) workspaceFind(peerID, path, pattern string, recursive bool, limit int, caseSensitive, useRegexp bool) (map[string]any, error) {
+	if h.workspaceStore == nil {
+		return nil, fmt.Errorf("workspace is not enabled")
+	}
+	if strings.TrimSpace(path) == "" {
+		path = "."
+	}
+	if strings.TrimSpace(pattern) == "" {
+		return nil, fmt.Errorf("pattern is required")
+	}
+	matches, err := h.workspaceStore.Find(peerID, path, pattern, recursive, limit, caseSensitive, useRegexp)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"path":           path,
+		"pattern":        pattern,
+		"recursive":      recursive,
+		"case_sensitive": caseSensitive,
+		"regexp":         useRegexp,
+		"matches":        matches,
+		"count":          len(matches),
+	}, nil
+}
+
 func (h *Handler) workspaceSort(peerID, path string, reverse, caseSensitive bool) (map[string]any, error) {
 	if h.workspaceStore == nil {
 		return nil, fmt.Errorf("workspace is not enabled")

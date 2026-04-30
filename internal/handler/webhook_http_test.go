@@ -1,18 +1,24 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
 type webhookStubProvider struct{}
+
+func boolPtr(v bool) *bool { return &v }
 
 func (webhookStubProvider) Complete(context.Context, *types.ChatRequest) (*types.ChatResponse, error) {
 	return &types.ChatResponse{
@@ -24,6 +30,22 @@ func (webhookStubProvider) CompleteStream(_ context.Context, _ *types.ChatReques
 	return "ok", nil
 }
 
+type capturingWebhookProvider struct {
+	reqs chan *types.ChatRequest
+}
+
+func (p *capturingWebhookProvider) Complete(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+	select {
+	case p.reqs <- req:
+	default:
+	}
+	return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}, nil
+}
+
+func (p *capturingWebhookProvider) CompleteStream(_ context.Context, _ *types.ChatRequest, _ http.ResponseWriter) (string, error) {
+	return "ok", nil
+}
+
 func TestWebhookApply_CronScheduleCreatesOneShotJob(t *testing.T) {
 	jobStore, err := scheduler.NewJobStore(t.TempDir())
 	if err != nil {
@@ -31,7 +53,7 @@ func TestWebhookApply_CronScheduleCreatesOneShotJob(t *testing.T) {
 	}
 	store := session.New(20)
 	sched := scheduler.New(jobStore, webhookStubProvider{}, store, nil, "model", 1)
-	h := NewWebhookHTTPHandler(store, nil, nil, jobStore, sched, "token")
+	h := NewWebhookHTTPHandler(store, nil, nil, jobStore, sched, "token", nil)
 
 	_, err = h.apply(webhookEventRequest{
 		Type:   "cron.schedule",
@@ -65,7 +87,7 @@ func TestWebhookApply_CronTriggerRunsJob(t *testing.T) {
 	}
 	store := session.New(20)
 	sched := scheduler.New(jobStore, webhookStubProvider{}, store, nil, "model", 1)
-	h := NewWebhookHTTPHandler(store, nil, nil, jobStore, sched, "token")
+	h := NewWebhookHTTPHandler(store, nil, nil, jobStore, sched, "token", nil)
 
 	job := &scheduler.Job{
 		PeerID:    "peer-1",
@@ -115,7 +137,7 @@ func TestWebhookApply_AgentRunReturnsRunID(t *testing.T) {
 	store := session.New(20)
 	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
 	coord := agent.NewCoordinator(rt)
-	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
 	runID, err := h.apply(webhookEventRequest{
@@ -135,7 +157,7 @@ func TestWebhookApply_AgentRunRequiresPrompt(t *testing.T) {
 	store := session.New(20)
 	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
 	coord := agent.NewCoordinator(rt)
-	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
 	_, err := h.apply(webhookEventRequest{
@@ -150,8 +172,7 @@ func TestWebhookApply_AgentRunRequiresPrompt(t *testing.T) {
 
 func TestWebhookApply_AgentRunRequiresCoordinator(t *testing.T) {
 	store := session.New(20)
-	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
-	// no coordinator set
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 
 	_, err := h.apply(webhookEventRequest{
 		Type:   "agent.run",
@@ -167,7 +188,7 @@ func TestWebhookApply_SessionWakeReturnsRunID(t *testing.T) {
 	store := session.New(20)
 	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
 	coord := agent.NewCoordinator(rt)
-	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
 	runID, err := h.apply(webhookEventRequest{
@@ -187,7 +208,7 @@ func TestWebhookApply_SessionWakePersistsToMainSession(t *testing.T) {
 	store := session.New(20)
 	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
 	coord := agent.NewCoordinator(rt)
-	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
 	runID, err := h.apply(webhookEventRequest{
@@ -202,8 +223,6 @@ func TestWebhookApply_SessionWakePersistsToMainSession(t *testing.T) {
 		t.Fatal("expected a non-empty run_id from session.wake")
 	}
 
-	// Wait for the async run to complete and verify the assistant reply
-	// was persisted to the main session history (not an isolated session).
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		history := store.Get("peer-1::main").History()
@@ -221,7 +240,7 @@ func TestWebhookApply_SessionWakeRequiresPrompt(t *testing.T) {
 	store := session.New(20)
 	rt := agent.NewRuntime(store, webhookStubProvider{}, "model", 10*time.Second, agent.RetryPolicy{})
 	coord := agent.NewCoordinator(rt)
-	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
 	_, err := h.apply(webhookEventRequest{
@@ -236,8 +255,7 @@ func TestWebhookApply_SessionWakeRequiresPrompt(t *testing.T) {
 
 func TestWebhookApply_SessionWakeRequiresCoordinator(t *testing.T) {
 	store := session.New(20)
-	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token")
-	// no coordinator set
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 
 	_, err := h.apply(webhookEventRequest{
 		Type:   "session.wake",
@@ -246,5 +264,72 @@ func TestWebhookApply_SessionWakeRequiresCoordinator(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error when coordinator is nil for session.wake")
+	}
+}
+
+func TestWebhookServeHTTP_NamedHookMappingRunsSessionWake(t *testing.T) {
+	store := session.New(20)
+	provider := &capturingWebhookProvider{reqs: make(chan *types.ChatRequest, 1)}
+	rt := agent.NewRuntime(store, provider, "model", 10*time.Second, agent.RetryPolicy{})
+	coord := agent.NewCoordinator(rt)
+	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", []config.HookMapping{{
+		Name: "github-pr",
+		Type: "session.wake",
+		Fields: []config.HookFieldTransform{
+			{To: "peer_id", Value: "peer-1"},
+			{To: "prompt", Template: "GitHub {{headers.x-github-event}}: {{body.pull_request.title}}"},
+			{To: "model", Value: "gpt-test"},
+			{To: "timeout_seconds", Value: "45"},
+		},
+	}})
+	h.SetAgentCoordinator(coord, nil)
+
+	body, err := json.Marshal(map[string]any{
+		"pull_request": map[string]any{"title": "Add named hooks"},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/hooks/github-pr", bytes.NewReader(body))
+	req.SetPathValue("name", "github-pr")
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ServeHTTP status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case captured := <-provider.reqs:
+		if captured.Model != "gpt-test" {
+			t.Fatalf("captured model = %q", captured.Model)
+		}
+		if len(captured.Messages) == 0 || captured.Messages[len(captured.Messages)-1].Content != "GitHub pull_request: Add named hooks" {
+			t.Fatalf("captured messages = %#v", captured.Messages)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for mapped hook run")
+	}
+}
+
+func TestWebhookServeHTTP_NamedHookMappingRequiresSource(t *testing.T) {
+	h := NewWebhookHTTPHandler(session.New(20), nil, nil, nil, nil, "token", []config.HookMapping{{
+		Name: "missing-prompt",
+		Type: "session.wake",
+		Fields: []config.HookFieldTransform{
+			{To: "peer_id", Value: "peer-1"},
+			{To: "prompt", From: "body.missing", Required: boolPtr(true)},
+		},
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/hooks/missing-prompt", bytes.NewReader([]byte(`{"ok":true}`)))
+	req.SetPathValue("name", "missing-prompt")
+	req.Header.Set("Authorization", "Bearer token")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("ServeHTTP status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }

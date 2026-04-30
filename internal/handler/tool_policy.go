@@ -16,6 +16,7 @@ var toolProfiles = map[string][]string{
 		"group:runtime",
 		"group:memory",
 		"group:web",
+		"group:browser",
 		"group:automation",
 	},
 	"messaging": {
@@ -25,6 +26,40 @@ var toolProfiles = map[string][]string{
 	},
 	"minimal": {
 		"group:sessions",
+	},
+	// sandbox is the least-privilege profile for sandboxed sessions.
+	// It allows read-only file access and safe web tools, but no writes,
+	// no exec, no process management, and no browser automation.
+	"sandbox": {
+		"time.now",
+		"subagent.status",
+		"session.history",
+		"session.list",
+		"read",
+		"head",
+		"tail",
+		"grep",
+		"find",
+		"sort",
+		"uniq",
+		"diff",
+		"workspace.list",
+		"workspace.read",
+		"workspace.head",
+		"workspace.tail",
+		"workspace.grep",
+		"workspace.find",
+		"workspace.sort",
+		"workspace.uniq",
+		"workspace.diff",
+		"web_search",
+		"web_fetch",
+		"memory.search",
+		"memory.get",
+		"bookmark.get",
+		"bookmark.list",
+		"bookmark.search",
+		"note.search",
 	},
 }
 
@@ -125,9 +160,16 @@ var toolGroups = map[string][]string{
 		"head",
 		"tail",
 		"grep",
+		"find",
 		"sort",
 		"uniq",
 		"diff",
+		"git.status",
+		"git.diff",
+		"git.log",
+		"git.branch",
+		"git.commit",
+		"git.apply_patch",
 		"write",
 		"edit",
 		"apply_patch",
@@ -136,6 +178,7 @@ var toolGroups = map[string][]string{
 		"workspace.head",
 		"workspace.tail",
 		"workspace.grep",
+		"workspace.find",
 		"workspace.sort",
 		"workspace.uniq",
 		"workspace.diff",
@@ -182,6 +225,12 @@ var toolGroups = map[string][]string{
 		"web_search",
 		"web_fetch",
 	},
+	"group:browser": {
+		"browser.profile.list",
+		"browser.profile.use",
+		"browser.status",
+		"browser.*",
+	},
 	"group:automation": {
 		"cron.list",
 		"cron.create",
@@ -195,19 +244,31 @@ var toolGroups = map[string][]string{
 
 func (p ToolPolicy) Allows(name string) bool {
 	denied := expandToolTokens(p.Deny)
-	if denied[name] {
+	if matchesToolToken(denied, name) {
 		return false
 	}
 	allowed := expandToolTokens(p.Allow)
 	if len(allowed) > 0 {
-		return allowed[name]
+		return matchesToolToken(allowed, name)
 	}
 	profile := strings.ToLower(strings.TrimSpace(p.Profile))
 	if profile == "" || profile == "full" {
 		return true
 	}
 	base := expandToolTokens(toolProfiles[profile])
-	return base[name]
+	return matchesToolToken(base, name)
+}
+
+func matchesToolToken(tokens map[string]bool, name string) bool {
+	if tokens[name] {
+		return true
+	}
+	for token := range tokens {
+		if strings.HasSuffix(token, ".*") && strings.HasPrefix(name, strings.TrimSuffix(token, "*")) {
+			return true
+		}
+	}
+	return false
 }
 
 func expandToolTokens(tokens []string) map[string]bool {

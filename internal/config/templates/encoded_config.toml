@@ -6,7 +6,7 @@ listen_addr = %s
 request_timeout = %s
 allowed_origins = %s
 
-%s%s
+%s%s%s
 
 [session]
 max_messages = %d
@@ -78,7 +78,7 @@ dirs = [%s]
 allow = [%s]
 deny = [%s]
 
-%s
+%s%s
 [tools.exec]
 enabled = %t
 enable_deny_patterns = %t

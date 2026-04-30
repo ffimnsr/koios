@@ -104,14 +104,19 @@ func (h *Handler) startBackgroundProcessWithContext(ctx context.Context, peerID 
 	if command == "" {
 		return nil, fmt.Errorf("command is required")
 	}
-	if reason, blocked := h.execNeedsApproval(command); blocked {
+	if decision, blocked := h.execNeedsApproval(command); blocked {
 		return h.requestApproval(peerID, pendingApproval{
 			Kind:    "shell_execution",
 			Action:  "process.start",
 			Summary: command,
-			Reason:  reason,
+			Reason:  decision.reason,
 			Command: command,
 			Workdir: strings.TrimSpace(p.Workdir),
+			Metadata: map[string]any{
+				"approval_mode":   h.execConfig.ApprovalMode,
+				"policy":          decision.policy,
+				"matched_pattern": decision.matchedPattern,
+			},
 		}, func(runCtx context.Context, approvedPeerID string, approval pendingApproval) (map[string]any, error) {
 			return h.startBackgroundProcessUnchecked(runCtx, approvedPeerID, backgroundProcessStartParams{
 				Command: approval.Command,
