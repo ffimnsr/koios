@@ -13,6 +13,7 @@ import (
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/decisions"
 	"github.com/ffimnsr/koios/internal/notes"
+	"github.com/ffimnsr/koios/internal/peerllm"
 	"github.com/ffimnsr/koios/internal/plans"
 	"github.com/ffimnsr/koios/internal/preferences"
 	"github.com/ffimnsr/koios/internal/projects"
@@ -1225,6 +1226,153 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			IsError:    args.IsError,
 			Limit:      args.Limit,
 		})
+	case "peer.llm_provider.set":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var peerLLMSetArgs struct {
+			Name         string `json:"name"`
+			Provider     string `json:"provider"`
+			APIKey       string `json:"api_key"`
+			BaseURL      string `json:"base_url"`
+			DefaultModel string `json:"default_model"`
+			Enabled      *bool  `json:"enabled"`
+		}
+		if err := json.Unmarshal(call.Arguments, &peerLLMSetArgs); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		profile, err := h.peerLLMStore.Set(ctx, peerID, peerllm.Input{
+			Name:         peerLLMSetArgs.Name,
+			Provider:     peerLLMSetArgs.Provider,
+			APIKey:       peerLLMSetArgs.APIKey,
+			BaseURL:      peerLLMSetArgs.BaseURL,
+			DefaultModel: peerLLMSetArgs.DefaultModel,
+			Enabled:      peerLLMSetArgs.Enabled,
+		})
+		if err != nil {
+			return nil, err
+		}
+		// Invalidate provider cache so the next request rebuilds from updated profile.
+		if h.agentRuntime != nil {
+			h.agentRuntime.InvalidateProviderCache(peerID, profile.Name)
+		}
+		return map[string]any{
+			"ok":            true,
+			"id":            profile.ID,
+			"name":          profile.Name,
+			"provider":      profile.Provider,
+			"has_api_key":   profile.APIKeyEnc != "",
+			"base_url":      profile.BaseURL,
+			"default_model": profile.DefaultModel,
+			"enabled":       profile.Enabled,
+		}, nil
+	case "peer.llm_provider.get":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var peerLLMGetArgs struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Arguments, &peerLLMGetArgs); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		pit, err := h.peerLLMStore.Get(ctx, peerID, peerLLMGetArgs.Name)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"id":            pit.ID,
+			"name":          pit.Name,
+			"provider":      pit.Provider,
+			"has_api_key":   pit.APIKeyEnc != "",
+			"base_url":      pit.BaseURL,
+			"default_model": pit.DefaultModel,
+			"enabled":       pit.Enabled,
+			"created_at":    pit.CreatedAt,
+			"updated_at":    pit.UpdatedAt,
+		}, nil
+	case "peer.llm_provider.list":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var peerLLMListArgs struct {
+			Provider string `json:"provider,omitempty"`
+		}
+		if err := json.Unmarshal(call.Arguments, &peerLLMListArgs); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		results, err := h.peerLLMStore.List(ctx, peerID)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(peerLLMListArgs.Provider) != "" {
+			var filtered []peerllm.ProfileResult
+			for _, r := range results {
+				if strings.EqualFold(r.Provider, peerLLMListArgs.Provider) {
+					filtered = append(filtered, r)
+				}
+			}
+			results = filtered
+		}
+		return map[string]any{
+			"profiles": results,
+			"count":    len(results),
+		}, nil
+	case "peer.llm_provider.delete":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var peerLLMDeleteArgs struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Arguments, &peerLLMDeleteArgs); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		if err := h.peerLLMStore.Delete(ctx, peerID, peerLLMDeleteArgs.Name); err != nil {
+			return nil, err
+		}
+		// Invalidate provider cache so stale connections are not reused.
+		if h.agentRuntime != nil {
+			h.agentRuntime.InvalidateProviderCache(peerID, peerLLMDeleteArgs.Name)
+		}
+		return map[string]bool{"ok": true}, nil
+	case "peer.llm_provider.test":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var peerLLMTestArgs struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Arguments, &peerLLMTestArgs); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		profile, err := h.peerLLMStore.Get(ctx, peerID, peerLLMTestArgs.Name)
+		if err != nil {
+			return nil, err
+		}
+		return h.testProviderConnectivity(ctx, profile), nil
+	case "peer.llm_provider.activate":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var peerLLMActivateArgs struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Arguments, &peerLLMActivateArgs); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		name := strings.TrimSpace(peerLLMActivateArgs.Name)
+		if name == "" {
+			return nil, fmt.Errorf("name is required")
+		}
+		if _, err := h.peerLLMStore.Get(ctx, peerID, name); err != nil {
+			return nil, fmt.Errorf("provider profile %q not found", name)
+		}
+		return map[string]any{
+			"ok":             true,
+			"active_profile": name,
+		}, nil
+
 	default:
 		return nil, errUnhandledTool
 	}

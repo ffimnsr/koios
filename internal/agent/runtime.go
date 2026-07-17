@@ -30,6 +30,15 @@ type Provider interface {
 	CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error)
 }
 
+// ProviderResolver resolves which provider backend to use for a peer/session.
+// When nil or returning (nil, "", nil), the runtime falls back to its global provider.
+type ProviderResolver interface {
+	// ResolveProvider returns the provider and model to use for the given peer
+	// and session. modelOverride, if non-empty, takes precedence over the
+	// resolved profile's default model.
+	ResolveProvider(ctx context.Context, peerID, sessionKey, modelOverride string) (Provider, string, error)
+}
+
 // SessionScope describes how a run maps onto session storage.
 type SessionScope string
 
@@ -187,6 +196,21 @@ type ToolExecutor interface {
 
 type toolRunContextKey struct{}
 
+type providerOverrideKey struct{}
+
+// WithProviderOverride attaches a per-request provider override to the context.
+func WithProviderOverride(ctx context.Context, prov Provider) context.Context {
+	return context.WithValue(ctx, providerOverrideKey{}, prov)
+}
+
+// ProviderOverrideFromContext returns the per-request provider override, if any.
+func ProviderOverrideFromContext(ctx context.Context) Provider {
+	if p, ok := ctx.Value(providerOverrideKey{}).(Provider); ok {
+		return p
+	}
+	return nil
+}
+
 type ToolRunContext struct {
 	SessionKey    string
 	ActiveProfile string
@@ -217,6 +241,7 @@ type Runtime struct {
 	store             *session.Store
 	prov              Provider
 	model             string
+	resolver          ProviderResolver
 	retry             RetryPolicy
 	defaultTimeout    time.Duration
 	globalKey         string
@@ -432,6 +457,19 @@ func NewRuntime(store *session.Store, prov Provider, model string, timeout time.
 	}
 }
 
+// SetProviderResolver configures optional per-request provider resolution.
+func (rt *Runtime) SetProviderResolver(r ProviderResolver) {
+	rt.resolver = r
+}
+
+// InvalidateProviderCache clears the cached provider for a peer+profile combination
+// so the next request rebuilds it from the updated store.
+func (rt *Runtime) InvalidateProviderCache(peerID, profileName string) {
+	if r, ok := rt.resolver.(*PeerAwareResolver); ok {
+		r.InvalidateCache(peerID, profileName)
+	}
+}
+
 // Run executes the request without streaming.
 func (rt *Runtime) Run(ctx context.Context, req RunRequest) (*Result, error) {
 	return rt.run(ctx, req, nil)
@@ -460,6 +498,18 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	if req.Model == rt.model {
 		if policy := rt.sessionPolicy(sessionKey); policy.ModelOverride != "" {
 			req.Model = policy.ModelOverride
+		}
+	}
+
+	// Resolve per-request provider from session policy or peer default.
+	if rt.resolver != nil {
+		resolvedProv, resolvedModel, err := rt.resolver.ResolveProvider(ctx, req.PeerID, sessionKey, req.Model)
+		if err != nil {
+			return nil, fmt.Errorf("resolve provider: %w", err)
+		}
+		if resolvedProv != nil {
+			req.Model = resolvedModel
+			ctx = WithProviderOverride(ctx, resolvedProv)
 		}
 	}
 
@@ -810,6 +860,11 @@ func (rt *Runtime) standingSystemMessages(req RunRequest) ([]types.Message, erro
 }
 
 func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bool, sink *captureResponseWriter) (string, *types.ChatResponse, error) {
+	// Use per-request provider override if set.
+	prov := rt.prov
+	if p := ProviderOverrideFromContext(ctx); p != nil {
+		prov = p
+	}
 	if rt.hooks != nil {
 		ev, err := rt.hooks.Intercept(ctx, ops.Event{
 			Name: ops.HookBeforeLLM,
@@ -846,7 +901,7 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 			return "", nil, fmt.Errorf("stream sink is required")
 		}
 		var streamText string
-		streamText, callErr = rt.prov.CompleteStream(ctx, req, sink)
+		streamText, callErr = prov.CompleteStream(ctx, req, sink)
 		if callErr == nil {
 			text = streamText
 			resp = &types.ChatResponse{
@@ -854,7 +909,7 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 			}
 		}
 	} else {
-		resp, callErr = rt.prov.Complete(ctx, req)
+		resp, callErr = prov.Complete(ctx, req)
 		if callErr == nil {
 			if resp == nil {
 				callErr = fmt.Errorf("nil response from provider")

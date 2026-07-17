@@ -818,6 +818,19 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Message chunking/splitting per-channel limits
 	- Research notes: OpenClaw has the clearest cross-channel treatment with per-channel `textChunkLimit`, `chunkMode`, and streaming modes. PicoClaw has some channel max-length defaults and per-channel settings, but less visible centralized chunk-policy machinery. IronClaw did not show an equally explicit cross-channel chunking subsystem in the current search.
 	- References: OpenClaw `docs/gateway/configuration-reference.md` (Slack, WhatsApp, Mattermost), `src/config/types.queue.ts`; PicoClaw `pkg/config/defaults.go`; IronClaw `src/tools/builtin/message.rs` for outbound target abstraction, but no obvious chunk-policy equivalent found in current repo search.
+
+- [x] Peer-linked BYOK LLM provider profiles with request-time provider resolution
+- Research notes: OpenClaw, PicoClaw, and IronClaw all point toward long-term solution being profile- and auth-manager-based rather than single global provider config. PicoClaw and IronClaw are strongest references for multiple auth profiles and typed credential ownership. OpenClaw is strongest reference for runtime provider compatibility, model/provider routing, and user-facing provider switching. Koios already has global provider routing plus per-session `model_override` and `browser_profile`, so missing long-term piece is peer-scoped encrypted provider profiles exposed by API and resolved at request time.
+- Suggested Koios shape:
+	1. Add peer-scoped encrypted provider-profile store separate from generic preferences so API keys never live in plaintext preference rows.
+	2. Expose peer API/RPC methods such as `peer.llm_provider.set`, `peer.llm_provider.get`, `peer.llm_provider.list`, `peer.llm_provider.delete`, `peer.llm_provider.test`, and `peer.llm_provider.activate`.
+	3. Persist peer default provider-profile link separately from secret material, then extend `session.patch` with `provider_profile` so sessions can temporarily override peer default.
+	4. Refactor runtime/provider path so provider selection happens per request using `peer_id`, `session_key`, `provider_profile`, and `model_override`, instead of single startup-global provider only.
+	5. Keep current global `[llm]` config as fallback/default path when peer has no linked BYOK profile.
+	6. Reuse existing provider compatibility layer for OpenAI-compatible, Anthropic, Gemini, OpenRouter, NIM, Ollama, vLLM, and LiteLLM endpoints.
+	7. Add redaction, masked previews, cross-peer isolation checks, and provider-profile test endpoints so secrets never leak into logs, transcripts, run records, or artifacts.
+	8. Add introspection so `model.list` or equivalent surfaces global models plus peer-linked provider profiles available to current peer.
+- References: OpenClaw `docs/providers/index.md`, `docs/providers/models.md`, `src/agents/provider-attribution.ts`, `src/auto-reply/reply/agent-runner.ts`; PicoClaw `docs/ANTIGRAVITY_AUTH.md`, `docs/providers.md`, `web/frontend/src/components/credentials/credentials-page.tsx`, `pkg/providers/factory_provider.go`; IronClaw `src/bridge/auth_manager.rs`, `src/llm/registry.rs`, `src/llm/mod.rs`, `docs/capabilities/llm-providers.md`.
 - [x] Shared cross-channel `message` tool for outbound messages
 	- Research notes: This is one of the clearer parity items. OpenClaw exposes a channel-agnostic outbound message surface via its CLI and channel action adapters. PicoClaw already has a shared `message` tool with per-round send tracking. IronClaw also has a built-in cross-channel `message` tool that can target Slack, Telegram, Signal, and other transports.
 	- References: OpenClaw `docs/cli/message.md`, `extensions/telegram/src/channel-actions.ts`; PicoClaw `pkg/tools/message.go`; IronClaw `src/tools/builtin/message.rs`.

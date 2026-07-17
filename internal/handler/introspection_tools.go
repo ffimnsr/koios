@@ -317,7 +317,7 @@ func (h *Handler) usageEstimate(ctx context.Context, peerID string, messages []t
 	}, nil
 }
 
-func (h *Handler) listModels() map[string]any {
+func (h *Handler) listModels(peerID string) map[string]any {
 	models := []map[string]any{{
 		"name":         "default",
 		"model":        h.model,
@@ -349,6 +349,26 @@ func (h *Handler) listModels() map[string]any {
 			"role":         "profile",
 			"capabilities": h.modelCapabilitiesPayload(profile.Model, providerName),
 		})
+	}
+	// Append peer-linked BYOK provider profiles if the store is available.
+	if h.peerLLMStore != nil && strings.TrimSpace(peerID) != "" {
+		peerProfiles, err := h.peerLLMStore.List(context.Background(), peerID)
+		if err == nil && len(peerProfiles) > 0 {
+			for _, pp := range peerProfiles {
+				if !pp.Enabled {
+					continue
+				}
+				models = append(models, map[string]any{
+					"name":           pp.Name,
+					"model":          pp.DefaultModel,
+					"provider":       pp.Provider,
+					"base_url":       pp.BaseURL,
+					"role":           "peer_profile",
+					"has_api_key":    pp.HasAPIKey,
+					"api_key_masked": pp.APIKeyMasked,
+				})
+			}
+		}
 	}
 	return map[string]any{
 		"default_model":   h.model,
@@ -384,22 +404,40 @@ func (h *Handler) modelCapabilities(peerID, model, sessionKey string) (map[strin
 	if requested == "" && strings.TrimSpace(sessionKey) != "" {
 		policy := h.store.Policy(sessionKey)
 		requested = strings.TrimSpace(policy.ModelOverride)
+		// If no model override, check provider_profile for a BYOK default.
+		if requested == "" {
+			requested = strings.TrimSpace(policy.ProviderProfile)
+		}
 	}
+	// Try config-level model resolution first.
 	resolvedModel, info, viaProfile := h.resolveModelInfo(requested)
 	providerName := info.Provider
 	if providerName == "" {
 		providerName = h.modelCatalog.Provider
 	}
+	matchedProfile := ""
+	if viaProfile {
+		matchedProfile = info.Name
+	}
+
+	// If not found in config profiles, check peer BYOK provider profiles.
+	if !viaProfile && h.peerLLMStore != nil && strings.TrimSpace(peerID) != "" && requested != "" {
+		if p, err := h.peerLLMStore.Get(context.Background(), peerID, requested); err == nil && p != nil {
+			resolvedModel = p.DefaultModel
+			if resolvedModel == "" {
+				resolvedModel = requested
+			}
+			providerName = p.Provider
+			matchedProfile = requested
+			viaProfile = true
+		}
+	}
+
 	return map[string]any{
 		"requested_model": requested,
 		"resolved_model":  resolvedModel,
-		"matched_profile": func() string {
-			if viaProfile {
-				return info.Name
-			}
-			return ""
-		}(),
-		"capabilities": h.modelCapabilitiesPayload(resolvedModel, providerName),
+		"matched_profile": matchedProfile,
+		"capabilities":    h.modelCapabilitiesPayload(resolvedModel, providerName),
 	}, nil
 }
 

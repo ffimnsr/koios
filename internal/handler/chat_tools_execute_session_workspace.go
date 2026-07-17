@@ -401,6 +401,7 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			ModelOverride    *string `json:"model_override"`
 			ActiveProfile    *string `json:"active_profile"`
 			BrowserProfile   *string `json:"browser_profile"`
+			ProviderProfile  *string `json:"provider_profile"`
 			QueueMode        *string `json:"queue_mode"`
 			BlockStream      *bool   `json:"block_stream"`
 			StreamChunkChars *int    `json:"stream_chunk_chars"`
@@ -409,7 +410,7 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		if args.ReplyBack == nil && args.UsageMode == nil && args.ModelOverride == nil && args.ActiveProfile == nil && args.BrowserProfile == nil && args.QueueMode == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
+		if args.ReplyBack == nil && args.UsageMode == nil && args.ModelOverride == nil && args.ActiveProfile == nil && args.BrowserProfile == nil && args.ProviderProfile == nil && args.QueueMode == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
 			return nil, fmt.Errorf("at least one policy field is required")
 		}
 		targetSessionKey := strings.TrimSpace(args.SessionKey)
@@ -472,6 +473,9 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			}
 			policy.BrowserProfile = name
 		}
+		if args.ProviderProfile != nil {
+			policy.ProviderProfile = strings.TrimSpace(*args.ProviderProfile)
+		}
 		if args.QueueMode != nil {
 			policy.QueueMode = agent.NormalizeQueueMode(*args.QueueMode)
 		}
@@ -516,6 +520,9 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		}
 		if args.BrowserProfile != nil {
 			result["browser_profile"] = policy.BrowserProfile
+		}
+		if args.ProviderProfile != nil {
+			result["provider_profile"] = policy.ProviderProfile
 		}
 		if args.QueueMode != nil {
 			result["queue_mode"] = policy.QueueMode

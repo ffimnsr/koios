@@ -1927,6 +1927,7 @@ var toolDefs = []toolDef{
 				"model_override":     map[string]any{"type": "string", "description": "Pin this session to a specific model profile name or model ID. Empty string clears the override."},
 				"active_profile":     map[string]any{"type": "string", "description": "Activate a named standing/persona profile for this session. Empty string clears the session override and falls back to the peer default profile."},
 				"browser_profile":    map[string]any{"type": "string", "description": "Activate a named browser profile for this session. Empty string clears the session override and falls back to the configured browser default profile."},
+				"provider_profile":   map[string]any{"type": "string", "description": "Select a BYOK LLM provider profile for this session. Empty string clears the session override and falls back to the peer default or gateway global provider."},
 				"queue_mode":         map[string]any{"type": "string", "enum": []string{"steer", "followup", "collect"}, "description": "How mid-run steering notes are applied."},
 				"block_stream":       map[string]any{"type": "boolean", "description": "When true, streamed output is emitted in larger coalesced blocks."},
 				"stream_chunk_chars": map[string]any{"type": "integer", "minimum": 0, "description": "Preferred streamed chunk size in characters. Zero clears the override."},
@@ -1943,6 +1944,8 @@ var toolDefs = []toolDef{
 				{"required": []string{"session_key", "active_profile"}},
 				{"required": []string{"run_id", "browser_profile"}},
 				{"required": []string{"session_key", "browser_profile"}},
+				{"required": []string{"run_id", "provider_profile"}},
+				{"required": []string{"session_key", "provider_profile"}},
 				{"required": []string{"run_id", "queue_mode"}},
 				{"required": []string{"session_key", "queue_mode"}},
 				{"required": []string{"run_id", "block_stream"}},
@@ -1954,7 +1957,7 @@ var toolDefs = []toolDef{
 			},
 			"additionalProperties": false,
 		}),
-		argHint:   `{"session_key":"peer::sender::alice","reply_back":true,"usage_mode":"tokens","model_override":"gpt4","active_profile":"focus","browser_profile":"default","queue_mode":"steer","block_stream":true,"stream_chunk_chars":160,"stream_coalesce_ms":75}`,
+		argHint:   `{"session_key":"peer::sender::alice","reply_back":true,"usage_mode":"tokens","model_override":"gpt4","active_profile":"focus","browser_profile":"default","provider_profile":"work-openai","queue_mode":"steer","block_stream":true,"stream_chunk_chars":160,"stream_coalesce_ms":75}`,
 		available: func(h *Handler) bool { return h.agentRuntime != nil && h.agentCoord != nil },
 	},
 	{
@@ -3845,5 +3848,92 @@ var toolDefs = []toolDef{
 		}),
 		argHint:   `{"tool_name":"memory.search","limit":20}`,
 		available: func(h *Handler) bool { return h.toolResultStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.set",
+		description: "Create or update a BYOK LLM provider profile for this peer. Use this to attach API keys and provider config to the current peer so the agent can use a different provider than the gateway default.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":          map[string]any{"type": "string", "description": "Stable alias for this profile, e.g. work-openai"},
+				"provider":      map[string]any{"type": "string", "description": "Provider name: openai | anthropic | openrouter | gemini | nvidia | ollama | vllm | litellm"},
+				"api_key":       map[string]any{"type": "string", "description": "API key for the provider. Empty for local providers like ollama."},
+				"base_url":      map[string]any{"type": "string", "description": "Optional base URL override. Defaults to the provider standard endpoint."},
+				"default_model": map[string]any{"type": "string", "description": "Default model to use with this profile, e.g. gpt-4.1 or claude-sonnet-4-20250514."},
+				"enabled":       map[string]any{"type": "boolean", "description": "Whether this profile is active. Defaults to true."},
+			},
+			"required":             []string{"name", "provider"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai","provider":"openai","api_key":"sk-...","base_url":"https://api.openai.com","default_model":"gpt-4.1"}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.list",
+		description: "List all BYOK LLM provider profiles for this peer. API keys are masked for security.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"provider": map[string]any{"type": "string", "description": "Optional provider name to filter by."},
+			},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.get",
+		description: "Get details for one BYOK LLM provider profile by name. The API key is never returned in full.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required":             []string{"name"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai"}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.delete",
+		description: "Delete a BYOK LLM provider profile by name.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required":             []string{"name"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai"}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.test",
+		description: "Test connectivity for a stored LLM provider profile by attempting a lightweight probe.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required":             []string{"name"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai"}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.activate",
+		description: "Set the named provider profile as the default for this peer. The runtime will use this profile for future requests when no session override is set.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string", "description": "Profile name to activate as peer default."},
+			},
+			"required":             []string{"name"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai"}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
 	},
 }

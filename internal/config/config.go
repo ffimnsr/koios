@@ -73,6 +73,7 @@ func (c *Config) DecisionsDBPath() string   { return filepath.Join(c.DBDir(), "d
 func (c *Config) PreferencesDBPath() string { return filepath.Join(c.DBDir(), "preferences.db") }
 func (c *Config) RemindersDBPath() string   { return filepath.Join(c.DBDir(), "reminders.db") }
 func (c *Config) ToolResultsDBPath() string { return filepath.Join(c.DBDir(), "tool_results.db") }
+func (c *Config) PeerLLMDBPath() string     { return filepath.Join(c.DBDir(), "peer_llm.db") }
 
 // LockFilePath returns the path of the single-instance gateway lock file.
 func (c *Config) LockFilePath() string { return filepath.Join(c.WorkspaceRoot, "koios.lock") }

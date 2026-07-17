@@ -549,7 +549,7 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 		}
 		return h.usageEstimate(ctx, peerID, args.Messages, args.Text, args.SessionKey, args.Model, includeHistory, includeTools, args.ExpectedCompletionTokens)
 	case "model.list":
-		return h.listModels(), nil
+		return h.listModels(peerID), nil
 	case "model.capabilities":
 		var args struct {
 			Model      string `json:"model"`

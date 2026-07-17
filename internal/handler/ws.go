@@ -79,6 +79,7 @@ import (
 	"github.com/ffimnsr/koios/internal/notes"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/orchestrator"
+	"github.com/ffimnsr/koios/internal/peerllm"
 	"github.com/ffimnsr/koios/internal/plans"
 	"github.com/ffimnsr/koios/internal/preferences"
 	"github.com/ffimnsr/koios/internal/presence"
@@ -276,6 +277,7 @@ type Handler struct {
 	orchestrator            *orchestrator.Orchestrator
 	idempotency             *idempotencyStore
 	runLedger               *runledger.Store
+	peerLLMStore            *peerllm.Store
 	channelManager          *channels.Manager
 	channelBindingStore     *channels.BindingStore
 
@@ -382,6 +384,9 @@ type HandlerOptions struct {
 	OwnerPeerIDs []string
 	// RunLedger, when non-nil, enables the runs.list and runs.get RPC methods.
 	RunLedger *runledger.Store
+	// PeerLLMStore, when non-nil, enables peer BYOK LLM provider profile
+	// management through peer.llm_provider.* RPC methods.
+	PeerLLMStore *peerllm.Store
 }
 
 // NewHandler creates the WebSocket control-plane handler.
@@ -451,6 +456,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		workflowRunner:          opts.WorkflowRunner,
 		orchestrator:            opts.Orchestrator,
 		ownerPeerIDs:            opts.OwnerPeerIDs,
+		peerLLMStore:            opts.PeerLLMStore,
 		runLedger:               opts.RunLedger,
 		syncRuns:                make(map[string]context.CancelFunc),
 		codeExecutionRuns:       make(map[string]context.CancelFunc),

@@ -684,6 +684,44 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 		}
 		h.rpcHeartbeatWake(ctx, wsc, req)
 
+	// ── Peer LLM provider profiles (BYOK) ───────────────────────────────
+	case "peer.llm_provider.set":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMSet(ctx, wsc, req)
+	case "peer.llm_provider.get":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMGet(ctx, wsc, req)
+	case "peer.llm_provider.list":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMList(ctx, wsc, req)
+	case "peer.llm_provider.delete":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMDelete(ctx, wsc, req)
+	case "peer.llm_provider.test":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMTest(ctx, wsc, req)
+	case "peer.llm_provider.activate":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMActivate(ctx, wsc, req)
+
 	// ── Usage ─────────────────────────────────────────────────────────────
 	case "usage.get":
 		h.rpcUsageGet(wsc, req)

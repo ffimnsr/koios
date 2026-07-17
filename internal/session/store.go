@@ -65,6 +65,9 @@ type SessionPolicy struct {
 	// BrowserProfile selects the named browser profile used for browser.* tools
 	// in this session. Empty falls back to the configured browser default.
 	BrowserProfile string `json:"browser_profile,omitempty"`
+	// ProviderProfile selects the BYOK LLM provider profile for this session.
+	// Empty falls back to the peer default or gateway global provider.
+	ProviderProfile string `json:"provider_profile,omitempty"`
 	// QueueMode controls how mid-run steering notes are applied.
 	// Valid values: steer | followup | collect
 	QueueMode string `json:"queue_mode,omitempty"`
@@ -897,6 +900,7 @@ func isZeroPolicy(p SessionPolicy) bool {
 		p.StreamCoalesceMS == 0 &&
 		p.SessionKind == "" &&
 		p.ElevatedBash == false &&
+		p.ProviderProfile == "" &&
 		len(p.ToolsAllow) == 0 &&
 		len(p.ToolsDeny) == 0
 }

@@ -34,6 +34,7 @@ import (
 	"github.com/ffimnsr/koios/internal/notes"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/orchestrator"
+	"github.com/ffimnsr/koios/internal/peerllm"
 	"github.com/ffimnsr/koios/internal/plans"
 	"github.com/ffimnsr/koios/internal/preferences"
 	"github.com/ffimnsr/koios/internal/presence"
@@ -305,6 +306,10 @@ func RunGateway(build BuildInfo) error {
 	if err != nil {
 		return err
 	}
+	peerLLMStore, err := peerllm.New(cfg.PeerLLMDBPath())
+	if err != nil {
+		return err
+	}
 	scratchpadStore := scratchpad.New()
 	presenceMgr := presence.NewManager(cfg.PresenceTypingTTL)
 
@@ -335,6 +340,11 @@ func RunGateway(build BuildInfo) error {
 	agentRuntime.SetStandingOrders(standingMgr)
 	agentRuntime.SetIdentityDir(cfg.WorkspaceRoot)
 	agentRuntime.EnableTasks(taskStore)
+	// Wire peer-aware provider resolver for BYOK support.
+	if peerLLMStore != nil {
+		resolver := agent.NewPeerAwareResolver(prov, cfg.Model, cfg.RequestTimeout, cfg.LLMIdleTimeout, peerLLMStore, preferenceStore, store)
+		agentRuntime.SetProviderResolver(resolver)
+	}
 	agentCoord = agent.NewCoordinator(agentRuntime)
 	runLedger, err = runledger.New(cfg.RunsDir())
 	if err != nil {
@@ -558,6 +568,7 @@ func RunGateway(build BuildInfo) error {
 		WorkflowRunner:      workflowRunner,
 		Orchestrator:        orchRuntime,
 		RunLedger:           runLedger,
+		PeerLLMStore:        peerLLMStore,
 	})
 
 	// Wire the full agent loop into heartbeat, cron, and workflows so the LLM
