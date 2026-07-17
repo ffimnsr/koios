@@ -40,9 +40,15 @@ func (h *Handler) activeDefs(peerID, sessionKey, activeProfile string) []toolDef
 		}
 	}
 	// Append MCP tools as dynamic toolDef entries.
+	// User-managed MCP tools are only visible to their owning peer.
 	if h.mcpManager != nil {
 		for _, mt := range h.mcpManager.ListTools() {
 			mt := mt
+			// User-managed servers are tagged with Kind="user" and
+			// ProfileName=ownerPeerID. Non-owners cannot see these tools.
+			if mt.Kind == "user" && mt.ProfileName != "" && mt.ProfileName != peerID {
+				continue
+			}
 			schema := mt.InputSchema
 			if len(schema) == 0 {
 				schema = mustJSONSchema(map[string]any{"type": "object", "properties": map[string]any{}})

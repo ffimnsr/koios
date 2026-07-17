@@ -66,6 +66,17 @@ func (h *Handler) dispatchTool(ctx context.Context, peerID string, call agent.To
 	}
 	if h.mcpManager != nil {
 		if _, _, ok := mcp.ParseToolName(call.Name); ok {
+			// Enforce ownership: user-managed tools can only be called by
+			// their owning peer. The listing in activeDefs already filters
+			// by visibility, but this is a defense-in-depth check.
+			for _, t := range h.mcpManager.AllTools() {
+				if t.FullName == call.Name && t.Kind == "user" {
+					if t.ProfileName != "" && t.ProfileName != peerID {
+						return nil, fmt.Errorf("tool %q is owned by %q, not %q", call.Name, t.ProfileName, peerID)
+					}
+					break
+				}
+			}
 			return h.mcpManager.CallTool(ctx, call.Name, call.Arguments)
 		}
 	}
