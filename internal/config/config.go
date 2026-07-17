@@ -822,38 +822,38 @@ func encodeHooksSection(cfg *Config) string {
 	}
 	var b strings.Builder
 	b.WriteString("[hooks]\n")
-	b.WriteString("webhook_url = " + strconv.Quote(strings.TrimSpace(cfg.HookWebhookURL)) + "\n")
-	b.WriteString("webhook_secret = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathHooksWebhookSecret, cfg.HookWebhookSecret) + "\n")
-	b.WriteString("interceptor_url = " + strconv.Quote(strings.TrimSpace(cfg.HookInterceptorURL)) + "\n")
-	b.WriteString("webhook_token = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathHooksWebhookToken, strings.TrimSpace(cfg.WebhookToken)) + "\n")
-	b.WriteString("timeout = " + strconv.Quote(cfg.HookTimeout.String()) + "\n")
-	b.WriteString(fmt.Sprintf("fail_closed = %t\n", cfg.HookFailClosed))
+	fmt.Fprintf(&b, "webhook_url = %s\n", strconv.Quote(strings.TrimSpace(cfg.HookWebhookURL)))
+	fmt.Fprintf(&b, "webhook_secret = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathHooksWebhookSecret, cfg.HookWebhookSecret))
+	fmt.Fprintf(&b, "interceptor_url = %s\n", strconv.Quote(strings.TrimSpace(cfg.HookInterceptorURL)))
+	fmt.Fprintf(&b, "webhook_token = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathHooksWebhookToken, strings.TrimSpace(cfg.WebhookToken)))
+	fmt.Fprintf(&b, "timeout = %s\n", strconv.Quote(cfg.HookTimeout.String()))
+	fmt.Fprintf(&b, "fail_closed = %t\n", cfg.HookFailClosed)
 	b.WriteString("\n")
 	for _, mapping := range cfg.HookMappings {
 		b.WriteString("[[hooks.mappings]]\n")
-		b.WriteString("name = " + strconv.Quote(strings.TrimSpace(mapping.Name)) + "\n")
+		fmt.Fprintf(&b, "name = %s\n", strconv.Quote(strings.TrimSpace(mapping.Name)))
 		if strings.TrimSpace(mapping.Path) != "" {
-			b.WriteString("path = " + strconv.Quote(strings.TrimSpace(mapping.Path)) + "\n")
+			fmt.Fprintf(&b, "path = %s\n", strconv.Quote(strings.TrimSpace(mapping.Path)))
 		}
-		b.WriteString("type = " + strconv.Quote(strings.TrimSpace(mapping.Type)) + "\n")
+		fmt.Fprintf(&b, "type = %s\n", strconv.Quote(strings.TrimSpace(mapping.Type)))
 		if mapping.Enabled != nil {
-			b.WriteString(fmt.Sprintf("enabled = %t\n", *mapping.Enabled))
+			fmt.Fprintf(&b, "enabled = %t\n", *mapping.Enabled)
 		}
 		b.WriteString("\n")
 		for _, field := range mapping.Fields {
 			b.WriteString("[[hooks.mappings.fields]]\n")
-			b.WriteString("to = " + strconv.Quote(strings.TrimSpace(field.To)) + "\n")
+			fmt.Fprintf(&b, "to = %s\n", strconv.Quote(strings.TrimSpace(field.To)))
 			if strings.TrimSpace(field.From) != "" {
-				b.WriteString("from = " + strconv.Quote(strings.TrimSpace(field.From)) + "\n")
+				fmt.Fprintf(&b, "from = %s\n", strconv.Quote(strings.TrimSpace(field.From)))
 			}
 			if field.Value != "" {
-				b.WriteString("value = " + strconv.Quote(field.Value) + "\n")
+				fmt.Fprintf(&b, "value = %s\n", strconv.Quote(field.Value))
 			}
 			if field.Template != "" {
-				b.WriteString("template = " + strconv.Quote(field.Template) + "\n")
+				fmt.Fprintf(&b, "template = %s\n", strconv.Quote(field.Template))
 			}
 			if field.Required != nil {
-				b.WriteString(fmt.Sprintf("required = %t\n", *field.Required))
+				fmt.Fprintf(&b, "required = %t\n", *field.Required)
 			}
 			b.WriteString("\n")
 		}
@@ -902,25 +902,25 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 	profiles[selectedIndex].BaseURL = cfg.BaseURL
 	profiles[selectedIndex].Model = cfg.Model
 	b.WriteString("[llm]\n")
-	b.WriteString("idle_timeout = " + strconv.Quote(cfg.LLMIdleTimeout.String()) + "\n")
-	b.WriteString("default_profile = " + strconv.Quote(defaultProfile) + "\n")
+	fmt.Fprintf(&b, "idle_timeout = %s\n", strconv.Quote(cfg.LLMIdleTimeout.String()))
+	fmt.Fprintf(&b, "default_profile = %s\n", strconv.Quote(defaultProfile))
 	if cfg.LightweightModel != "" {
-		b.WriteString("lightweight_model = " + strconv.Quote(cfg.LightweightModel) + "\n")
+		fmt.Fprintf(&b, "lightweight_model = %s\n", strconv.Quote(cfg.LightweightModel))
 	}
 	if len(cfg.FallbackModels) > 0 {
-		b.WriteString("fallback_models = " + quoteStringSlice(cfg.FallbackModels) + "\n")
+		fmt.Fprintf(&b, "fallback_models = %s\n", quoteStringSlice(cfg.FallbackModels))
 	}
 	b.WriteString("\n")
 	for _, p := range profiles {
 		b.WriteString("[[llm.profiles]]\n")
-		b.WriteString("name = " + strconv.Quote(p.Name) + "\n")
-		b.WriteString("provider = " + strconv.Quote(p.Provider) + "\n")
-		b.WriteString("model = " + strconv.Quote(p.Model) + "\n")
+		fmt.Fprintf(&b, "name = %s\n", strconv.Quote(p.Name))
+		fmt.Fprintf(&b, "provider = %s\n", strconv.Quote(p.Provider))
+		fmt.Fprintf(&b, "model = %s\n", strconv.Quote(p.Model))
 		if p.APIKey != "" || includeAPIKey {
-			b.WriteString("api_key = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathModelProfileAPIKey(p.Name), p.APIKey) + "\n")
+			fmt.Fprintf(&b, "api_key = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathModelProfileAPIKey(p.Name), p.APIKey))
 		}
 		if p.BaseURL != "" {
-			b.WriteString("base_url = " + strconv.Quote(p.BaseURL) + "\n")
+			fmt.Fprintf(&b, "base_url = %s\n", strconv.Quote(p.BaseURL))
 		}
 		b.WriteString("\n")
 	}
@@ -936,21 +936,21 @@ func encodeMCPSection(cfg *Config) string {
 	var b strings.Builder
 	for _, s := range cfg.MCPServers {
 		b.WriteString("[[mcp.servers]]\n")
-		b.WriteString("name = " + strconv.Quote(s.Name) + "\n")
-		b.WriteString("transport = " + strconv.Quote(s.Transport) + "\n")
+		fmt.Fprintf(&b, "name = %s\n", strconv.Quote(s.Name))
+		fmt.Fprintf(&b, "transport = %s\n", strconv.Quote(s.Transport))
 		if s.Command != "" {
-			b.WriteString("command = " + strconv.Quote(s.Command) + "\n")
+			fmt.Fprintf(&b, "command = %s\n", strconv.Quote(s.Command))
 		}
 		if len(s.Args) > 0 {
-			b.WriteString("args = " + quoteStringSlice(s.Args) + "\n")
+			fmt.Fprintf(&b, "args = %s\n", quoteStringSlice(s.Args))
 		}
 		if s.URL != "" {
-			b.WriteString("url = " + strconv.Quote(s.URL) + "\n")
+			fmt.Fprintf(&b, "url = %s\n", strconv.Quote(s.URL))
 		}
 		if s.Timeout != "" {
-			b.WriteString("timeout = " + strconv.Quote(s.Timeout) + "\n")
+			fmt.Fprintf(&b, "timeout = %s\n", strconv.Quote(s.Timeout))
 		}
-		b.WriteString(fmt.Sprintf("enabled = %t\n", s.Enabled))
+		fmt.Fprintf(&b, "enabled = %t\n", s.Enabled)
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -973,46 +973,46 @@ func encodeChannelsSection(cfg *Config) string {
 	threadMode := normalizeTelegramThreadMode(tg.ThreadMode)
 	var b strings.Builder
 	b.WriteString("[channels.telegram]\n")
-	b.WriteString(fmt.Sprintf("enabled = %t\n", tg.Enabled))
-	b.WriteString("bot_token = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathTelegramBotToken, tg.BotToken) + "\n")
-	b.WriteString("mode = " + strconv.Quote(mode) + "\n")
-	b.WriteString("poll_timeout = " + strconv.Quote(tg.PollTimeout.String()) + "\n")
-	b.WriteString("webhook_url = " + strconv.Quote(tg.WebhookURL) + "\n")
-	b.WriteString("webhook_secret = " + encodeHiddenSecretLiteral(cfg, hiddenSecretPathTelegramWebhookSecret, tg.WebhookSecret) + "\n")
-	b.WriteString("inbox_peer_id = " + strconv.Quote(strings.TrimSpace(tg.InboxPeerID)) + "\n")
-	b.WriteString("text_chunk_limit = " + strconv.Itoa(tg.TextChunkLimit) + "\n")
-	b.WriteString("text_chunk_mode = " + strconv.Quote(normalizeTelegramTextChunkMode(tg.TextChunkMode)) + "\n")
-	b.WriteString("stream_queue_mode = " + strconv.Quote(normalizeTelegramStreamQueueMode(tg.StreamQueueMode)) + "\n")
-	b.WriteString("stream_throttle = " + strconv.Quote(tg.StreamThrottle.String()) + "\n")
-	b.WriteString("allowed_chat_ids = [" + quoteInt64Slice(tg.AllowedChatIDs) + "]\n")
-	b.WriteString("allowed_sender_ids = [" + quoteInt64Slice(tg.AllowedSenderIDs) + "]\n")
-	b.WriteString("command_sender_ids = [" + quoteInt64Slice(tg.CommandSenderIDs) + "]\n")
-	b.WriteString("activation_mode = " + strconv.Quote(activationMode) + "\n")
-	b.WriteString(fmt.Sprintf("reply_activation = %t\n", tg.ReplyActivation))
-	b.WriteString("dm_policy = " + strconv.Quote(dmPolicy) + "\n")
-	b.WriteString("pairing_code_ttl = " + strconv.Quote(tg.PairingCodeTTL.String()) + "\n")
-	b.WriteString("thread_mode = " + strconv.Quote(threadMode) + "\n")
+	fmt.Fprintf(&b, "enabled = %t\n", tg.Enabled)
+	fmt.Fprintf(&b, "bot_token = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathTelegramBotToken, tg.BotToken))
+	fmt.Fprintf(&b, "mode = %s\n", strconv.Quote(mode))
+	fmt.Fprintf(&b, "poll_timeout = %s\n", strconv.Quote(tg.PollTimeout.String()))
+	fmt.Fprintf(&b, "webhook_url = %s\n", strconv.Quote(tg.WebhookURL))
+	fmt.Fprintf(&b, "webhook_secret = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathTelegramWebhookSecret, tg.WebhookSecret))
+	fmt.Fprintf(&b, "inbox_peer_id = %s\n", strconv.Quote(strings.TrimSpace(tg.InboxPeerID)))
+	fmt.Fprintf(&b, "text_chunk_limit = %s\n", strconv.Itoa(tg.TextChunkLimit))
+	fmt.Fprintf(&b, "text_chunk_mode = %s\n", strconv.Quote(normalizeTelegramTextChunkMode(tg.TextChunkMode)))
+	fmt.Fprintf(&b, "stream_queue_mode = %s\n", strconv.Quote(normalizeTelegramStreamQueueMode(tg.StreamQueueMode)))
+	fmt.Fprintf(&b, "stream_throttle = %s\n", strconv.Quote(tg.StreamThrottle.String()))
+	fmt.Fprintf(&b, "allowed_chat_ids = [%s]\n", quoteInt64Slice(tg.AllowedChatIDs))
+	fmt.Fprintf(&b, "allowed_sender_ids = [%s]\n", quoteInt64Slice(tg.AllowedSenderIDs))
+	fmt.Fprintf(&b, "command_sender_ids = [%s]\n", quoteInt64Slice(tg.CommandSenderIDs))
+	fmt.Fprintf(&b, "activation_mode = %s\n", strconv.Quote(activationMode))
+	fmt.Fprintf(&b, "reply_activation = %t\n", tg.ReplyActivation)
+	fmt.Fprintf(&b, "dm_policy = %s\n", strconv.Quote(dmPolicy))
+	fmt.Fprintf(&b, "pairing_code_ttl = %s\n", strconv.Quote(tg.PairingCodeTTL.String()))
+	fmt.Fprintf(&b, "thread_mode = %s\n", strconv.Quote(threadMode))
 	b.WriteString("\n")
 	for _, group := range tg.GroupPolicies {
 		b.WriteString("[[channels.telegram.groups]]\n")
-		b.WriteString("chat_id = " + strconv.FormatInt(group.ChatID, 10) + "\n")
+		fmt.Fprintf(&b, "chat_id = %s\n", strconv.FormatInt(group.ChatID, 10))
 		if group.ActivationMode != "" {
-			b.WriteString("activation_mode = " + strconv.Quote(normalizeTelegramActivationMode(group.ActivationMode)) + "\n")
+			fmt.Fprintf(&b, "activation_mode = %s\n", strconv.Quote(normalizeTelegramActivationMode(group.ActivationMode)))
 		}
 		if len(group.AllowedSenderIDs) > 0 {
-			b.WriteString("allowed_sender_ids = [" + quoteInt64Slice(group.AllowedSenderIDs) + "]\n")
+			fmt.Fprintf(&b, "allowed_sender_ids = [%s]\n", quoteInt64Slice(group.AllowedSenderIDs))
 		}
 		if len(group.CommandSenderIDs) > 0 {
-			b.WriteString("command_sender_ids = [" + quoteInt64Slice(group.CommandSenderIDs) + "]\n")
+			fmt.Fprintf(&b, "command_sender_ids = [%s]\n", quoteInt64Slice(group.CommandSenderIDs))
 		}
 		if group.ReplyActivation != nil {
-			b.WriteString(fmt.Sprintf("reply_activation = %t\n", *group.ReplyActivation))
+			fmt.Fprintf(&b, "reply_activation = %t\n", *group.ReplyActivation)
 		}
 		if len(group.AllowedTopicIDs) > 0 {
-			b.WriteString("allowed_topic_ids = [" + quoteInt64Slice(group.AllowedTopicIDs) + "]\n")
+			fmt.Fprintf(&b, "allowed_topic_ids = [%s]\n", quoteInt64Slice(group.AllowedTopicIDs))
 		}
 		if group.ThreadMode != "" {
-			b.WriteString("thread_mode = " + strconv.Quote(normalizeTelegramThreadMode(group.ThreadMode)) + "\n")
+			fmt.Fprintf(&b, "thread_mode = %s\n", strconv.Quote(normalizeTelegramThreadMode(group.ThreadMode)))
 		}
 		b.WriteString("\n")
 	}
@@ -1494,44 +1494,44 @@ func encodeBrowserSection(cfg *Config) string {
 	}
 	var b strings.Builder
 	b.WriteString("[browser]\n")
-	b.WriteString("default_profile = " + strconv.Quote(defaultProfile) + "\n\n")
+	fmt.Fprintf(&b, "default_profile = %s\n\n", strconv.Quote(defaultProfile))
 	for _, profile := range profiles {
 		b.WriteString("[[browser.profiles]]\n")
-		b.WriteString("name = " + strconv.Quote(profile.Name) + "\n")
-		b.WriteString("mode = " + strconv.Quote(normalizeBrowserProfileMode(profile.Mode)) + "\n")
-		b.WriteString(fmt.Sprintf("enabled = %t\n", profile.Enabled))
+		fmt.Fprintf(&b, "name = %s\n", strconv.Quote(profile.Name))
+		fmt.Fprintf(&b, "mode = %s\n", strconv.Quote(normalizeBrowserProfileMode(profile.Mode)))
+		fmt.Fprintf(&b, "enabled = %t\n", profile.Enabled)
 		if len(profile.HostAllowlist) > 0 {
-			b.WriteString("host_allowlist = " + quoteStringSlice(profile.HostAllowlist) + "\n")
+			fmt.Fprintf(&b, "host_allowlist = %s\n", quoteStringSlice(profile.HostAllowlist))
 		}
 		if len(profile.HostDenylist) > 0 {
-			b.WriteString("host_denylist = " + quoteStringSlice(profile.HostDenylist) + "\n")
+			fmt.Fprintf(&b, "host_denylist = %s\n", quoteStringSlice(profile.HostDenylist))
 		}
-		b.WriteString(fmt.Sprintf("headless = %t\n", profile.Headless))
-		b.WriteString(fmt.Sprintf("isolated = %t\n", profile.Isolated))
-		b.WriteString(fmt.Sprintf("slim = %t\n", profile.Slim))
+		fmt.Fprintf(&b, "headless = %t\n", profile.Headless)
+		fmt.Fprintf(&b, "isolated = %t\n", profile.Isolated)
+		fmt.Fprintf(&b, "slim = %t\n", profile.Slim)
 		if profile.Channel != "" {
-			b.WriteString("channel = " + strconv.Quote(strings.TrimSpace(profile.Channel)) + "\n")
+			fmt.Fprintf(&b, "channel = %s\n", strconv.Quote(strings.TrimSpace(profile.Channel)))
 		}
 		if profile.ExecutablePath != "" {
-			b.WriteString("executable_path = " + strconv.Quote(profile.ExecutablePath) + "\n")
+			fmt.Fprintf(&b, "executable_path = %s\n", strconv.Quote(profile.ExecutablePath))
 		}
 		if profile.UserDataDir != "" {
-			b.WriteString("user_data_dir = " + strconv.Quote(profile.UserDataDir) + "\n")
+			fmt.Fprintf(&b, "user_data_dir = %s\n", strconv.Quote(profile.UserDataDir))
 		}
 		if profile.Viewport != "" {
-			b.WriteString("viewport = " + strconv.Quote(profile.Viewport) + "\n")
+			fmt.Fprintf(&b, "viewport = %s\n", strconv.Quote(profile.Viewport))
 		}
 		if profile.BrowserURL != "" {
-			b.WriteString("browser_url = " + strconv.Quote(profile.BrowserURL) + "\n")
+			fmt.Fprintf(&b, "browser_url = %s\n", strconv.Quote(profile.BrowserURL))
 		}
 		if profile.WSEndpoint != "" {
-			b.WriteString("ws_endpoint = " + strconv.Quote(profile.WSEndpoint) + "\n")
+			fmt.Fprintf(&b, "ws_endpoint = %s\n", strconv.Quote(profile.WSEndpoint))
 		}
 		if len(profile.WSHeaders) > 0 {
-			b.WriteString("ws_headers = " + quoteStringMap(profile.WSHeaders) + "\n")
+			fmt.Fprintf(&b, "ws_headers = %s\n", quoteStringMap(profile.WSHeaders))
 		}
 		if len(profile.ChromeArgs) > 0 {
-			b.WriteString("chrome_args = " + quoteStringSlice(profile.ChromeArgs) + "\n")
+			fmt.Fprintf(&b, "chrome_args = %s\n", quoteStringSlice(profile.ChromeArgs))
 		}
 		if profile.AcceptInsecureCerts {
 			b.WriteString("accept_insecure_certs = true\n")
@@ -1543,22 +1543,22 @@ func encodeBrowserSection(cfg *Config) string {
 			b.WriteString("experimental_screencast = true\n")
 		}
 		if profile.ExperimentalFfmpegPath != "" {
-			b.WriteString("experimental_ffmpeg_path = " + strconv.Quote(profile.ExperimentalFfmpegPath) + "\n")
+			fmt.Fprintf(&b, "experimental_ffmpeg_path = %s\n", strconv.Quote(profile.ExperimentalFfmpegPath))
 		}
 		if profile.PerformanceCrux != nil {
-			b.WriteString(fmt.Sprintf("performance_crux = %t\n", *profile.PerformanceCrux))
+			fmt.Fprintf(&b, "performance_crux = %t\n", *profile.PerformanceCrux)
 		}
 		if profile.UsageStatistics != nil {
-			b.WriteString(fmt.Sprintf("usage_statistics = %t\n", *profile.UsageStatistics))
+			fmt.Fprintf(&b, "usage_statistics = %t\n", *profile.UsageStatistics)
 		}
 		if profile.RedactNetworkHeaders != nil {
-			b.WriteString(fmt.Sprintf("redact_network_headers = %t\n", *profile.RedactNetworkHeaders))
+			fmt.Fprintf(&b, "redact_network_headers = %t\n", *profile.RedactNetworkHeaders)
 		}
 		if profile.MCPCommand != "" {
-			b.WriteString("mcp_command = " + strconv.Quote(profile.MCPCommand) + "\n")
+			fmt.Fprintf(&b, "mcp_command = %s\n", strconv.Quote(profile.MCPCommand))
 		}
 		if profile.MCPPackage != "" {
-			b.WriteString("mcp_package = " + strconv.Quote(profile.MCPPackage) + "\n")
+			fmt.Fprintf(&b, "mcp_package = %s\n", strconv.Quote(profile.MCPPackage))
 		}
 		b.WriteString("\n")
 	}

@@ -820,7 +820,7 @@ func TestTasksListCommand(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), fmt.Appendf(nil, healthStatusConfigTemplate, server.URL), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
@@ -955,7 +955,7 @@ func TestBriefCommand(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), fmt.Appendf(nil, healthStatusConfigTemplate, server.URL), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
@@ -1029,7 +1029,7 @@ func TestDashboardCommand(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), fmt.Appendf(nil, healthStatusConfigTemplate, server.URL), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
@@ -1119,7 +1119,7 @@ func TestWaitingListCommand(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), fmt.Appendf(nil, healthStatusConfigTemplate, server.URL), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
@@ -1175,7 +1175,7 @@ func TestCalendarAgendaCommand(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), fmt.Appendf(nil, healthStatusConfigTemplate, server.URL), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
@@ -1772,7 +1772,7 @@ func TestDoctorDeepProbesGatewayAndMonitor(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(fmt.Sprintf(healthStatusConfigTemplate, server.URL)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), fmt.Appendf(nil, healthStatusConfigTemplate, server.URL), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}

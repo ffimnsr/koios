@@ -163,16 +163,16 @@ func (c *httpClient) postNotify(ctx context.Context, method string, params json.
 //
 // The newer Streamable HTTP transport (POST /mcp) is handled by httpClient.
 type sseClient struct {
-	name      string
-	sseURL    string
-	headers   map[string]string
-	timeout   time.Duration
-	http      *http.Client
-	postURL   string
-	nextID    atomic.Int64
+	name       string
+	sseURL     string
+	headers    map[string]string
+	timeout    time.Duration
+	http       *http.Client
+	postURL    string
+	nextID     atomic.Int64
 	responses  chan *rpcResponse
 	sseCancel  context.CancelFunc
-	callMu     sync.Mutex   // serializes concurrent send calls
+	callMu     sync.Mutex    // serializes concurrent send calls
 	streamDone chan struct{} // closed when the SSE background stream ends
 	streamOnce sync.Once
 }
@@ -317,6 +317,9 @@ func (c *sseClient) connectSSE(ctx context.Context, endpointCh chan<- string) {
 			}
 			eventType, data = "", ""
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Warn("mcp sse: stream read error", "server", c.name, "err", err)
 	}
 
 	// Signal end-of-stream via streamDone; do NOT close c.responses to

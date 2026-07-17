@@ -173,6 +173,16 @@ func (h *Handler) startCodeExecutionJob(peerID string, prepared preparedCodeExec
 	id := uuid.NewString()
 	queuedAt := time.Now().UTC()
 	runCtx, runCancel := context.WithCancel(context.Background())
+	// Ensure the context is cancelled on any early return path to avoid
+	// leaking the context when the goroutine never starts.
+	cancelled := false
+	cancelOnEarlyReturn := func() {
+		if !cancelled {
+			runCancel()
+			cancelled = true
+		}
+	}
+
 	requestPayload, err := json.Marshal(map[string]any{
 		"command":         prepared.command,
 		"workdir":         prepared.workdir,
@@ -180,6 +190,7 @@ func (h *Handler) startCodeExecutionJob(peerID string, prepared preparedCodeExec
 		"async":           true,
 	})
 	if err != nil {
+		cancelOnEarlyReturn()
 		return nil, fmt.Errorf("marshal code_execution request: %w", err)
 	}
 	if err := h.runLedger.Add(runledger.Record{
@@ -191,6 +202,7 @@ func (h *Handler) startCodeExecutionJob(peerID string, prepared preparedCodeExec
 		Request:    requestPayload,
 		QueuedAt:   queuedAt,
 	}); err != nil {
+		cancelOnEarlyReturn()
 		return nil, err
 	}
 	h.codeExecutionRunsMu.Lock()
