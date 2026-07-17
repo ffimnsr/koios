@@ -281,6 +281,18 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] File read by line ranges (not just whole file)
 - [x] Filename/path search tool
 - [x] MCP (Model Context Protocol) client - connect to stdio/SSE/HTTP MCP servers
+- [x] User-managed MCP server registry and self-service install flow
+	- Notes: Let owners/peers register, test, enable, disable, and remove personal MCP servers without editing `koios.config.toml`. Reuse the existing `internal/mcp` transport support and `doctor` probe flow rather than creating a parallel MCP runtime.
+	- Implementation notes:
+		- Persist runtime-managed MCP server definitions separately from static `Config.MCPServers` entries so operator config remains stable while users can manage their own servers dynamically.
+		- Support `stdio`, `http`, and `sse` transports with the same validation rules already enforced for startup and manifest-backed MCP servers.
+		- Add CLI and/or built-in management surfaces for list/add/test/enable/disable/remove/inspect, with add flowing through save -> probe -> explicit enable.
+		- Default user-managed `stdio` servers to owner-only visibility and approval-gated use because they are effectively local code-execution surfaces.
+		- Redact auth headers, env values, tokens, and other secrets from normal status, doctor, and list output; store sensitive fields outside plain config text.
+		- Extend the MCP manager to support dynamic add/remove/reconnect without requiring a full gateway restart.
+		- Prevent runtime namespace collisions across user-added servers and keep tool exposure scoped so one peer cannot silently publish tools to all peers by default.
+		- Support optional session-level attachment/selection later so sessions can opt into only the MCP servers they need.
+	- References: OpenClaw `docs/plugins/building-plugins.md`, `docs/tools/browser.md`, `docs/plugins/architecture.md`; PicoClaw `workspace/skills/agent-browser/SKILL.md`, `docs/configuration.md`; IronClaw `src/extensions/mod.rs`, `src/cli/doctor.rs`, `src/tools/registry.rs`.
 
 ## Media and Voice
 

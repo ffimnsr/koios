@@ -240,6 +240,15 @@ var toolGroups = map[string][]string{
 		"cron.trigger",
 		"cron.runs",
 	},
+	"group:mcp_admin": {
+		"mcp.server.list",
+		"mcp.server.add",
+		"mcp.server.remove",
+		"mcp.server.enable",
+		"mcp.server.disable",
+		"mcp.server.inspect",
+		"mcp.server.test",
+	},
 }
 
 func (p ToolPolicy) Allows(name string) bool {

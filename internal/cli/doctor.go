@@ -19,6 +19,7 @@ import (
 	browsercfg "github.com/ffimnsr/koios/internal/browser"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/mcp"
+	"github.com/ffimnsr/koios/internal/mcpregistry"
 	"github.com/ffimnsr/koios/internal/workspace"
 )
 
@@ -169,6 +170,8 @@ func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
 			findings = append(findings, probeDoctorMCPServer(server, prefix, name, transport))
 		}
 	}
+	// User-managed MCP server checks.
+	findings = append(findings, collectDoctorUserMCPFindings(state.Config, deep)...)
 	if state.MilvusEnabled {
 		if strings.TrimSpace(state.MilvusURL) == "" {
 			findings = append(findings, doctorFinding{Level: "error", Key: "memory.milvus.address", Message: "memory.milvus.address must not be empty when Milvus is enabled", Path: state.ConfigPath})
@@ -896,4 +899,128 @@ func doctorMCPPath(server config.MCPServerConfig, transport string) string {
 		return server.Command
 	}
 	return server.URL
+}
+
+// collectDoctorUserMCPFindings collects diagnostics for user-managed MCP servers
+// from the MCP registry. It does not probe by default (too slow when there are
+// many entries); use deep=true to probe each one.
+func collectDoctorUserMCPFindings(cfg *config.Config, deep bool) []doctorFinding {
+	if cfg == nil || cfg.WorkspaceRoot == "" {
+		return nil
+	}
+	dbPath := cfg.MCPRegistryDBPath()
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return []doctorFinding{{
+			Level:   "info",
+			Key:     "mcp.user_registry",
+			Message: "no user-managed MCP servers (registry DB does not exist yet)",
+		}}
+	}
+	store, err := mcpregistry.New(dbPath)
+	if err != nil {
+		return []doctorFinding{{
+			Level:   "warn",
+			Key:     "mcp.user_registry",
+			Message: fmt.Sprintf("cannot open user MCP registry: %v", err),
+		}}
+	}
+	defer store.Close()
+
+	records, err := store.ListAll(context.Background())
+	if err != nil {
+		return []doctorFinding{{
+			Level:   "warn",
+			Key:     "mcp.user_registry",
+			Message: fmt.Sprintf("cannot list user MCP servers: %v", err),
+		}}
+	}
+	if len(records) == 0 {
+		return []doctorFinding{{
+			Level:   "info",
+			Key:     "mcp.user_registry",
+			Message: "no user-managed MCP servers found",
+		}}
+	}
+
+	var findings []doctorFinding
+	findings = append(findings, doctorFinding{
+		Level:   "info",
+		Key:     "mcp.user_registry",
+		Message: fmt.Sprintf("%d user-managed MCP server(s) in registry", len(records)),
+	})
+
+	for _, rec := range records {
+		prefix := "mcp.user." + rec.ID
+		name := strings.TrimSpace(rec.Name)
+		owner := strings.TrimSpace(rec.OwnerPeerID)
+
+		findings = append(findings, doctorFinding{
+			Level:   "info",
+			Key:     prefix + ".info",
+			Message: fmt.Sprintf("user MCP server %q (owner=%s, transport=%s, enabled=%v)", name, owner, rec.Transport, rec.Enabled),
+			Path:    fmt.Sprintf("%s/%s", owner, rec.ID),
+		})
+
+		if !rec.Enabled {
+			continue
+		}
+
+		transport := strings.ToLower(strings.TrimSpace(rec.Transport))
+		switch transport {
+		case "stdio":
+			if strings.TrimSpace(rec.Command) == "" {
+				findings = append(findings, doctorFinding{
+					Level:   "warn",
+					Key:     prefix + ".command",
+					Message: fmt.Sprintf("user MCP server %q: stdio transport requires a command", name),
+					Hint:    "update the server definition with the correct command",
+				})
+			} else if deep {
+				if _, err := exec.LookPath(rec.Command); err != nil {
+					findings = append(findings, doctorFinding{
+						Level:   "warn",
+						Key:     prefix + ".command",
+						Message: fmt.Sprintf("user MCP server %q: command %q not found", name, rec.Command),
+						Hint:    "install the MCP server binary or check the command path",
+					})
+				} else {
+					findings = append(findings, doctorFinding{
+						Level:   "info",
+						Key:     prefix + ".command",
+						Message: fmt.Sprintf("user MCP server %q command resolved", name),
+					})
+				}
+			}
+		case "http", "sse":
+			if strings.TrimSpace(rec.URL) == "" {
+				findings = append(findings, doctorFinding{
+					Level:   "warn",
+					Key:     prefix + ".url",
+					Message: fmt.Sprintf("user MCP server %q requires a URL", name),
+					Hint:    "update the server definition with the correct URL",
+				})
+			}
+		}
+
+		if rec.ApprovalRequired {
+			findings = append(findings, doctorFinding{
+				Level:   "info",
+				Key:     prefix + ".approval",
+				Message: fmt.Sprintf("user MCP server %q requires approval for tool calls", name),
+			})
+		}
+
+		// Probe only when deep and the server is enabled and has a valid transport.
+		if deep && (transport == "stdio" || transport == "http" || transport == "sse") {
+			cfg := config.MCPServerConfig{
+				Name:    rec.Name,
+				Command: rec.Command,
+				Args:    rec.Args,
+				URL:     rec.URL,
+				Timeout: rec.Timeout,
+			}
+			findings = append(findings, probeDoctorMCPServer(cfg, prefix+".probe", name, transport))
+		}
+	}
+	return findings
 }

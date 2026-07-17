@@ -340,6 +340,121 @@ func (m *Manager) CallToolResult(ctx context.Context, fullName string, rawArgs j
 	return result, nil
 }
 
+// AddServer adds a new server entry at runtime. When Enabled is true it also
+// attempts to connect, but a connection failure is logged and does not prevent
+// the entry from being registered.
+func (m *Manager) AddServer(ctx context.Context, cfg config.MCPServerConfig) (ServerStatus, error) {
+	prefix := strings.TrimSpace(cfg.ToolNamePrefix)
+	if prefix == "" {
+		prefix = ToolPrefix(cfg.Name)
+	}
+	entry := &serverEntry{
+		cfg:        cfg,
+		name:       cfg.Name,
+		toolPrefix: prefix,
+		hideTools:  cfg.HideTools,
+		kind:       strings.TrimSpace(cfg.Kind),
+		profile:    strings.TrimSpace(cfg.ProfileName),
+		client:     m.clientFactory(cfg),
+	}
+
+	m.mu.Lock()
+	// Check for duplicates.
+	for _, s := range m.servers {
+		if strings.EqualFold(s.name, entry.name) {
+			m.mu.Unlock()
+			return ServerStatus{}, fmt.Errorf("mcp: server %q already exists", entry.name)
+		}
+	}
+	m.servers = append(m.servers, entry)
+	m.mu.Unlock()
+
+	if cfg.Enabled {
+		if err := m.connectServer(ctx, entry); err != nil {
+			slog.Warn("mcp: add-server connect failed", "server", entry.name, "err", err)
+		}
+	}
+
+	m.mu.RLock()
+	status := serverStatusSnapshot(entry)
+	m.mu.RUnlock()
+	return status, nil
+}
+
+// RemoveServer disconnects and removes a server entry by runtime name. Returns
+// an error when the server is not found.
+func (m *Manager) RemoveServer(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, s := range m.servers {
+		if s.name == name {
+			if s.client != nil {
+				_ = s.client.Close()
+			}
+			m.servers = append(m.servers[:i], m.servers[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("mcp: server %q not found", name)
+}
+
+// UpdateServer replaces the configuration for an existing server entry. It
+// closes the old client, creates a new one, and reconnects when the entry
+// is enabled.
+func (m *Manager) UpdateServer(ctx context.Context, cfg config.MCPServerConfig) (ServerStatus, error) {
+	m.mu.Lock()
+	var target *serverEntry
+	for _, s := range m.servers {
+		if s.name == cfg.Name {
+			target = s
+			break
+		}
+	}
+	if target == nil {
+		m.mu.Unlock()
+		return ServerStatus{}, fmt.Errorf("mcp: server %q not found", cfg.Name)
+	}
+	_ = target.client.Close()
+	target.cfg = cfg
+	target.name = cfg.Name
+	prefix := strings.TrimSpace(cfg.ToolNamePrefix)
+	if prefix == "" {
+		prefix = ToolPrefix(cfg.Name)
+	}
+	target.toolPrefix = prefix
+	target.hideTools = cfg.HideTools
+	target.kind = strings.TrimSpace(cfg.Kind)
+	target.profile = strings.TrimSpace(cfg.ProfileName)
+	target.connected = false
+	target.tools = nil
+	target.lastError = ""
+	target.client = m.clientFactory(cfg)
+	m.mu.Unlock()
+
+	if cfg.Enabled {
+		if err := m.connectServer(ctx, target); err != nil {
+			slog.Warn("mcp: update-server connect failed", "server", target.name, "err", err)
+		}
+	}
+
+	m.mu.RLock()
+	status := serverStatusSnapshot(target)
+	m.mu.RUnlock()
+	return status, nil
+}
+
+// HasServer returns true when a server with the given runtime name is registered.
+func (m *Manager) HasServer(name string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, s := range m.servers {
+		if s.name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Close shuts down all MCP server connections.
 func (m *Manager) Close() {
 	m.mu.Lock()

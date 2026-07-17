@@ -28,6 +28,7 @@ import (
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/heartbeat"
 	"github.com/ffimnsr/koios/internal/mcp"
+	"github.com/ffimnsr/koios/internal/mcpregistry"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/memory/milvus"
 	"github.com/ffimnsr/koios/internal/monitor"
@@ -106,20 +107,6 @@ func buildCompactionMemoryCheckpoint(messages []types.Message) string {
 		return ""
 	}
 	return strings.TrimSpace(sb.String())
-}
-
-func mergedMCPServers(cfg *config.Config) ([]config.MCPServerConfig, error) {
-	servers := append([]config.MCPServerConfig(nil), cfg.MCPServers...)
-	browserServers, err := browser.MCPServers(cfg)
-	if err != nil {
-		return nil, err
-	}
-	servers = append(servers, browserServers...)
-	manifests, err := discoveredExtensions(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return mergedMCPServersWithManifests(servers, manifests)
 }
 
 func discoveredExtensions(cfg *config.Config) ([]extensions.DiscoveredManifest, error) {
@@ -429,9 +416,32 @@ func RunGateway(build BuildInfo) error {
 	}
 	baseMCPServers := append([]config.MCPServerConfig(nil), cfg.MCPServers...)
 	baseMCPServers = append(baseMCPServers, browserServers...)
+
+	// Merge extension manifests before user-managed servers so the ordering
+	// is: static < extension < user.
 	allMCPServers, err := mergedMCPServersWithManifests(baseMCPServers, extensionManifests)
 	if err != nil {
 		return err
+	}
+
+	// Open the user-managed MCP registry and load user servers on top.
+	var mcpRegistry *mcpregistry.Store
+	if cfg.WorkspaceRoot != "" {
+		registryStore, regErr := mcpregistry.New(cfg.MCPRegistryDBPath())
+		if regErr == nil {
+			mcpRegistry = registryStore
+			userRecords, listErr := mcpRegistry.ListAll(context.Background())
+			if listErr == nil && len(userRecords) > 0 {
+				merged, mergeErr := mcp.MergeServerConfigs(allMCPServers, nil, userRecords)
+				if mergeErr == nil {
+					allMCPServers = merged
+				} else {
+					slog.Warn("mcp: failed to merge user-managed servers", "err", mergeErr)
+				}
+			}
+		} else {
+			slog.Debug("mcp: no user-managed registry to open", "err", regErr)
+		}
 	}
 
 	// Start MCP servers if any are configured.
@@ -564,6 +574,7 @@ func RunGateway(build BuildInfo) error {
 		Monitor:             mon,
 		LogLevel:            logLevel,
 		MCPManager:          mcpMgr,
+		MCPRegistry:         mcpRegistry,
 		BrowserConfig:       cfg.Browser,
 		WorkflowRunner:      workflowRunner,
 		Orchestrator:        orchRuntime,
@@ -804,6 +815,9 @@ shutdown:
 	}
 	if mcpMgr != nil {
 		mcpMgr.Close()
+	}
+	if mcpRegistry != nil {
+		_ = mcpRegistry.Close()
 	}
 	slog.Info("koios stopped")
 	return nil

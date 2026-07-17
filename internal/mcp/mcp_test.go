@@ -114,6 +114,143 @@ func TestManagerEnsureAndStopServer(t *testing.T) {
 	}
 }
 
+func TestManagerAddServer(t *testing.T) {
+	mgr := NewManagerWithFactory(nil, func(cfg config.MCPServerConfig) Client {
+		return &fakeManagerClient{tools: []Tool{{Name: "ping"}}, callResult: "pong"}
+	})
+
+	// Add a disabled server.
+	status, err := mgr.AddServer(context.Background(), config.MCPServerConfig{
+		Name:    "u_alice_test",
+		Kind:    "user",
+		Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	if status.Connected {
+		t.Fatal("expected disabled server to not be connected")
+	}
+	if !mgr.HasServer("u_alice_test") {
+		t.Fatal("expected HasServer to be true after AddServer")
+	}
+
+	// Add an enabled server (auto-connects).
+	status, err = mgr.AddServer(context.Background(), config.MCPServerConfig{
+		Name:      "u_bob_other",
+		Kind:      "user",
+		Enabled:   true,
+		Transport: "stdio",
+		Command:   "echo",
+	})
+	if err != nil {
+		t.Fatalf("AddServer enabled: %v", err)
+	}
+	if !status.Connected {
+		t.Fatal("expected enabled server to be connected")
+	}
+
+	// Duplicate name should be rejected.
+	_, err = mgr.AddServer(context.Background(), config.MCPServerConfig{
+		Name: "u_alice_test",
+		Kind: "user",
+	})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected duplicate error, got %v", err)
+	}
+
+	// Verify registered tools.
+	tools := mgr.AllTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool from enabled server, got %d: %#v", len(tools), tools)
+	}
+}
+
+func TestManagerRemoveServer(t *testing.T) {
+	mgr := NewManagerWithFactory([]config.MCPServerConfig{{
+		Name:      "alice_fs",
+		Enabled:   true,
+		Transport: "stdio",
+		Command:   "echo",
+	}}, func(cfg config.MCPServerConfig) Client {
+		return &fakeManagerClient{tools: []Tool{{Name: "read"}}, callResult: "ok"}
+	})
+
+	if !mgr.HasServer("alice_fs") {
+		t.Fatal("expected server from config")
+	}
+
+	if err := mgr.RemoveServer("alice_fs"); err != nil {
+		t.Fatalf("RemoveServer: %v", err)
+	}
+	if mgr.HasServer("alice_fs") {
+		t.Fatal("expected HasServer to be false after RemoveServer")
+	}
+
+	// Removing a non-existent server should error.
+	if err := mgr.RemoveServer("nonexistent"); err == nil {
+		t.Fatal("expected error for non-existent server")
+	}
+
+	// Tools should be empty after removal.
+	if tools := mgr.AllTools(); len(tools) != 0 {
+		t.Fatalf("expected 0 tools after removal, got %d", len(tools))
+	}
+}
+
+func TestManagerUpdateServer(t *testing.T) {
+	callCount := 0
+	mgr := NewManagerWithFactory(nil, func(cfg config.MCPServerConfig) Client {
+		callCount++
+		return &fakeManagerClient{tools: []Tool{{Name: "tool_" + cfg.Name}}, callResult: cfg.Name}
+	})
+
+	// Add and then update.
+	_, err := mgr.AddServer(context.Background(), config.MCPServerConfig{
+		Name:      "u_alice_s1",
+		Enabled:   true,
+		Transport: "stdio",
+		Command:   "echo",
+	})
+	if err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+
+	// Update the server config.
+	status, err := mgr.UpdateServer(context.Background(), config.MCPServerConfig{
+		Name:      "u_alice_s1",
+		Enabled:   true,
+		Transport: "stdio",
+		Command:   "new-command",
+	})
+	if err != nil {
+		t.Fatalf("UpdateServer: %v", err)
+	}
+	if !status.Connected {
+		t.Fatal("expected connected after update")
+	}
+
+	// Updating a non-existent server should error.
+	_, err = mgr.UpdateServer(context.Background(), config.MCPServerConfig{Name: "nonexistent"})
+	if err == nil {
+		t.Fatal("expected error for non-existent server update")
+	}
+}
+
+func TestManagerHasServer(t *testing.T) {
+	mgr := NewManagerWithFactory([]config.MCPServerConfig{{
+		Name:    "existing",
+		Enabled: true,
+	}}, nil)
+
+	if !mgr.HasServer("existing") {
+		t.Fatal("expected HasServer to be true for existing server")
+	}
+	if mgr.HasServer("nonexistent") {
+		t.Fatal("expected HasServer to be false for non-existent server")
+	}
+}
+
 // ─── encodeParams ─────────────────────────────────────────────────────────────
 
 func TestEncodeParams_StaticValues(t *testing.T) {

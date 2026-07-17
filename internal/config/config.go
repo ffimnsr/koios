@@ -48,7 +48,8 @@ func (c *Config) ChannelBindingsPath() string {
 }
 
 // MemoryDBPath returns the path for the long-term memory SQLite database, derived from WorkspaceRoot.
-func (c *Config) MemoryDBPath() string { return filepath.Join(c.DBDir(), "memory.db") }
+func (c *Config) MemoryDBPath() string      { return filepath.Join(c.DBDir(), "memory.db") }
+func (c *Config) MCPRegistryDBPath() string { return filepath.Join(c.DBDir(), "mcp_registry.db") }
 
 // TasksDBPath returns the path for the durable task SQLite database, derived from WorkspaceRoot.
 func (c *Config) TasksDBPath() string { return filepath.Join(c.DBDir(), "tasks.db") }

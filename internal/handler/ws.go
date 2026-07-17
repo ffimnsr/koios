@@ -74,6 +74,7 @@ import (
 	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/heartbeat"
 	"github.com/ffimnsr/koios/internal/mcp"
+	"github.com/ffimnsr/koios/internal/mcpregistry"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/monitor"
 	"github.com/ffimnsr/koios/internal/notes"
@@ -271,6 +272,7 @@ type Handler struct {
 	monitor                 *monitor.Monitor
 	logLevel                *slog.LevelVar
 	mcpManager              *mcp.Manager
+	mcpRegistry             *mcpregistry.Store
 	browserConfig           config.BrowserConfig
 	pluginRegistry          *pluginRegistry
 	workflowRunner          *workflow.Runner
@@ -373,6 +375,8 @@ type HandlerOptions struct {
 	LogLevel *slog.LevelVar
 	// MCPManager, when non-nil, provides tools from external MCP servers.
 	MCPManager *mcp.Manager
+	// MCPRegistry, when non-nil, provides the user-managed MCP server store.
+	MCPRegistry *mcpregistry.Store
 	// BrowserConfig enables named browser profile routing for browser.* tools.
 	BrowserConfig config.BrowserConfig
 	// WorkflowRunner, when non-nil, enables the workflow.* tool family.
@@ -451,6 +455,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		monitor:                 opts.Monitor,
 		logLevel:                opts.LogLevel,
 		mcpManager:              opts.MCPManager,
+		mcpRegistry:             opts.MCPRegistry,
 		browserConfig:           opts.BrowserConfig,
 		pluginRegistry:          pluginRegistry,
 		workflowRunner:          opts.WorkflowRunner,

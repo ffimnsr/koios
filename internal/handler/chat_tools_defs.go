@@ -3936,4 +3936,104 @@ var toolDefs = []toolDef{
 		argHint:   `{"name":"work-openai"}`,
 		available: func(h *Handler) bool { return h.peerLLMStore != nil },
 	},
+	// mcp.server.* — self-service MCP server management for peers.
+	{
+		name:        "mcp.server.list",
+		description: "List user-managed MCP servers visible to the calling peer. Includes runtime connection status for enabled servers when the gateway is active.",
+		parameters: mustJSONSchema(map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpRegistry != nil },
+	},
+	{
+		name:        "mcp.server.add",
+		description: "Register a new MCP server for the calling peer. Validates the config and saves it disabled by default; use mcp.server.enable to activate. Secrets in env and headers are stored and returned redacted.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":              map[string]any{"type": "string"},
+				"transport":         map[string]any{"type": "string", "enum": []string{"stdio", "http", "sse"}},
+				"command":           map[string]any{"type": "string"},
+				"args":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"env":               map[string]any{"type": "object"},
+				"url":               map[string]any{"type": "string"},
+				"headers":           map[string]any{"type": "object"},
+				"timeout":           map[string]any{"type": "string"},
+				"visibility":        map[string]any{"type": "string", "enum": []string{"private", "shared", "owner_only"}},
+				"approval_required": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"name", "transport"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpRegistry != nil },
+	},
+	{
+		name:        "mcp.server.remove",
+		description: "Remove a user-managed MCP server owned by the calling peer by its registry ID. If the gateway is running, the server is also disconnected from the runtime.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpRegistry != nil },
+	},
+	{
+		name:        "mcp.server.enable",
+		description: "Enable a user-managed MCP server so it connects at the next gateway start or immediately if the gateway is running.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpRegistry != nil },
+	},
+	{
+		name:        "mcp.server.disable",
+		description: "Disable a user-managed MCP server without removing its configuration.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpRegistry != nil },
+	},
+	{
+		name:        "mcp.server.inspect",
+		description: "Show full details of a user-managed MCP server owned by the calling peer. Secrets are redacted.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":      map[string]any{"type": "string"},
+				"secrets": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpRegistry != nil },
+	},
+	{
+		name:        "mcp.server.test",
+		description: "Probe connectivity of a user-managed MCP server owned by the calling peer. Returns tool count on success or an error description on failure.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":      map[string]any{"type": "string"},
+				"timeout": map[string]any{"type": "integer"},
+			},
+			"required":             []string{"id"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpRegistry != nil },
+	},
 }

@@ -88,6 +88,7 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newHostCommand(ctx))
 	root.AddCommand(newExtensionCommand(ctx))
 	root.AddCommand(newPeerLLMCommand(ctx))
+	root.AddCommand(newMCPCommand(ctx))
 	configureCLICompletions(root, ctx)
 	return root
 }

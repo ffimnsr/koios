@@ -1715,6 +1715,20 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			"reset":               args.Reset,
 		}
 		return response, nil
+	case "mcp.server.list":
+		return h.executeMCPServerList(ctx, peerID)
+	case "mcp.server.add":
+		return h.executeMCPServerAdd(ctx, peerID, call)
+	case "mcp.server.remove":
+		return h.executeMCPServerRemove(ctx, peerID, call)
+	case "mcp.server.enable":
+		return h.executeMCPServerEnable(ctx, peerID, call)
+	case "mcp.server.disable":
+		return h.executeMCPServerDisable(ctx, peerID, call)
+	case "mcp.server.inspect":
+		return h.executeMCPServerInspect(ctx, peerID, call)
+	case "mcp.server.test":
+		return h.executeMCPServerTest(ctx, peerID, call)
 	default:
 		return nil, errUnhandledTool
 	}
