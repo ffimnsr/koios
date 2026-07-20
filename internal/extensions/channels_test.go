@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,21 +27,31 @@ func (s stubChannelDispatcher) Dispatch(ctx context.Context, msg channels.Inboun
 }
 
 type channelCallerStub struct {
+	mu       sync.Mutex
 	call     func(context.Context, string, json.RawMessage) (any, error)
 	lastName string
 	lastArgs map[string]any
 }
 
 func (s *channelCallerStub) CallTool(ctx context.Context, fullName string, rawArgs json.RawMessage) (any, error) {
-	s.lastName = fullName
-	s.lastArgs = nil
+	var args map[string]any
 	if len(rawArgs) > 0 {
-		_ = json.Unmarshal(rawArgs, &s.lastArgs)
+		_ = json.Unmarshal(rawArgs, &args)
 	}
+	s.mu.Lock()
+	s.lastName = fullName
+	s.lastArgs = args
+	s.mu.Unlock()
 	if s.call == nil {
 		return nil, nil
 	}
 	return s.call(ctx, fullName, rawArgs)
+}
+
+func (s *channelCallerStub) LastCall() (string, map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastName, cloneAnyMap(s.lastArgs)
 }
 
 func TestRegisterChannelsDispatchesInboundAndUsesOutboundReply(t *testing.T) {
@@ -205,25 +217,30 @@ func TestRegisterChannelsSuppressesReplyWhenEnvelopeRequestsNoReply(t *testing.T
 func TestRegisterChannelsStartsPollingLoopAndPersistsPollState(t *testing.T) {
 	caller := &channelCallerStub{}
 	manager := channels.NewManager()
-	var received []channels.InboundMessage
-	pollCalls := 0
+	var (
+		receivedMu sync.Mutex
+		received   []channels.InboundMessage
+		pollCalls  atomic.Int32
+	)
 	caller.call = func(_ context.Context, fullName string, rawArgs json.RawMessage) (any, error) {
 		if strings.HasSuffix(fullName, "poll_demochat") {
-			pollCalls++
+			callNum := pollCalls.Add(1)
 			var args map[string]any
 			_ = json.Unmarshal(rawArgs, &args)
 			channelArgs, _ := args["channel"].(map[string]any)
 			pollArgs, _ := channelArgs["poll"].(map[string]any)
-			if pollCalls == 1 {
+			if callNum == 1 {
 				if pollArgs["state"] != nil {
-					t.Fatalf("expected first poll to have nil state, got %#v", pollArgs)
+					t.Errorf("expected first poll to have nil state, got %#v", pollArgs)
+					return nil, nil
 				}
 				return `{"message":{"conversation_id":"conv-1","sender_id":"user-1","text":"hello from poll","no_reply":true},"poll_state":{"cursor":"next-1"}}`, nil
 			}
-			if pollCalls == 2 {
+			if callNum == 2 {
 				state, _ := pollArgs["state"].(map[string]any)
 				if state["cursor"] != "next-1" {
-					t.Fatalf("expected second poll to receive prior state, got %#v", pollArgs)
+					t.Errorf("expected second poll to receive prior state, got %#v", pollArgs)
+					return nil, nil
 				}
 			}
 			return `{"poll_state":{"cursor":"next-2"}}`, nil
@@ -242,7 +259,9 @@ func TestRegisterChannelsStartsPollingLoopAndPersistsPollState(t *testing.T) {
 			}},
 		},
 	}}, stubChannelDispatcher{dispatch: func(_ context.Context, msg channels.InboundMessage) (*channels.OutboundMessage, error) {
+		receivedMu.Lock()
 		received = append(received, msg)
+		receivedMu.Unlock()
 		return &channels.OutboundMessage{Text: "suppressed"}, nil
 	}})
 	if err != nil {
@@ -256,19 +275,23 @@ func TestRegisterChannelsStartsPollingLoopAndPersistsPollState(t *testing.T) {
 		_ = manager.Shutdown(context.Background())
 	})
 	for time.Since(start) < 300*time.Millisecond {
-		if pollCalls >= 2 {
+		if pollCalls.Load() >= 2 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if pollCalls < 2 {
-		t.Fatalf("expected polling loop to run at least twice, got %d", pollCalls)
+	if got := pollCalls.Load(); got < 2 {
+		t.Fatalf("expected polling loop to run at least twice, got %d", got)
 	}
-	if len(received) != 1 || received[0].Channel != "pollchat" || received[0].Text != "hello from poll" {
-		t.Fatalf("unexpected polled dispatches: %#v", received)
+	receivedMu.Lock()
+	gotReceived := append([]channels.InboundMessage(nil), received...)
+	receivedMu.Unlock()
+	if len(gotReceived) != 1 || gotReceived[0].Channel != "pollchat" || gotReceived[0].Text != "hello from poll" {
+		t.Fatalf("unexpected polled dispatches: %#v", gotReceived)
 	}
-	if caller.lastName != "mcp_plug_demo_poll__poll_demochat" {
-		t.Fatalf("unexpected last poll tool name: %q", caller.lastName)
+	lastName, _ := caller.LastCall()
+	if lastName != "mcp_plug_demo_poll__poll_demochat" {
+		t.Fatalf("unexpected last poll tool name: %q", lastName)
 	}
 }
 
