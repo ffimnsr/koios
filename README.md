@@ -112,14 +112,17 @@ Build the image locally:
 docker build -f Containerfile -t koios:local .
 ```
 
-Run it with a mounted config file from the repository root:
+Run it with a mounted config file and writable workspace:
 
 ```sh
 docker run --rm \
   -p 8080:8080 \
   -v "$(pwd)/koios.config.toml:/app/koios.config.toml:ro" \
+  -v "$(pwd)/workspace:/app/workspace" \
   koios:local
 ```
+
+For Podman on SELinux-enabled hosts, add `:Z` to the bind mounts.
 
 Tagged releases also publish `ghcr.io/ffimnsr/koios`.
 

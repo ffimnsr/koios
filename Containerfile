@@ -20,10 +20,22 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
       -ldflags="-s -w -X main.version=${VERSION} -X main.gitHash=${GIT_HASH} -X main.buildTime=${BUILD_TIME}" \
       -o /out/koios .
 
+RUN mkdir -p \
+    /out/workspace/db \
+    /out/workspace/sessions \
+    /out/workspace/cron \
+    /out/workspace/agents \
+    /out/workspace/peers \
+    /out/workspace/workflows \
+    /out/workspace/runs \
+    /out/workspace/browser \
+    /out/workspace/extensions
+
 FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 COPY --from=build /out/koios /usr/local/bin/koios
+COPY --from=build --chown=nonroot:nonroot /out/workspace /app/workspace
 
 EXPOSE 8080
 
