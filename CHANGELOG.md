@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-20
+
+### Maintenance
+
+- update release workflow for image builder (`d1cf6ef`)
+
 ## [0.7.1] - 2026-07-20
 
 ### Maintenance
@@ -260,7 +266,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/ffimnsr/koios/releases/tag/v0.7.2
 [0.7.1]: https://github.com/ffimnsr/koios/releases/tag/v0.7.1
 [0.7.0]: https://github.com/ffimnsr/koios/releases/tag/v0.7.0
 [0.6.0]: https://github.com/ffimnsr/koios/releases/tag/v0.6.0
