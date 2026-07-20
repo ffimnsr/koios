@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-20
+
+### Added
+
+- update containerfile and readme (`779786f`)
+
 ## [0.7.2] - 2026-07-20
 
 ### Maintenance
@@ -266,7 +272,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/ffimnsr/koios/releases/tag/v0.7.3
 [0.7.2]: https://github.com/ffimnsr/koios/releases/tag/v0.7.2
 [0.7.1]: https://github.com/ffimnsr/koios/releases/tag/v0.7.1
 [0.7.0]: https://github.com/ffimnsr/koios/releases/tag/v0.7.0
