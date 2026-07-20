@@ -12,6 +12,64 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-20
+
+### Added
+
+- initial commit engine koios (`937c477`)
+- update the handler and tools capability (`a63e2a0`)
+- add the vault for mk env (`55bf794`)
+- update heartbeat config (`ae1650b`)
+- update the parts of compactor and subagent (`049f452`)
+- add mcp and privacy redaction functions (`bed180c`)
+- move multiline strings to templates (`3cee1a9`)
+- add bootstrap templates (`2903f40`)
+- update the agent to use irc like tui (`00de2d0`)
+- add workflow engine (`b684a32`)
+- add new file tools for llm to easily work (`637dcc6`)
+- add a proper orchestrator (`3cc3222`)
+- add slash commands and activate run ledger (`221208c`)
+- add sandboxed code execution and streaming controls (`18dd844`)
+- expand doctor diagnostics and repairs (`f1a6afe`)
+- update mk vault (`5aad2b0`)
+- add personal planning and memory workflows (`7c21cbb`)
+- add bookmarks, memory provenance, and profiles (`a1c5057`)
+- add repository governance docs, release notes, and GitHub Actions baseline (`6f749f3`)
+- add comprehensive data persistence stores and tool implementations (`b4894c2`)
+- reorganize workspace structure with peer-based documents and databases (`aec2d4b`)
+- add tool result provenance store and improve tool prompt clarity (`982bc13`)
+- suggest similar tool names on unknown tool errors (`204af49`)
+- add extension manifest system with plugin hooks and native tools (`cb872fd`)
+- add telegram channel and extension framework support (`0d6daa0`)
+- add browser automation and secured tool controls (`797c6de`)
+- add peer llm (`df620bc`)
+- allow peers to add mcp for their own use (`fe39a64`)
+- allow mcp for owners only (`4d88909`)
+- update release scripts (`927904d`)
+- clean source (`300b598`)
+- update and fix the versions and errors (`054ecb5`)
+
+
+### Fixed
+
+- update ledger for orchestrator updates (`71a015e`)
+- restore session maintenance defaults (`6244774`)
+- replace all diagnostics error with correct code (`bcc2359`)
+- update the race condition change (`65eff94`)
+- update the channels to prevent race (`4b4da3b`)
+
+
+### Documentation
+
+- clarify usage tracking issue wording (`612037a`)
+
+
+### Maintenance
+
+- update koios codebase with recent changes (`6349492`)
+- split handler, memory, and orchestrator into focused modules (`bce76f6`)
+- reorganize cli and config packages (`9194803`)
+
 ## [0.6.0] - 2026-07-20
 
 ### Added
@@ -196,7 +254,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/releases/tag/v0.6.0
+[Unreleased]: https://github.com/ffimnsr/koios/releases/tag/v0.7.0
+[0.7.0]: https://github.com/ffimnsr/koios/releases/tag/v0.7.0
 [0.6.0]: https://github.com/ffimnsr/koios/releases/tag/v0.6.0
 [0.5.0]: https://github.com/ffimnsr/koios/releases/tag/v0.5.0
 [0.4.0]: https://github.com/ffimnsr/koios/releases/tag/v0.4.0
