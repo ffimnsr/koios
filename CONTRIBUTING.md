@@ -11,7 +11,7 @@ Thanks for contributing to koios.
 ## Development setup
 
 - Install Go 1.26.1 or later.
-- Build the daemon with `go build ./...` or `scripts/release.sh`.
+- Build the daemon with `go build ./...` or `scripts/release.sh` (build mode).
 - Run the test suite with `go test ./...`.
 - Run additional checks with `go vet ./...` and `go test -race -count=1 ./...`.
 - Format changes with `go fmt ./...` before you open a pull request.
@@ -32,4 +32,4 @@ Thanks for contributing to koios.
 
 ## Release notes
 
-koios keeps release history in [CHANGELOG.md](CHANGELOG.md). `scripts/release.sh` validates that the current `VERSION` already has a matching changelog section before producing a release build.
+koios keeps release history in [CHANGELOG.md](CHANGELOG.md). `scripts/release.sh` now supports two modes: build mode still validates that the current `VERSION` has a matching changelog section before producing a release build, and release mode (`--patch`, `--minor`, `--major`, or an explicit version) updates `VERSION`, refreshes `CHANGELOG.md`, runs release quality gates, and creates the release commit and tag.

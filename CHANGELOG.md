@@ -5,14 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The canonical release version lives in [`VERSION`](VERSION), and release builds
-produced by [`scripts/release.sh`](scripts/release.sh) require a matching entry
-in this changelog.
+The canonical release version lives in [`VERSION`](VERSION). Build mode in
+[`scripts/release.sh`](scripts/release.sh) validates a matching changelog entry
+for the current version, and release mode updates `VERSION` and this changelog
+together.
 
 ## [Unreleased]
 
 ### Added
 
+- Reference-style release automation in `scripts/release.sh`, including version bumps, changelog refresh, quality gates, release commits, and git tags while preserving the existing binary build mode used by CI.
 - Governance and contribution metadata for external contributors.
 - GitHub Actions workflows for CI, linting, CodeQL, release automation, and scheduled vulnerability scanning.
 
