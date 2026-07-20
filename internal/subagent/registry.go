@@ -160,6 +160,29 @@ type Registry struct {
 	ledger    SubagentLedger
 }
 
+func cloneRunRecord(rec *RunRecord) *RunRecord {
+	if rec == nil {
+		return nil
+	}
+	cp := *rec
+	if len(rec.Attachments) > 0 {
+		cp.Attachments = append([]Attachment(nil), rec.Attachments...)
+	}
+	if len(rec.Events) > 0 {
+		cp.Events = append([]LifecycleEvent(nil), rec.Events...)
+	}
+	if len(rec.Transcript) > 0 {
+		cp.Transcript = append([]types.Message(nil), rec.Transcript...)
+	}
+	if len(rec.Children) > 0 {
+		cp.Children = append([]string(nil), rec.Children...)
+	}
+	if len(rec.Steering) > 0 {
+		cp.Steering = append([]string(nil), rec.Steering...)
+	}
+	return &cp
+}
+
 // SubagentLedger is a minimal interface for persisting subagent run lifecycle
 // events to a unified ledger.  Implementations must be safe for concurrent use.
 type SubagentLedger interface {
@@ -280,7 +303,7 @@ func (r *Registry) Spawn(req SpawnRequest, sessionKey string) *RunRecord {
 		r.ledger.LedgerQueued(rec.ID, rec.PeerID, sessionKey, req.Model, rec.CreatedAt)
 		r.ledger.LedgerMetadata(rec.ID, rec.SubTurn.ParentRunID, rec.SubTurn.ToolCalls)
 	}
-	return rec
+	return cloneRunRecord(rec)
 }
 
 // Update mutates a run record in-place and persists the registry.
@@ -307,8 +330,7 @@ func (r *Registry) Update(id string, fn func(*RunRecord)) (*RunRecord, bool) {
 				rec.SubTurn.Steps, 0, 0)
 		}
 	}
-	copyRec := *rec
-	return &copyRec, true
+	return cloneRunRecord(rec), true
 }
 
 // Get returns a snapshot copy of a run record.
@@ -319,8 +341,7 @@ func (r *Registry) Get(id string) (*RunRecord, bool) {
 	if !ok {
 		return nil, false
 	}
-	copyRec := *rec
-	return &copyRec, true
+	return cloneRunRecord(rec), true
 }
 
 // List returns all records sorted by creation time.
@@ -329,8 +350,7 @@ func (r *Registry) List() []*RunRecord {
 	defer r.mu.RUnlock()
 	out := make([]*RunRecord, 0, len(r.records))
 	for _, rec := range r.records {
-		copyRec := *rec
-		out = append(out, &copyRec)
+		out = append(out, cloneRunRecord(rec))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
 	return out

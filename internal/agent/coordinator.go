@@ -93,6 +93,35 @@ type asyncRun struct {
 	cancel context.CancelFunc
 }
 
+func cloneResult(result *Result) *Result {
+	if result == nil {
+		return nil
+	}
+	cp := *result
+	if len(result.Events) > 0 {
+		cp.Events = append([]Event(nil), result.Events...)
+	}
+	if result.Response != nil {
+		resp := *result.Response
+		cp.Response = &resp
+	}
+	return &cp
+}
+
+func cloneRunRecord(record RunRecord) RunRecord {
+	cp := record
+	if record.StartedAt != nil {
+		started := *record.StartedAt
+		cp.StartedAt = &started
+	}
+	if record.FinishedAt != nil {
+		finished := *record.FinishedAt
+		cp.FinishedAt = &finished
+	}
+	cp.Result = cloneResult(record.Result)
+	return cp
+}
+
 func NewCoordinator(runtime *Runtime) *Coordinator {
 	c := &Coordinator{
 		runtime: runtime,
@@ -168,6 +197,7 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 	req.SessionKey = sessionKey
 	id := uuid.NewString()
 	now := time.Now().UTC()
+	runCtx, cancel := context.WithCancel(context.Background())
 	run := &asyncRun{
 		record: RunRecord{
 			ID:         id,
@@ -175,7 +205,8 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 			Status:     StatusQueued,
 			QueuedAt:   now,
 		},
-		done: make(chan struct{}),
+		done:   make(chan struct{}),
+		cancel: cancel,
 	}
 
 	c.mu.Lock()
@@ -188,8 +219,7 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 		ledger.LedgerQueued(id, req.PeerID, sessionKey, req.Model, now)
 	}
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	run.cancel = cancel
+	record := cloneRunRecord(run.record)
 
 	entry.ch <- &laneTask{
 		ctx: runCtx,
@@ -243,7 +273,6 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 		},
 	}
 
-	record := run.record
 	return &record, nil
 }
 
@@ -274,7 +303,7 @@ func (c *Coordinator) Get(id string) (*RunRecord, bool) {
 	if !ok {
 		return nil, false
 	}
-	record := run.record
+	record := cloneRunRecord(run.record)
 	return &record, true
 }
 
@@ -292,7 +321,7 @@ func (c *Coordinator) Wait(ctx context.Context, id string) (*RunRecord, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	record := run.record
+	record := cloneRunRecord(run.record)
 	return &record, nil
 }
 

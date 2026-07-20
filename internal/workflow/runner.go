@@ -39,6 +39,42 @@ type Runner struct {
 	cancels  map[string]context.CancelFunc
 }
 
+func cloneWorkflow(wf *Workflow) *Workflow {
+	if wf == nil {
+		return nil
+	}
+	cp := *wf
+	if len(wf.Steps) > 0 {
+		cp.Steps = make([]Step, len(wf.Steps))
+		for i, step := range wf.Steps {
+			cp.Steps[i] = step
+			if len(step.Headers) > 0 {
+				cp.Steps[i].Headers = make(map[string]string, len(step.Headers))
+				for k, v := range step.Headers {
+					cp.Steps[i].Headers[k] = v
+				}
+			}
+		}
+	}
+	return &cp
+}
+
+func cloneRun(run *Run) *Run {
+	if run == nil {
+		return nil
+	}
+	cp := *run
+	if len(run.StepResults) > 0 {
+		cp.StepResults = make(map[string]StepResult, len(run.StepResults))
+		for k, v := range run.StepResults {
+			cp.StepResults[k] = v
+		}
+	} else {
+		cp.StepResults = make(map[string]StepResult)
+	}
+	return &cp
+}
+
 // NewRunner creates a Runner backed by store.  Call SetAgentRuntime before
 // starting any agent_turn workflows.
 func NewRunner(store *Store) *Runner {
@@ -106,7 +142,8 @@ func (r *Runner) Start(ctx context.Context, workflowID, peerID string) (*Run, er
 
 	// Copy the workflow snapshot so the goroutine is not affected by future
 	// mutations to the definition.
-	wfCopy := *wf
+	wfCopy := cloneWorkflow(wf)
+	initial := cloneRun(run)
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	r.mu.Lock()
@@ -120,12 +157,11 @@ func (r *Runner) Start(ctx context.Context, workflowID, peerID string) (*Run, er
 			r.mu.Unlock()
 			cancel()
 		}()
-		r.execute(runCtx, &wfCopy, run)
+		r.execute(runCtx, wfCopy, run)
 	}()
 
 	// Return a snapshot that reflects the pending status.
-	snap := *run
-	return &snap, nil
+	return initial, nil
 }
 
 // Cancel stops an active run by ID.  Returns an error when the run is not

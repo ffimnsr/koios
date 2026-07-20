@@ -92,11 +92,13 @@ func (r *Runtime) Spawn(ctx context.Context, req SpawnRequest) (*RunRecord, erro
 		req.SessionKey = fmt.Sprintf("%s::subagent::%s", req.PeerID, uuid.NewString())
 	}
 	rec := r.reg.Spawn(req, req.SessionKey)
-	_, _ = r.reg.Update(rec.ID, func(rec *RunRecord) {
+	if updated, ok := r.reg.Update(rec.ID, func(rec *RunRecord) {
 		rec.SubTurn.ConcurrencyKey = parentKey
 		rec.SubTurn.ConcurrencyLimit = req.MaxChildren
 		rec.SubTurn.ReservedSlot = false
-	})
+	}); ok {
+		rec = updated
+	}
 	if req.ParentRunID != "" {
 		r.reg.LinkChild(req.ParentRunID, rec.ID)
 	}
