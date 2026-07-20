@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
-          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.1
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@v1.9.0
           "$(go env GOPATH)/bin/cyclonedx-gomod" mod -licenses -json -output "dist/koios_${version}_sbom.json"
 
       - name: Upload release artifacts
