@@ -16,16 +16,16 @@ import (
 // confidence, and last-confirmed timestamps. This gives the runtime a more
 // reliable behavior-shaping source than generic memory retrieval.
 type Preference struct {
-	ID               string  `json:"id"`
-	PeerID           string  `json:"peer_id"`
-	Key              string  `json:"key"`
-	Value            string  `json:"value"`
-	Scope            string  `json:"scope,omitempty"`
-	Provenance       string  `json:"provenance,omitempty"`
-	Confidence       float64 `json:"confidence"`
-	LastConfirmedAt  int64   `json:"last_confirmed_at,omitempty"`
-	CreatedAt        int64   `json:"created_at"`
-	UpdatedAt        int64   `json:"updated_at"`
+	ID              string  `json:"id"`
+	PeerID          string  `json:"peer_id"`
+	Key             string  `json:"key"`
+	Value           string  `json:"value"`
+	Scope           string  `json:"scope,omitempty"`
+	Provenance      string  `json:"provenance,omitempty"`
+	Confidence      float64 `json:"confidence"`
+	LastConfirmedAt int64   `json:"last_confirmed_at,omitempty"`
+	CreatedAt       int64   `json:"created_at"`
+	UpdatedAt       int64   `json:"updated_at"`
 }
 
 // Input holds the fields for setting a preference.

@@ -121,7 +121,6 @@ type LocalEventPatch struct {
 	Status      *string
 }
 
-
 type AgendaQuery struct {
 	Scope    string `json:"scope"`
 	Timezone string `json:"timezone,omitempty"`

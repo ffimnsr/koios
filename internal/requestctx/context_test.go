@@ -324,11 +324,11 @@ func TestBuild_SkipsBootstrapWhenHistoryPresent(t *testing.T) {
 	}
 
 	built, err := Build(context.Background(), BuildOptions{
-		Model:    "m",
-		Messages: []types.Message{{Role: "user", Content: "hello"}},
+		Model:       "m",
+		Messages:    []types.Message{{Role: "user", Content: "hello"}},
 		IdentityDir: dir,
-		PeerID:   "",
-		History:  []types.Message{
+		PeerID:      "",
+		History: []types.Message{
 			{Role: "user", Content: "prior turn"},
 			{Role: "assistant", Content: "prior reply"},
 		},
