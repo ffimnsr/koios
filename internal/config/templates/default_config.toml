@@ -68,12 +68,23 @@ model = "gpt-4o"
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 # enabled = true
-
+#
 # [[mcp.servers]]
 # name = "myserver"
 # transport = "http"
 # url = "http://localhost:3000/mcp"
 # enabled = true
+#
+# Monaco auth bridge example for derived images that bundle /app/bin/monaco-mcp:
+# [[mcp.servers]]
+# name = "monaco"
+# transport = "stdio"
+# command = "/app/bin/monaco-mcp"
+# timeout = "30s"
+# enabled = true
+#
+# Koios auto-injects current peer_id into mcp__monaco__* tool calls when
+# the model does not already provide peer_id or privy_user_id.
 
 # [browser]
 # default_profile = "work"

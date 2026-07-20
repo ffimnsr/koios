@@ -45,6 +45,7 @@ Key sections:
 - `session.retention`, `session.max_entries`, `session.idle_reset_after`, and `session.daily_reset_time` control session cleanup and auto-reset
 - `[cron]`, `[heartbeat]`, `[agent]` for scheduler and agent runtime settings
 - `[tools]` chat-tool profiles, allow/deny lists, and exec approval settings
+- `[mcp]` startup MCP servers for stdio/http/sse transports; useful when extending the Koios container with bundled MCP binaries
 - `[channels.telegram]` for Telegram delivery, DM policy, and optional inbox routing into an owner peer
 - `[workspace]` agent sandbox storage (`root`, `per_agent`, `max_file_bytes`)
 
@@ -125,6 +126,15 @@ docker run --rm \
 For Podman on SELinux-enabled hosts, add `:Z` to the bind mounts.
 
 Tagged releases also publish `ghcr.io/ffimnsr/koios`.
+
+The runtime image is intentionally extension-friendly: it is not distroless, includes CA certificates and a writable `/app/bin`, and sets `PATH=/app/bin:$PATH` so downstream images can copy additional MCP binaries on top without rebuilding Koios itself.
+
+Example derived image bundling a custom MCP server:
+
+```dockerfile
+FROM ghcr.io/ffimnsr/koios:latest
+COPY ./my-mcp-server /app/bin/my-mcp-server
+```
 
 ### Health check
 
@@ -468,6 +478,18 @@ Execute an agent turn with scoped session handling, shared context assembly, opt
   "scope": "main"
 }}
 ```
+
+### Monaco MCP peer context bridging
+
+Koios auto-injects `peer_id` into MCP tool arguments for tools under the `mcp__monaco__*` namespace when the model does not already provide `peer_id` or `privy_user_id`.
+
+This supports request-scoped auth bridges where Monaco tools derive user context from the current Koios peer, for example `mach1:<privy_user_id>`.
+
+Rules:
+- only Monaco MCP tools get this automatic injection
+- explicit `peer_id` from the model is preserved
+- explicit `privy_user_id` from the model is preserved
+- non-Monaco MCP servers are unchanged
 
 ### `agent.start`
 

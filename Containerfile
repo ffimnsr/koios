@@ -31,13 +31,25 @@ RUN mkdir -p \
     /out/workspace/browser \
     /out/workspace/extensions
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 koios \
+    && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/koios koios \
+    && mkdir -p /app /app/workspace /app/bin \
+    && chown -R koios:koios /app /home/koios
 
 WORKDIR /app
 COPY --from=build /out/koios /usr/local/bin/koios
-COPY --from=build --chown=nonroot:nonroot /out/workspace /app/workspace
+COPY --from=build --chown=koios:koios /out/workspace /app/workspace
+
+ENV PATH="/app/bin:${PATH}"
 
 EXPOSE 8080
+
+USER koios
 
 ENTRYPOINT ["/usr/local/bin/koios"]
 CMD ["serve"]
