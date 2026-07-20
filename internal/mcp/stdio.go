@@ -43,6 +43,16 @@ func NewStdioClient(name, command string, args []string, env map[string]string) 
 	}
 }
 
+func (c *stdioClient) forwardStderr(r io.ReadCloser) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		slog.Warn("mcp stdio: server stderr", "server", c.name, "output", scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Debug("mcp stdio: stderr read error", "server", c.name, "err", err)
+	}
+}
+
 func (c *stdioClient) Initialize(ctx context.Context) error {
 	stdin, err := c.cmd.StdinPipe()
 	if err != nil {
@@ -52,6 +62,11 @@ func (c *stdioClient) Initialize(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("mcp stdio %s: stdout pipe: %w", c.name, err)
 	}
+	stderr, err := c.cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("mcp stdio %s: stderr pipe: %w", c.name, err)
+	}
+	go c.forwardStderr(stderr)
 	c.stdin = stdin
 	c.scanner = bufio.NewScanner(stdout)
 	c.scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
