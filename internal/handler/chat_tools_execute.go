@@ -77,6 +77,7 @@ func (h *Handler) dispatchTool(ctx context.Context, peerID string, call agent.To
 					break
 				}
 			}
+			call.Arguments = injectMCPPeerID(call.Name, peerID, call.Arguments)
 			return h.mcpManager.CallTool(ctx, call.Name, call.Arguments)
 		}
 	}
@@ -90,6 +91,38 @@ func (h *Handler) dispatchTool(ctx context.Context, peerID string, call agent.To
 // "create" matches "task.create", "bookmark.create"). It is used to produce
 // actionable error messages when an agent calls a bare name without its domain
 // prefix.
+func injectMCPPeerID(toolName, peerID string, rawArgs json.RawMessage) json.RawMessage {
+	if peerID == "" {
+		return rawArgs
+	}
+	namespace, _, ok := mcp.ParseToolName(toolName)
+	if !ok || namespace != "monaco" {
+		return rawArgs
+	}
+
+	args := map[string]any{}
+	if len(rawArgs) > 0 {
+		if err := json.Unmarshal(rawArgs, &args); err != nil {
+			return rawArgs
+		}
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	if _, exists := args["peer_id"]; exists {
+		return rawArgs
+	}
+	if _, exists := args["privy_user_id"]; exists {
+		return rawArgs
+	}
+	args["peer_id"] = peerID
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return rawArgs
+	}
+	return encoded
+}
+
 func (h *Handler) suggestTools(peerID, name string) []string {
 	if name == "" {
 		return nil
