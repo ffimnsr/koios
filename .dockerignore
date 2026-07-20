@@ -1,0 +1,10 @@
+.atlas/
+.git/
+.github/
+.githooks/
+.zed/
+dist/
+koios
+workspace/
+*.db
+*.log

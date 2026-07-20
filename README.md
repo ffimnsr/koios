@@ -99,10 +99,29 @@ go test -v -race ./...
 ### Binary
 
 ```sh
-./koios
+./koios serve
 ```
 
 The daemon reads `koios.config.toml` from the current working directory.
+
+### Container
+
+Build the image locally:
+
+```sh
+docker build -f Containerfile -t koios:local .
+```
+
+Run it with a mounted config file from the repository root:
+
+```sh
+docker run --rm \
+  -p 8080:8080 \
+  -v "$(pwd)/koios.config.toml:/app/koios.config.toml:ro" \
+  koios:local
+```
+
+Tagged releases also publish `ghcr.io/ffimnsr/koios`.
 
 ### Health check
 
