@@ -284,13 +284,37 @@ type Run struct {
 }
 
 // snapshot returns a copy of the run safe for external use.
-func (r *Run) snapshot() Run {
+func (r *Run) snapshot() *Run {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	cp := *r
-	cp.Children = append([]ChildResult(nil), r.Children...)
-	cp.Timeline = append([]TimelineEvent(nil), r.Timeline...)
-	cp.childRunIDs = nil
+
+	cp := &Run{
+		ID:               r.ID,
+		PeerID:           r.PeerID,
+		ParentSessionKey: r.ParentSessionKey,
+		ParentRunID:      r.ParentRunID,
+		Status:           r.Status,
+		WaitPolicy:       r.WaitPolicy,
+		Aggregation:      r.Aggregation,
+		ReducerPrompt:    r.ReducerPrompt,
+		MaxConcurrency:   r.MaxConcurrency,
+		Children:         append([]ChildResult(nil), r.Children...),
+		BarrierGroups:    make(map[string][]string, len(r.BarrierGroups)),
+		AggregatedReply:  r.AggregatedReply,
+		Error:            r.Error,
+		CreatedAt:        r.CreatedAt,
+		StartedAt:        r.StartedAt,
+		FinishedAt:       r.FinishedAt,
+		Timeline:         append([]TimelineEvent(nil), r.Timeline...),
+		StageResults:     append([]StageResult(nil), r.StageResults...),
+	}
+	for group, labels := range r.BarrierGroups {
+		cp.BarrierGroups[group] = append([]string(nil), labels...)
+	}
+	if r.Provenance != nil {
+		provenance := *r.Provenance
+		cp.Provenance = &provenance
+	}
 	return cp
 }
 

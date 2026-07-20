@@ -186,8 +186,7 @@ func (o *Orchestrator) Get(id string) (*Run, bool) {
 	if !ok {
 		return nil, false
 	}
-	snap := r.snapshot()
-	return &snap, true
+	return r.snapshot(), true
 }
 
 // List returns snapshots of all runs ordered by creation time.
@@ -201,8 +200,7 @@ func (o *Orchestrator) List() []*Run {
 
 	out := make([]*Run, 0, len(all))
 	for _, r := range all {
-		snap := r.snapshot()
-		out = append(out, &snap)
+		out = append(out, r.snapshot())
 	}
 	for i := 1; i < len(out); i++ {
 		for j := i; j > 0 && out[j].CreatedAt.Before(out[j-1].CreatedAt); j-- {
@@ -245,8 +243,7 @@ func (o *Orchestrator) Wait(ctx context.Context, id string) (*Run, error) {
 		r.mu.Unlock()
 		switch st {
 		case RunStatusCompleted, RunStatusErrored, RunStatusCancelled:
-			snap := r.snapshot()
-			return &snap, nil
+			return r.snapshot(), nil
 		}
 		select {
 		case <-ctx.Done():
@@ -279,8 +276,7 @@ func (o *Orchestrator) Barrier(ctx context.Context, orchID, group string) (*Run,
 
 		switch st {
 		case RunStatusCompleted, RunStatusErrored, RunStatusCancelled:
-			snap := r.snapshot()
-			return &snap, nil
+			return r.snapshot(), nil
 		}
 
 		if group == "" {
@@ -295,8 +291,7 @@ func (o *Orchestrator) Barrier(ctx context.Context, orchID, group string) (*Run,
 			}
 			r.mu.Unlock()
 			if all {
-				snap := r.snapshot()
-				return &snap, nil
+				return r.snapshot(), nil
 			}
 		} else if len(labels) > 0 {
 			labelSet := make(map[string]bool, len(labels))
@@ -317,8 +312,7 @@ func (o *Orchestrator) Barrier(ctx context.Context, orchID, group string) (*Run,
 			}
 			r.mu.Unlock()
 			if groupDone {
-				snap := r.snapshot()
-				return &snap, nil
+				return r.snapshot(), nil
 			}
 		}
 
