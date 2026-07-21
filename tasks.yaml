@@ -6,15 +6,37 @@ tasks:
           go build -o ~/.local/bin/koios .
           echo "Koios installed to ~/.local/bin/koios"
     description: Install the application in the local bin directory
+  install-tools:
+    commands:
+      - command: |
+          go install golang.org/x/tools/cmd/goimports@latest
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+    description: Install tools that are needed for development
   dev:
     commands:
       - command: go run .
         retrigger: true
     description: Run the application in development mode
+  build:
+    commands:
+      - command: go build ./...
+    description: Build and compile the code
   format:
     commands:
       - command: go fmt ./...
+      - command: goimports -w .
     description: Format the code using go fmt
+  lint:
+    commands:
+      - command: go vet ./...
+      - command: go build ./...
+      - command: staticcheck ./...
+    description: Lint the code using go vet
+  deep-lint:
+    commands:
+      - command: golangci-lint run
+    description: Launch a deep lint for static analysiis and best practice enforcement
   test:
     commands:
       - command: go test ./...
