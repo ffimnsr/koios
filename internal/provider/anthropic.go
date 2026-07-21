@@ -37,12 +37,13 @@ func (p *anthropicProvider) Capabilities(string) types.ProviderCapabilities {
 // — Anthropic request/response types ——————————————————————————————————————————
 
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	Messages  []anthropicMessage `json:"messages"`
-	System    string             `json:"system,omitempty"`
-	Tools     []anthropicTool    `json:"tools,omitempty"`
-	Stream    bool               `json:"stream,omitempty"`
+	Model     string                 `json:"model"`
+	MaxTokens int                    `json:"max_tokens"`
+	Messages  []anthropicMessage     `json:"messages"`
+	System    string                 `json:"system,omitempty"`
+	Tools     []anthropicTool        `json:"tools,omitempty"`
+	Stream    bool                   `json:"stream,omitempty"`
+	Thinking  *anthropicThinkingMode `json:"thinking,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -54,6 +55,11 @@ type anthropicTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+type anthropicThinkingMode struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type anthropicResponse struct {
@@ -68,6 +74,8 @@ type anthropicResponse struct {
 type anthropicContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
@@ -179,7 +187,7 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 		maxTokens = defaultMaxTokens
 	}
 
-	return anthropicRequest{
+	request := anthropicRequest{
 		Model:     model,
 		MaxTokens: maxTokens,
 		Messages:  msgs,
@@ -187,15 +195,26 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 		Tools:     tools,
 		Stream:    req.Stream,
 	}
+	if req.ReasoningBudget > 0 {
+		request.Thinking = &anthropicThinkingMode{
+			Type:         "enabled",
+			BudgetTokens: req.ReasoningBudget,
+		}
+	}
+	return request
 }
 
 // toOpenAIResponse converts an Anthropic response to OpenAI format.
 func toOpenAIResponse(ar *anthropicResponse) *types.ChatResponse {
 	var content strings.Builder
 	var toolCalls []types.ToolCall
+	var reasoning []types.ReasoningBlock
 	for _, block := range ar.Content {
 		if block.Type == "text" {
 			content.WriteString(block.Text)
+		}
+		if block.Type == "thinking" && strings.TrimSpace(block.Thinking) != "" {
+			reasoning = append(reasoning, types.ReasoningBlock{Provider: "anthropic", Type: "summary", Text: block.Thinking})
 		}
 		if block.Type == "tool_use" {
 			toolCalls = append(toolCalls, types.ToolCall{
@@ -225,6 +244,7 @@ func toOpenAIResponse(ar *anthropicResponse) *types.ChatResponse {
 			CompletionTokens: ar.Usage.OutputTokens,
 			TotalTokens:      ar.Usage.InputTokens + ar.Usage.OutputTokens,
 		},
+		Reasoning: reasoning,
 	}
 }
 
@@ -265,7 +285,13 @@ func (p *anthropicProvider) Complete(ctx context.Context, req *types.ChatRequest
 	if err := json.NewDecoder(resp.Body).Decode(&aResp); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	return toOpenAIResponse(&aResp), nil
+	chatResp := toOpenAIResponse(&aResp)
+	if req.ReasoningVisibility != "off" {
+		for _, block := range chatResp.Reasoning {
+			types.EmitReasoningEvent(ctx, types.ReasoningEvent{Kind: types.ReasoningEventSummary, Provider: block.Provider, Text: block.Text})
+		}
+	}
+	return chatResp, nil
 }
 
 func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
@@ -308,10 +334,11 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 
 	// Convert Anthropic SSE events to OpenAI SSE format in real-time.
 	var (
-		msgID     string
-		created   = time.Now().Unix()
-		eventType string
-		sb        strings.Builder
+		msgID           string
+		created         = time.Now().Unix()
+		eventType       string
+		sb              strings.Builder
+		reasoningBuffer strings.Builder
 	)
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -348,19 +375,29 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 		case "content_block_delta":
 			var cbd struct {
 				Delta struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type      string `json:"type"`
+					Text      string `json:"text,omitempty"`
+					Thinking  string `json:"thinking,omitempty"`
+					Signature string `json:"signature,omitempty"`
 				} `json:"delta"`
 			}
 			if err := json.Unmarshal([]byte(data), &cbd); err != nil {
 				continue
 			}
-			if cbd.Delta.Type != "text_delta" {
-				continue
-			}
-			sb.WriteString(cbd.Delta.Text)
-			if err := writeOpenAIChunk(w, flusher, msgID, p.model, created, cbd.Delta.Text, false, nil); err != nil {
-				return sb.String(), err
+			switch cbd.Delta.Type {
+			case "text_delta":
+				sb.WriteString(cbd.Delta.Text)
+				if err := writeOpenAIChunk(w, flusher, msgID, p.model, created, cbd.Delta.Text, false, nil); err != nil {
+					return sb.String(), err
+				}
+			case "thinking_delta":
+				if strings.TrimSpace(cbd.Delta.Thinking) == "" {
+					continue
+				}
+				reasoningBuffer.WriteString(cbd.Delta.Thinking)
+				if req.ReasoningVisibility == "full" {
+					types.EmitReasoningEvent(streamCtx, types.ReasoningEvent{Kind: types.ReasoningEventDelta, Provider: "anthropic", Text: cbd.Delta.Thinking})
+				}
 			}
 
 		case "message_delta":
@@ -379,6 +416,9 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 
 	if err := scanner.Err(); err != nil {
 		return sb.String(), wrapStreamReadError(streamCtx, err)
+	}
+	if req.ReasoningVisibility != "off" && strings.TrimSpace(reasoningBuffer.String()) != "" {
+		types.EmitReasoningEvent(streamCtx, types.ReasoningEvent{Kind: types.ReasoningEventSummary, Provider: "anthropic", Text: reasoningBuffer.String()})
 	}
 	return sb.String(), nil
 }

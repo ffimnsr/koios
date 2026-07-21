@@ -74,6 +74,9 @@ type SessionPolicy struct {
 	// ThinkLevel controls the reasoning budget sent to the model.
 	// Valid values: off | minimal | low | medium | high | xhigh
 	ThinkLevel string `json:"think_level,omitempty"`
+	// ReasoningVisibility controls whether provider reasoning text is surfaced.
+	// Valid values: off | summary | full
+	ReasoningVisibility string `json:"reasoning_visibility,omitempty"`
 	// VerboseMode, when true, enables verbose tool summaries in responses.
 	VerboseMode bool `json:"verbose_mode,omitempty"`
 	// TraceMode, when true, emits per-step debug trace events.
@@ -893,6 +896,7 @@ func isZeroPolicy(p SessionPolicy) bool {
 		p.BrowserProfile == "" &&
 		p.QueueMode == "" &&
 		p.ThinkLevel == "" &&
+		p.ReasoningVisibility == "" &&
 		!p.VerboseMode &&
 		!p.TraceMode &&
 		!p.BlockStream &&

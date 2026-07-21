@@ -91,31 +91,38 @@ type RunRequest struct {
 type EventKind string
 
 const (
-	EventRunStart   EventKind = "run_start"
-	EventStepStart  EventKind = "step_start"
-	EventContext    EventKind = "context_built"
-	EventMemory     EventKind = "memory_injected"
-	EventPrune      EventKind = "session_pruned"
-	EventToolCall   EventKind = "tool_call"
-	EventToolResult EventKind = "tool_result"
-	EventRunBlock   EventKind = "run_block"
-	EventRunFinish  EventKind = "run_finish"
-	EventRunError   EventKind = "run_error"
-	EventRetry      EventKind = "run_retry"
-	EventSessionKey EventKind = "session_key"
+	EventRunStart         EventKind = "run_start"
+	EventStepStart        EventKind = "step_start"
+	EventStepFinish       EventKind = "step_finish"
+	EventReasoningDelta   EventKind = "reasoning_delta"
+	EventReasoningSummary EventKind = "reasoning_summary"
+	EventContext          EventKind = "context_built"
+	EventMemory           EventKind = "memory_injected"
+	EventPrune            EventKind = "session_pruned"
+	EventToolCall         EventKind = "tool_call"
+	EventToolResult       EventKind = "tool_result"
+	EventRunBlock         EventKind = "run_block"
+	EventRunFinish        EventKind = "run_finish"
+	EventRunError         EventKind = "run_error"
+	EventRetry            EventKind = "run_retry"
+	EventSessionKey       EventKind = "session_key"
 )
 
 // Event is a structured runtime event.
 type Event struct {
 	Kind       EventKind `json:"kind"`
+	At         time.Time `json:"at,omitempty"`
 	SessionKey string    `json:"session_key,omitempty"`
 	Message    string    `json:"message,omitempty"`
+	Content    string    `json:"content,omitempty"`
+	Provider   string    `json:"provider,omitempty"`
 	Attempt    int       `json:"attempt,omitempty"`
 	Step       int       `json:"step,omitempty"`
 	Count      int       `json:"count,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	ToolName   string    `json:"tool_name,omitempty"`
 	Summary    string    `json:"summary,omitempty"`
+	DurationMs int64     `json:"duration_ms,omitempty"`
 	OK         *bool     `json:"ok,omitempty"`
 }
 
@@ -559,8 +566,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	reqCopy := req
 	reqCopy.SessionKey = sessionKey
 	reqCopy.Messages = append([]types.Message(nil), req.Messages...)
+	runStartedAt := time.Now().UTC()
 	rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventSessionKey, SessionKey: sessionKey})
-	rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunStart, SessionKey: sessionKey})
+	rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunStart, SessionKey: sessionKey, At: runStartedAt})
 	if reqCopy.Timeout <= 0 {
 		reqCopy.Timeout = rt.defaultTimeout
 	}
@@ -579,6 +587,26 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	var lastErr error
 	for step := 1; step <= reqCopy.MaxSteps; step++ {
 		result.Steps = step
+		stepStartedAt := time.Now().UTC()
+		stepFinished := false
+		emitStepFinish := func(ok bool, summary string, stepErr error) {
+			if stepFinished {
+				return
+			}
+			stepFinished = true
+			ev := Event{
+				Kind:       EventStepFinish,
+				SessionKey: sessionKey,
+				Step:       step,
+				Summary:    summary,
+				DurationMs: elapsedMilliseconds(stepStartedAt),
+				OK:         &ok,
+			}
+			if stepErr != nil {
+				ev.Error = stepErr.Error()
+			}
+			rt.emitEvent(result, reqCopy.EventSink, ev)
+		}
 		rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventStepStart, SessionKey: sessionKey, Step: step})
 
 		// Poll for pending steering messages before building the next request context.
@@ -599,11 +627,13 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		extraSystem, err := rt.standingSystemMessages(reqCopy)
 		if err != nil {
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Step: step, Error: err.Error()})
+			emitStepFinish(false, "failed", err)
 			return result, err
 		}
 		skillSystem, err := rt.skillSystemMessages(reqCopy)
 		if err != nil {
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Step: step, Error: err.Error()})
+			emitStepFinish(false, "failed", err)
 			return result, err
 		}
 		extraSystem = append(extraSystem, skillSystem...)
@@ -637,6 +667,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		})
 		if err != nil {
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Step: step, Error: err.Error()})
+			emitStepFinish(false, "failed", err)
 			return result, err
 		}
 		rt.emitEvent(result, reqCopy.EventSink, Event{
@@ -694,6 +725,10 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		built.Request.MaxTokens = reqCopy.MaxTokens
 		built.Request.Temperature = reqCopy.Temperature
 		built.Request.TopP = reqCopy.TopP
+		policy := rt.sessionPolicy(sessionKey)
+		built.Request.ReasoningEffort = reasoningEffortForThinkLevel(policy.ThinkLevel)
+		built.Request.ReasoningBudget = reasoningBudgetForThinkLevel(policy.ThinkLevel)
+		built.Request.ReasoningVisibility = normalizeReasoningVisibility(policy.ReasoningVisibility)
 		advanceStep := false
 		for attempt := 1; attempt <= rt.retry.MaxAttempts; attempt++ {
 			result.Attempts = attempt
@@ -715,6 +750,19 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				sink.reset()
 			}
 			attemptCtx = context.WithValue(attemptCtx, contextSessionKey{}, sessionKey)
+			attemptCtx = types.WithReasoningSink(attemptCtx, func(re types.ReasoningEvent) {
+				kind := EventReasoningDelta
+				if re.Kind == types.ReasoningEventSummary {
+					kind = EventReasoningSummary
+				}
+				rt.emitEvent(result, reqCopy.EventSink, Event{
+					Kind:       kind,
+					SessionKey: sessionKey,
+					Step:       step,
+					Content:    re.Text,
+					Provider:   re.Provider,
+				})
+			})
 			assistantText, resp, err := rt.invoke(attemptCtx, &invokeReq, invokeStream, invokeSink)
 			if err != nil && toolProbe && err.Error() == "nil response from provider" {
 				invokeReq.Stream = built.Request.Stream
@@ -737,6 +785,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 					}
 					advanceStep = true
 					lastErr = nil
+					emitStepFinish(true, "steered", nil)
 					break
 				}
 			}
@@ -771,9 +820,10 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 							}
 							argsSummary := summarizeToolJSON(tc.Arguments)
 							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: argsSummary})
+							toolStartedAt := time.Now().UTC()
 							toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(toolExecCtx, reqCopy.PeerID, tc)
 							ok := execErr == nil
-							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: summarizeToolResult(toolResult, execErr), OK: &ok})
+							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: summarizeToolResult(toolResult, execErr), DurationMs: elapsedMilliseconds(toolStartedAt), OK: &ok})
 							if hookErr := rt.emitHook(callCtx, ops.Event{
 								Name:       ops.HookAfterToolCall,
 								PeerID:     reqCopy.PeerID,
@@ -817,6 +867,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 							break
 						}
 						advanceStep = true
+						emitStepFinish(true, "tools_complete", nil)
 						break
 					}
 					call, ok, parseErr := parseToolCall(assistantText)
@@ -842,9 +893,10 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						}
 						argsSummary := summarizeToolJSON(call.Arguments)
 						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: argsSummary})
+						toolStartedAt := time.Now().UTC()
 						toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(toolExecCtx, reqCopy.PeerID, *call)
 						ok := execErr == nil
-						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolResult(toolResult, execErr), OK: &ok})
+						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolResult(toolResult, execErr), DurationMs: elapsedMilliseconds(toolStartedAt), OK: &ok})
 						if hookErr := rt.emitHook(callCtx, ops.Event{
 							Name:       ops.HookAfterToolCall,
 							PeerID:     reqCopy.PeerID,
@@ -868,6 +920,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 							lastErr = execErr
 						}
 						advanceStep = true
+						emitStepFinish(true, "tools_complete", nil)
 						break
 					}
 				}
@@ -886,6 +939,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						persistedMessages = append(persistedMessages, types.Message{Role: "user", Content: msg})
 					}
 					advanceStep = true
+					emitStepFinish(true, "steered", nil)
 					break
 				}
 				if reqCopy.Stream && sink != nil {
@@ -895,12 +949,14 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 					persistedMessages = append(persistedMessages, assistantMsg)
 				}
 				rt.persistTurn(ctx, reqCopy.PeerID, sessionKey, reqCopy.Model, persistedMessages, workingMessages, assistantText, result.SuppressedReply)
-				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunFinish, SessionKey: sessionKey, Step: step, Message: assistantText})
+				emitStepFinish(true, "completed", nil)
+				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunFinish, SessionKey: sessionKey, Step: step, Message: assistantText, DurationMs: elapsedMilliseconds(runStartedAt)})
 				return result, nil
 			}
 			lastErr = err
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: err.Error()})
 			if invokeStream && sink != nil && sink.liveWritten() {
+				emitStepFinish(false, "failed", err)
 				break
 			}
 			if attempt < rt.retry.MaxAttempts && rt.shouldRetry(err) {
@@ -917,6 +973,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		if advanceStep {
 			continue
 		}
+		emitStepFinish(false, "failed", lastErr)
 		break
 	}
 	if lastErr == nil {
@@ -1510,6 +1567,55 @@ func minDuration(a, b time.Duration) time.Duration {
 	return a
 }
 
+func elapsedMilliseconds(start time.Time) int64 {
+	ms := time.Since(start).Milliseconds()
+	if ms <= 0 {
+		return 1
+	}
+	return ms
+}
+
+func normalizeReasoningVisibility(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "summary":
+		return "summary"
+	case "full":
+		return "full"
+	default:
+		return "off"
+	}
+}
+
+func reasoningEffortForThinkLevel(level string) string {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "minimal", "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high", "xhigh":
+		return "high"
+	default:
+		return ""
+	}
+}
+
+func reasoningBudgetForThinkLevel(level string) int {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "minimal":
+		return 1024
+	case "low":
+		return 2048
+	case "medium":
+		return 4096
+	case "high":
+		return 8192
+	case "xhigh":
+		return 16384
+	default:
+		return 0
+	}
+}
+
 func (rt *Runtime) sessionKey(req RunRequest) string {
 	if req.SessionKey != "" {
 		return req.SessionKey
@@ -1777,6 +1883,9 @@ func truncateSummary(text string, limit int) string {
 }
 
 func (rt *Runtime) emitEvent(result *Result, sink func(Event), ev Event) {
+	if ev.At.IsZero() {
+		ev.At = time.Now().UTC()
+	}
 	result.Events = append(result.Events, ev)
 	if sink != nil {
 		sink(ev)

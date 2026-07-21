@@ -306,6 +306,29 @@ func TestSlashThink_Off(t *testing.T) {
 	}
 }
 
+func TestSlashReasoning_SetAndQuery(t *testing.T) {
+	conn, _, _ := dialSlashServer(t, nil, "reasoning-alice")
+	msg := sendSlashChat(t, conn, "1", "/reasoning full")
+	got := slashAssistantText(t, msg)
+	if !strings.Contains(got, "full") {
+		t.Fatalf("expected full in response, got: %s", got)
+	}
+	msg = sendSlashChat(t, conn, "2", "/reasoning")
+	got = slashAssistantText(t, msg)
+	if !strings.Contains(got, "full") {
+		t.Fatalf("expected persisted full, got: %s", got)
+	}
+}
+
+func TestSlashReasoning_Invalid(t *testing.T) {
+	conn, _, _ := dialSlashServer(t, nil, "reasoning-bob")
+	msg := sendSlashChat(t, conn, "1", "/reasoning secret")
+	got := slashAssistantText(t, msg)
+	if !strings.Contains(got, "Invalid") {
+		t.Fatalf("expected invalid message, got: %s", got)
+	}
+}
+
 func TestSlashBookmarkAddAndList(t *testing.T) {
 	conn, _ := dialSlashServerWithBookmarks(t, "bookmark-alice")
 

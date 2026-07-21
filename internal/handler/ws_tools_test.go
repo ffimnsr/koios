@@ -1817,6 +1817,41 @@ func TestExecuteTool_SessionPatchUpdatesPolicy(t *testing.T) {
 	}
 }
 
+func TestExecuteTool_SessionPatchReasoningVisibility(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   agent.NewCoordinator(rt),
+	})
+
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.patch",
+		Arguments: json.RawMessage(`{"session_key":"alice::sender::bob","reasoning_visibility":"summary"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.patch reasoning_visibility): %v", err)
+	}
+	var patchRes struct {
+		OK                  bool   `json:"ok"`
+		SessionKey          string `json:"session_key"`
+		ReasoningVisibility string `json:"reasoning_visibility"`
+	}
+	raw, _ := json.Marshal(result)
+	if err := json.Unmarshal(raw, &patchRes); err != nil {
+		t.Fatalf("unmarshal session.patch result: %v", err)
+	}
+	if !patchRes.OK || patchRes.SessionKey != "alice::sender::bob" || patchRes.ReasoningVisibility != "summary" {
+		t.Fatalf("unexpected session.patch result: %#v", patchRes)
+	}
+	if store.Policy("alice::sender::bob").ReasoningVisibility != "summary" {
+		t.Fatal("expected patched reasoning visibility on target session")
+	}
+}
+
 func TestWS_SubagentStatusAlias(t *testing.T) {
 	store := session.New(20)
 	gate := make(chan struct{})

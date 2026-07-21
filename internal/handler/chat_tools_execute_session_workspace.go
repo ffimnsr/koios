@@ -422,23 +422,24 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		}, nil
 	case "session.patch":
 		var args struct {
-			SessionKey       string  `json:"session_key"`
-			RunID            string  `json:"run_id"`
-			ReplyBack        *bool   `json:"reply_back"`
-			UsageMode        *string `json:"usage_mode"`
-			ModelOverride    *string `json:"model_override"`
-			ActiveProfile    *string `json:"active_profile"`
-			BrowserProfile   *string `json:"browser_profile"`
-			ProviderProfile  *string `json:"provider_profile"`
-			QueueMode        *string `json:"queue_mode"`
-			BlockStream      *bool   `json:"block_stream"`
-			StreamChunkChars *int    `json:"stream_chunk_chars"`
-			StreamCoalesceMS *int    `json:"stream_coalesce_ms"`
+			SessionKey          string  `json:"session_key"`
+			RunID               string  `json:"run_id"`
+			ReplyBack           *bool   `json:"reply_back"`
+			UsageMode           *string `json:"usage_mode"`
+			ModelOverride       *string `json:"model_override"`
+			ActiveProfile       *string `json:"active_profile"`
+			BrowserProfile      *string `json:"browser_profile"`
+			ProviderProfile     *string `json:"provider_profile"`
+			QueueMode           *string `json:"queue_mode"`
+			ReasoningVisibility *string `json:"reasoning_visibility"`
+			BlockStream         *bool   `json:"block_stream"`
+			StreamChunkChars    *int    `json:"stream_chunk_chars"`
+			StreamCoalesceMS    *int    `json:"stream_coalesce_ms"`
 		}
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		if args.ReplyBack == nil && args.UsageMode == nil && args.ModelOverride == nil && args.ActiveProfile == nil && args.BrowserProfile == nil && args.ProviderProfile == nil && args.QueueMode == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
+		if args.ReplyBack == nil && args.UsageMode == nil && args.ModelOverride == nil && args.ActiveProfile == nil && args.BrowserProfile == nil && args.ProviderProfile == nil && args.QueueMode == nil && args.ReasoningVisibility == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
 			return nil, fmt.Errorf("at least one policy field is required")
 		}
 		targetSessionKey := strings.TrimSpace(args.SessionKey)
@@ -507,6 +508,17 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		if args.QueueMode != nil {
 			policy.QueueMode = agent.NormalizeQueueMode(*args.QueueMode)
 		}
+		if args.ReasoningVisibility != nil {
+			mode := reasoningVisibilityLabel(*args.ReasoningVisibility)
+			if mode == "off" && strings.TrimSpace(*args.ReasoningVisibility) != "" && !strings.EqualFold(strings.TrimSpace(*args.ReasoningVisibility), "off") {
+				return nil, fmt.Errorf("reasoning_visibility must be one of: off, summary, full")
+			}
+			if mode == "off" {
+				policy.ReasoningVisibility = ""
+			} else {
+				policy.ReasoningVisibility = mode
+			}
+		}
 		if args.BlockStream != nil {
 			policy.BlockStream = *args.BlockStream
 		}
@@ -554,6 +566,9 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		}
 		if args.QueueMode != nil {
 			result["queue_mode"] = policy.QueueMode
+		}
+		if args.ReasoningVisibility != nil {
+			result["reasoning_visibility"] = reasoningVisibilityLabel(policy.ReasoningVisibility)
 		}
 		if args.BlockStream != nil {
 			result["block_stream"] = policy.BlockStream

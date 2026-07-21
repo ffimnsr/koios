@@ -2,7 +2,11 @@
 // used throughout the service. All providers translate to/from these types.
 package types
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"strings"
+)
 
 // ContentPart is a single element in a multipart message used for multimodal
 // inputs (text and images).
@@ -103,18 +107,21 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 
 // ChatRequest is the OpenAI-compatible /v1/chat/completions request body.
 type ChatRequest struct {
-	Model            string          `json:"model"` // set by the handler; ignored if supplied by the caller
-	Messages         []Message       `json:"messages"`
-	Tools            []Tool          `json:"tools,omitempty"`
-	ToolChoice       any             `json:"tool_choice,omitempty"`
-	Stream           bool            `json:"stream"`
-	MaxTokens        int             `json:"max_tokens,omitempty"`
-	Temperature      *float64        `json:"temperature,omitempty"`
-	TopP             *float64        `json:"top_p,omitempty"`
-	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
-	Stop             json.RawMessage `json:"stop,omitempty"`
-	User             string          `json:"user,omitempty"`
+	Model               string          `json:"model"` // set by the handler; ignored if supplied by the caller
+	Messages            []Message       `json:"messages"`
+	Tools               []Tool          `json:"tools,omitempty"`
+	ToolChoice          any             `json:"tool_choice,omitempty"`
+	Stream              bool            `json:"stream"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
+	Temperature         *float64        `json:"temperature,omitempty"`
+	TopP                *float64        `json:"top_p,omitempty"`
+	FrequencyPenalty    *float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64        `json:"presence_penalty,omitempty"`
+	Stop                json.RawMessage `json:"stop,omitempty"`
+	User                string          `json:"user,omitempty"`
+	ReasoningEffort     string          `json:"-"`
+	ReasoningBudget     int             `json:"-"`
+	ReasoningVisibility string          `json:"-"`
 }
 
 // ChatChoice is one completion candidate.
@@ -170,12 +177,20 @@ type ProviderCapabilities struct {
 }
 
 // ChatResponse is the OpenAI-compatible /v1/chat/completions response body.
+type ReasoningBlock struct {
+	Provider string `json:"provider,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Type     string `json:"type,omitempty"`
+}
+
+// ChatResponse is the OpenAI-compatible /v1/chat/completions response body.
 type ChatResponse struct {
-	ID      string       `json:"id"`
-	Object  string       `json:"object"`
-	Created int64        `json:"created"`
-	Choices []ChatChoice `json:"choices"`
-	Usage   Usage        `json:"usage"`
+	ID        string           `json:"id"`
+	Object    string           `json:"object"`
+	Created   int64            `json:"created"`
+	Choices   []ChatChoice     `json:"choices"`
+	Usage     Usage            `json:"usage"`
+	Reasoning []ReasoningBlock `json:"reasoning,omitempty"`
 }
 
 // StreamDelta carries incremental content in a streaming chunk.
@@ -198,4 +213,40 @@ type StreamChunk struct {
 	Created int64          `json:"created"`
 	Model   string         `json:"model"`
 	Choices []StreamChoice `json:"choices"`
+}
+
+type ReasoningEventKind string
+
+const (
+	ReasoningEventDelta   ReasoningEventKind = "reasoning_delta"
+	ReasoningEventSummary ReasoningEventKind = "reasoning_summary"
+)
+
+type ReasoningEvent struct {
+	Kind     ReasoningEventKind `json:"kind"`
+	Provider string             `json:"provider,omitempty"`
+	Text     string             `json:"text,omitempty"`
+}
+
+type reasoningSinkKey struct{}
+
+func WithReasoningSink(ctx context.Context, sink func(ReasoningEvent)) context.Context {
+	if sink == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, reasoningSinkKey{}, sink)
+}
+
+func EmitReasoningEvent(ctx context.Context, ev ReasoningEvent) {
+	if ctx == nil {
+		return
+	}
+	if strings.TrimSpace(ev.Text) == "" {
+		return
+	}
+	sink, ok := ctx.Value(reasoningSinkKey{}).(func(ReasoningEvent))
+	if !ok || sink == nil {
+		return
+	}
+	sink(ev)
 }

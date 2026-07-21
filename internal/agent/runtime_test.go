@@ -870,6 +870,135 @@ func TestRuntime_NativeToolExecutionUsesLiveRunContext(t *testing.T) {
 	}
 }
 
+func TestRuntime_EventsIncludeTimestampsAndDurations(t *testing.T) {
+	store := session.New(20)
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+					ID:   "call-1",
+					Type: "function",
+					Function: types.ToolCallFunctionRef{
+						Name:      "time.now",
+						Arguments: `{}`,
+					},
+				}}}}}}, nil
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	res, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		MaxSteps: 2,
+		Messages: []types.Message{{Role: "user", Content: "what time is it?"}},
+		ToolExecutor: stubToolExecutor{execute: func(ctx context.Context, _ string, call agent.ToolCall) (any, error) {
+			if call.Name != "time.now" {
+				t.Fatalf("tool name = %q", call.Name)
+			}
+			time.Sleep(5 * time.Millisecond)
+			return map[string]string{"utc": "2026-04-29T00:00:00Z"}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Events) == 0 {
+		t.Fatal("expected runtime events")
+	}
+	var sawStepFinish bool
+	var sawToolResult bool
+	var sawRunFinish bool
+	for _, event := range res.Events {
+		if event.At.IsZero() {
+			t.Fatalf("expected timestamp on event %#v", event)
+		}
+		switch event.Kind {
+		case agent.EventStepFinish:
+			sawStepFinish = true
+			if event.DurationMs <= 0 {
+				t.Fatalf("expected positive step duration, got %d", event.DurationMs)
+			}
+		case agent.EventToolResult:
+			sawToolResult = true
+			if event.DurationMs <= 0 {
+				t.Fatalf("expected positive tool duration, got %d", event.DurationMs)
+			}
+		case agent.EventRunFinish:
+			sawRunFinish = true
+			if event.DurationMs <= 0 {
+				t.Fatalf("expected positive run duration, got %d", event.DurationMs)
+			}
+		}
+	}
+	if !sawStepFinish {
+		t.Fatal("expected step finish event")
+	}
+	if !sawToolResult {
+		t.Fatal("expected tool result event")
+	}
+	if !sawRunFinish {
+		t.Fatal("expected run finish event")
+	}
+}
+
+func TestRuntime_EmitsReasoningEvents(t *testing.T) {
+	store := session.New(20)
+	if err := store.SetPolicy("peer", session.SessionPolicy{ThinkLevel: "medium", ReasoningVisibility: "full"}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	prov := &stubProvider{
+		complete: func(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			if req.ReasoningEffort != "medium" {
+				t.Fatalf("ReasoningEffort = %q, want medium", req.ReasoningEffort)
+			}
+			if req.ReasoningBudget <= 0 {
+				t.Fatalf("expected positive ReasoningBudget, got %d", req.ReasoningBudget)
+			}
+			if req.ReasoningVisibility != "full" {
+				t.Fatalf("ReasoningVisibility = %q, want full", req.ReasoningVisibility)
+			}
+			types.EmitReasoningEvent(ctx, types.ReasoningEvent{Kind: types.ReasoningEventDelta, Provider: "stub", Text: "first thought"})
+			types.EmitReasoningEvent(ctx, types.ReasoningEvent{Kind: types.ReasoningEventSummary, Provider: "stub", Text: "final thought"})
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	res, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var sawDelta bool
+	var sawSummary bool
+	for _, event := range res.Events {
+		switch event.Kind {
+		case agent.EventReasoningDelta:
+			sawDelta = true
+			if event.Content != "first thought" || event.Provider != "stub" {
+				t.Fatalf("unexpected delta event: %#v", event)
+			}
+		case agent.EventReasoningSummary:
+			sawSummary = true
+			if event.Content != "final thought" || event.Provider != "stub" {
+				t.Fatalf("unexpected summary event: %#v", event)
+			}
+		}
+	}
+	if !sawDelta {
+		t.Fatal("expected reasoning delta event")
+	}
+	if !sawSummary {
+		t.Fatal("expected reasoning summary event")
+	}
+}
+
 func containsAll(s string, parts ...string) bool {
 	for _, part := range parts {
 		if !strings.Contains(s, part) {

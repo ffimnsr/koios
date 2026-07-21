@@ -61,6 +61,12 @@ var validThinkLevels = map[string]bool{
 	"xhigh":   true,
 }
 
+var validReasoningVisibility = map[string]bool{
+	"off":     true,
+	"summary": true,
+	"full":    true,
+}
+
 // parseSlashCommand extracts the command name (without leading slash) and any
 // trailing arguments from text. It returns ok=false when text does not start
 // with '/'.
@@ -120,6 +126,8 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 		return h.slashThink(wsc, req, arg)
 	case "usage":
 		return h.slashUsage(wsc, req, arg)
+	case "reasoning", "thoughts":
+		return h.slashReasoning(wsc, req, arg)
 	case "verbose":
 		return h.slashBoolToggle(wsc, req, arg, "verbose",
 			func(p *session.SessionPolicy) bool { return p.VerboseMode },
@@ -248,6 +256,35 @@ func (h *Handler) slashThink(wsc *wsConn, req *rpcRequest, arg string) bool {
 	return true
 }
 
+func (h *Handler) slashReasoning(wsc *wsConn, req *rpcRequest, arg string) bool {
+	if arg == "" {
+		policy := h.store.Policy(wsc.peerID)
+		slashReply(wsc, req, fmt.Sprintf("Reasoning visibility: %s", reasoningVisibilityLabel(policy.ReasoningVisibility)))
+		return true
+	}
+	arg = strings.ToLower(strings.TrimSpace(arg))
+	if !validReasoningVisibility[arg] {
+		slashReply(wsc, req, "Invalid reasoning visibility. Choose: off | summary | full")
+		return true
+	}
+	if err := h.store.PatchPolicy(wsc.peerID, func(p *session.SessionPolicy) {
+		if arg == "off" {
+			p.ReasoningVisibility = ""
+		} else {
+			p.ReasoningVisibility = arg
+		}
+	}); err != nil {
+		wsc.replyErr(req.ID, errCodeServer, "could not persist policy: "+err.Error())
+		return true
+	}
+	if arg == "off" {
+		slashReply(wsc, req, "Reasoning visibility disabled.")
+	} else {
+		slashReply(wsc, req, fmt.Sprintf("Reasoning visibility set to: %s", arg))
+	}
+	return true
+}
+
 // ── /usage ───────────────────────────────────────────────────────────────────
 
 func normalizeUsageMode(arg string) (string, bool) {
@@ -266,6 +303,17 @@ func usageModeLabel(mode string) string {
 		return "off"
 	}
 	return mode
+}
+
+func reasoningVisibilityLabel(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "summary":
+		return "summary"
+	case "full":
+		return "full"
+	default:
+		return "off"
+	}
 }
 
 func activationModeLabel(mode string) string {
@@ -465,6 +513,9 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	if policy.ThinkLevel != "" {
 		fmt.Fprintf(&sb, "Think level: %s\n", policy.ThinkLevel)
 	}
+	if policy.ReasoningVisibility != "" {
+		fmt.Fprintf(&sb, "Reasoning visibility: %s\n", reasoningVisibilityLabel(policy.ReasoningVisibility))
+	}
 	if policy.ActivationMode != "" {
 		fmt.Fprintf(&sb, "Session activation: %s\n", policy.ActivationMode)
 	}
@@ -516,23 +567,24 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 	}
 
 	b, _ := json.Marshal(map[string]any{
-		"model":              model,
-		"session_messages":   histLen,
-		"active_profile":     policy.ActiveProfile,
-		"resolved_profile":   resolvedProfileName,
-		"queue_mode":         policy.QueueMode,
-		"think_level":        policy.ThinkLevel,
-		"activation_mode":    activationModeLabel(policy.ActivationMode),
-		"group_activation":   activationModeLabel(policy.GroupActivationMode),
-		"chat_activation":    activationModeLabel(policy.ChatActivationMode),
-		"usage_mode":         usageModeLabel(policy.UsageMode),
-		"verbose_mode":       policy.VerboseMode,
-		"trace_mode":         policy.TraceMode,
-		"elevated_bash":      policy.ElevatedBash,
-		"session_kind":       policy.SessionKind,
-		"block_stream":       policy.BlockStream,
-		"stream_chunk_chars": policy.StreamChunkChars,
-		"stream_coalesce_ms": policy.StreamCoalesceMS,
+		"model":                model,
+		"session_messages":     histLen,
+		"active_profile":       policy.ActiveProfile,
+		"resolved_profile":     resolvedProfileName,
+		"queue_mode":           policy.QueueMode,
+		"think_level":          policy.ThinkLevel,
+		"reasoning_visibility": reasoningVisibilityLabel(policy.ReasoningVisibility),
+		"activation_mode":      activationModeLabel(policy.ActivationMode),
+		"group_activation":     activationModeLabel(policy.GroupActivationMode),
+		"chat_activation":      activationModeLabel(policy.ChatActivationMode),
+		"usage_mode":           usageModeLabel(policy.UsageMode),
+		"verbose_mode":         policy.VerboseMode,
+		"trace_mode":           policy.TraceMode,
+		"elevated_bash":        policy.ElevatedBash,
+		"session_kind":         policy.SessionKind,
+		"block_stream":         policy.BlockStream,
+		"stream_chunk_chars":   policy.StreamChunkChars,
+		"stream_coalesce_ms":   policy.StreamCoalesceMS,
 	})
 	wsc.reply(req.ID, map[string]any{
 		"assistant_text": strings.TrimRight(sb.String(), "\n"),
