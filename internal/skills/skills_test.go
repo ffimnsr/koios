@@ -16,7 +16,7 @@ func writeSkill(t *testing.T, root, dir, content string) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir skill dir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
 	return path
@@ -254,7 +254,7 @@ id: review
 name: Review
 ---
 Second body.
-`), 0o644); err != nil {
+`), 0o600); err != nil {
 		t.Fatalf("rewrite skill: %v", err)
 	}
 	second, err := mgr.CatalogDetails()

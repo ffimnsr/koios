@@ -144,15 +144,19 @@ func (h *Handler) briefSend(peerID string, opts briefing.Options, notifTitle str
 		}
 		notifTitle = strings.ToUpper(kind[:1]) + kind[1:] + " brief"
 	}
-	if _, notifyErr := h.runSystemNotifyTool(ctx, notifTitle, text); notifyErr != nil {
-		return map[string]any{"ok": false, "error": notifyErr.Error(), "kind": report.Kind, "text": text}, nil
+	notifyErrText := ""
+	if _, err := h.runSystemNotifyTool(ctx, notifTitle, text); err != nil {
+		notifyErrText = err.Error()
+	}
+	if notifyErrText != "" {
+		return map[string]any{"ok": false, "error": notifyErrText, "kind": report.Kind, "text": text}, nil
 	}
 	return map[string]any{"ok": true, "kind": report.Kind, "text": text}, nil
 }
 
 // briefSchedule creates a cron job that will generate a brief on the given
 // schedule and deliver it as a system notification.
-func (h *Handler) briefSchedule(peerID string, name string, opts briefing.Options, sched scheduler.Schedule, ctx context.Context) (map[string]any, error) {
+func (h *Handler) briefSchedule(peerID string, name string, opts briefing.Options, sched scheduler.Schedule, _ context.Context) (map[string]any, error) {
 	if h.jobStore == nil || h.sched == nil {
 		return nil, fmt.Errorf("cron is not enabled")
 	}

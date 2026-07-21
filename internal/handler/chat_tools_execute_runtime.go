@@ -292,7 +292,7 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 		if _, err := h.ownedJobForPeer(peerID, args.ID); err != nil {
 			return nil, err
 		}
-		runID, err := h.sched.TriggerRun(args.ID)
+		runID, err := h.sched.TriggerRun(ctx, args.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -493,7 +493,7 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		return h.cancelRun(peerID, args.ID)
+		return h.cancelRun(ctx, peerID, args.ID)
 	case "run.logs":
 		var args struct {
 			ID          string `json:"id"`
@@ -595,7 +595,7 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 		}
 		return h.usageEstimate(ctx, peerID, args.Messages, args.Text, args.SessionKey, args.Model, includeHistory, includeTools, args.ExpectedCompletionTokens)
 	case "model.list":
-		return h.listModels(peerID), nil
+		return h.listModels(ctx, peerID), nil
 	case "model.capabilities":
 		var args struct {
 			Model      string `json:"model"`
@@ -609,7 +609,7 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 		if strings.TrimSpace(args.SessionKey) == "" {
 			args.SessionKey = peerID
 		}
-		return h.modelCapabilities(peerID, args.Model, args.SessionKey)
+		return h.modelCapabilities(ctx, peerID, args.Model, args.SessionKey)
 	case "model.route":
 		var args struct {
 			Text       string `json:"text"`

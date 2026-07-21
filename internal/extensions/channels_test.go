@@ -110,7 +110,7 @@ func TestRegisterChannelsDispatchesInboundAndUsesOutboundReply(t *testing.T) {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
 	caller.result = `{"http_response":{"status":202,"json":{"accepted":true}},"message":{"conversation_id":"conv-7","sender_id":"user-7","text":"hello","reply_to_message_id":"m-1"}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels/demochat/webhook", strings.NewReader("{}"))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/channels/demochat/webhook", strings.NewReader("{}"))
 	res := httptest.NewRecorder()
 	mux.ServeHTTP(res, req)
 	if res.Code != http.StatusAccepted {
@@ -202,7 +202,7 @@ func TestRegisterChannelsSuppressesReplyWhenEnvelopeRequestsNoReply(t *testing.T
 	if err := manager.RegisterRoutes(mux); err != nil {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels/demochat/webhook", strings.NewReader("{}"))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/channels/demochat/webhook", strings.NewReader("{}"))
 	res := httptest.NewRecorder()
 	mux.ServeHTTP(res, req)
 	if res.Code != http.StatusNoContent {
@@ -316,7 +316,7 @@ tool = "receive_demochat"
 start_tool = "start_demochat"
 shutdown_tool = "stop_demochat"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	manifest, err := LoadManifest(path)
@@ -356,7 +356,7 @@ channel = "demochat"
 poll_tool = "poll_demochat"
 poll_interval = "5s"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	manifest, err := LoadManifest(path)
@@ -387,7 +387,7 @@ method = "POST"
 path = "/v1/channels/demochat/webhook"
 tool = "receive_demochat"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if _, err := LoadManifest(path); err == nil {
@@ -405,7 +405,7 @@ func TestDecodeChannelToolEnvelopeAcceptsMapResults(t *testing.T) {
 	if response != nil || plainText != "" || envelope.Message == nil || envelope.Message.ConversationID != "conv-1" {
 		t.Fatalf("unexpected decoded envelope: %#v %#v %q", envelope, response, plainText)
 	}
-	raw, _ := json.Marshal(envelope.Message)
+	raw, _ := json.Marshal(envelope.Message) // #nosec G117
 	if !strings.Contains(string(raw), "conv-1") {
 		t.Fatalf("expected decoded message to round-trip, got %s", raw)
 	}

@@ -180,7 +180,7 @@ func (c *extensionChannel) Start(ctx context.Context) error {
 	}
 	pollTool := strings.TrimSpace(c.binding.Binding.PollTool)
 	if pollTool != "" {
-		pollCtx, cancel := context.WithCancel(context.Background())
+		pollCtx, cancel := context.WithCancel(ctx)
 		c.mu.Lock()
 		c.cancel = cancel
 		c.mu.Unlock()
@@ -565,7 +565,7 @@ func decodeHTTPRouteResponseText(raw string) (HTTPRouteResponse, bool, error) {
 	}
 	var response HTTPRouteResponse
 	if err := json.Unmarshal([]byte(trimmed), &response); err != nil {
-		return HTTPRouteResponse{}, false, nil
+		return HTTPRouteResponse{}, false, err
 	}
 	if response.Status < 0 || response.Status > 999 {
 		return HTTPRouteResponse{}, false, fmt.Errorf("invalid extension route status %d", response.Status)

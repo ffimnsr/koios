@@ -226,7 +226,7 @@ func decodeHTTPRouteResponse(result any) (HTTPRouteResponse, bool, error) {
 	}
 	var response HTTPRouteResponse
 	if err := json.Unmarshal([]byte(trimmed), &response); err != nil {
-		return HTTPRouteResponse{}, false, nil
+		return HTTPRouteResponse{}, false, err
 	}
 	if response.Status < 0 || response.Status > 999 {
 		return HTTPRouteResponse{}, false, fmt.Errorf("invalid extension route status %d", response.Status)

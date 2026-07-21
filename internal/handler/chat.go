@@ -16,16 +16,8 @@ type llmProvider interface {
 	CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error)
 }
 
-// heartbeatEnsurer is the subset of the heartbeat.Runner interface used by
-// the WebSocket handler. Using an interface keeps the handler package from
-// importing the heartbeat package directly.
-type heartbeatEnsurer interface {
-	EnsureRunning(peerID string)
-}
-
 var (
-	validateMessages = requestctx.ValidateMessages
-	splitByRole      = requestctx.SplitMessages
+	splitByRole = requestctx.SplitMessages
 )
 
 func requestBuilder(ctx context.Context, h *Handler, peerID string, messages, history []types.Message, stream bool) (*types.ChatRequest, error) {

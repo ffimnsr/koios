@@ -161,16 +161,6 @@ func resolveHideSecretFieldPlaintext(cfg *config.Config, field string) (plaintex
 	}
 }
 
-// isPipedStdin reports whether stdin is a pipe (not a terminal), meaning the
-// caller can safely read from it without prompting.
-func isPipedStdin(cmd *cobra.Command) bool {
-	f, ok := cmd.InOrStdin().(interface{ Fd() uintptr })
-	if !ok {
-		return true // conservative: treat unknown readers as piped
-	}
-	return !term.IsTerminal(int(f.Fd()))
-}
-
 func readHideSecretInput(cmd *cobra.Command, args []string, stdin bool) (string, error) {
 	if len(args) > 0 {
 		secret := strings.TrimSpace(args[0])

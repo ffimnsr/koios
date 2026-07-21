@@ -18,7 +18,7 @@ import (
 	"golang.org/x/crypto/scrypt"
 )
 
-const hiddenSecretPrefix = "koios-hide:v1:"
+const hiddenSecretPrefix = "koios-hide:v1:" // #nosec G101
 
 const (
 	hiddenSecretSaltBytes  = 32
@@ -30,10 +30,10 @@ const (
 )
 
 const (
-	hiddenSecretPathTelegramBotToken      = "channels.telegram.bot_token"
-	hiddenSecretPathTelegramWebhookSecret = "channels.telegram.webhook_secret"
-	hiddenSecretPathHooksWebhookSecret    = "hooks.webhook_secret"
-	hiddenSecretPathHooksWebhookToken     = "hooks.webhook_token"
+	hiddenSecretPathTelegramBotToken      = "channels.telegram.bot_token"      // #nosec G101
+	hiddenSecretPathTelegramWebhookSecret = "channels.telegram.webhook_secret" // #nosec G101
+	hiddenSecretPathHooksWebhookSecret    = "hooks.webhook_secret"             // #nosec G101
+	hiddenSecretPathHooksWebhookToken     = "hooks.webhook_token"              // #nosec G101
 )
 
 // Exported field-path constants for use by CLI commands.

@@ -108,7 +108,7 @@ func TestRunnerRealBubblewrapConfinesWorkspaceAndAllowsWrites(t *testing.T) {
 	workspaceRoot := t.TempDir()
 	outsideDir := t.TempDir()
 	outsideFile := filepath.Join(outsideDir, "secret.txt")
-	if err := os.WriteFile(outsideFile, []byte("secret"), 0o644); err != nil {
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0o600); err != nil {
 		t.Fatalf("write outside file: %v", err)
 	}
 	runner := &Runner{ResolveBubblewrap: func() (string, error) { return bwrap, nil }}
@@ -236,7 +236,7 @@ done
 echo "missing -- terminator" >&2
 exit 99
 `
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o700); err != nil { // #nosec G306
 		t.Fatalf("write fake bubblewrap: %v", err)
 	}
 	return path

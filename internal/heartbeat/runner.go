@@ -93,8 +93,9 @@ func (r *Runner) Stop() {
 }
 
 // EnsureRunning starts a heartbeat goroutine for peerID if one is not already
-// running.  It is safe to call on every incoming request.
-func (r *Runner) EnsureRunning(peerID string) {
+// running. It inherits request-scoped values when available without tying the
+// long-lived heartbeat loop to request cancellation.
+func (r *Runner) EnsureRunning(ctx context.Context, peerID string) {
 	r.mu.RLock()
 	_, exists := r.peers[peerID]
 	r.mu.RUnlock()
@@ -109,18 +110,18 @@ func (r *Runner) EnsureRunning(peerID string) {
 		return
 	}
 
-	ctx, cancel := context.WithCancel(r.ctx)
+	peerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	entry := &peerEntry{cancel: cancel, wakeCh: make(chan struct{}, 1)}
 	r.peers[peerID] = entry
 	r.wg.Add(1)
-	go r.peerLoop(ctx, peerID, entry)
+	go r.peerLoop(peerCtx, peerID, entry)
 }
 
 // WakePeer triggers an immediate out-of-schedule heartbeat run for peerID.
 // If the peer has no goroutine yet, one is started first.
 // Multiple rapid calls collapse into a single extra run (non-blocking send).
-func (r *Runner) WakePeer(peerID string) {
-	r.EnsureRunning(peerID)
+func (r *Runner) WakePeer(ctx context.Context, peerID string) {
+	r.EnsureRunning(ctx, peerID)
 	r.mu.RLock()
 	entry := r.peers[peerID]
 	r.mu.RUnlock()
@@ -135,7 +136,7 @@ func (r *Runner) WakePeer(peerID string) {
 
 // SetConfig persists a new heartbeat config for peerID and restarts the peer's
 // timer goroutine so the new Every interval takes effect immediately.
-func (r *Runner) SetConfig(peerID string, cfg *Config) error {
+func (r *Runner) SetConfig(ctx context.Context, peerID string, cfg *Config) error {
 	if err := r.configStore.Save(peerID, cfg); err != nil {
 		return fmt.Errorf("save heartbeat config: %w", err)
 	}
@@ -148,7 +149,7 @@ func (r *Runner) SetConfig(peerID string, cfg *Config) error {
 	r.mu.Unlock()
 
 	if cfg.Enabled {
-		r.EnsureRunning(peerID)
+		r.EnsureRunning(ctx, peerID)
 	}
 	return nil
 }
@@ -246,7 +247,7 @@ func (r *Runner) runHeartbeat(ctx context.Context, peerID string) {
 	// Prepend the heartbeat marker and store as an assistant message in the
 	// peer's main session so the next real conversation turn sees the alert.
 	stored := "[heartbeat] " + text
-	r.sessionStore.AppendWithSource(peerID, "heartbeat", types.Message{Role: "assistant", Content: stored})
+	r.sessionStore.AppendWithSource(ctx, peerID, "heartbeat", types.Message{Role: "assistant", Content: stored})
 	slog.Info("heartbeat: stored alert for peer", "peer", peerID, "chars", len(text))
 }
 

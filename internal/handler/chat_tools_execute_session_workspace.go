@@ -408,7 +408,7 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			return nil, err
 		}
 		if replyBack && strings.TrimSpace(result.AssistantText) != "" {
-			h.publishSessionMessage(sourceSessionKey, "session.send", types.Message{
+			h.publishSessionMessage(ctx, sourceSessionKey, "session.send", types.Message{
 				Role:    "assistant",
 				Content: fmt.Sprintf("[reply:%s] %s", targetSessionKey, result.AssistantText),
 			}, map[string]any{"target_session_key": targetSessionKey, "kind": "reply_back"})
@@ -698,7 +698,7 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		if !ok {
 			return nil, fmt.Errorf("no browser profile is active for session %q", sessionKey)
 		}
-		if err := guardBrowserURLForProfile(args.URL, profile); err != nil {
+		if err := guardBrowserURLForProfile(ctx, args.URL, profile); err != nil {
 			return nil, err
 		}
 		profile, server, err := h.ensureBrowserServer(ctx, sessionKey)

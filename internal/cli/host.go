@@ -34,7 +34,7 @@ func newHostCommand(ctx *commandContext) *cobra.Command {
 
 // newHostStatusCommand returns `host status`. It collects host metrics aligned
 // with the default-enabled collectors of prometheus/node_exporter.
-func newHostStatusCommand(ctx *commandContext) *cobra.Command {
+func newHostStatusCommand(_ *commandContext) *cobra.Command {
 	var jsonOut bool
 	var timeout time.Duration
 	cmd := &cobra.Command{
@@ -44,10 +44,7 @@ func newHostStatusCommand(ctx *commandContext) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			collectCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
-			payload, err := collectHostMetrics(collectCtx)
-			if err != nil {
-				return err
-			}
+			payload := collectHostMetrics(collectCtx)
 			if jsonOut {
 				emit(cmd, true, payload)
 				return nil
@@ -258,7 +255,7 @@ type hostDMI struct {
 
 // ── Collector ─────────────────────────────────────────────────────────────────
 
-func collectHostMetrics(ctx context.Context) (*hostMetrics, error) {
+func collectHostMetrics(ctx context.Context) *hostMetrics {
 	m := &hostMetrics{
 		CollectedAt: time.Now().UTC(),
 		DiskIO:      make(map[string]hostDiskIO),
@@ -436,7 +433,7 @@ func collectHostMetrics(ctx context.Context) (*hostMetrics, error) {
 		m.DMI = readDMI()
 	}
 
-	return m, nil
+	return m
 }
 
 // ── Linux /proc readers ───────────────────────────────────────────────────────
@@ -712,7 +709,7 @@ func printHostStatus(cmd *cobra.Command, m *hostMetrics) {
 	fmt.Fprintf(w, "  Hostname        : %s\n", m.System.Hostname)
 	fmt.Fprintf(w, "  OS              : %s %s (%s)\n", m.System.Platform, m.System.PlatformVersion, m.System.OS)
 	fmt.Fprintf(w, "  Kernel          : %s  arch=%s\n", m.System.KernelVersion, m.System.KernelArch)
-	fmt.Fprintf(w, "  Uptime          : %s\n", formatDuration(time.Duration(m.System.UptimeSeconds)*time.Second))
+	fmt.Fprintf(w, "  Uptime          : %s\n", formatDuration(time.Duration(m.System.UptimeSeconds)*time.Second)) // #nosec G115
 	fmt.Fprintf(w, "  Processes       : %d\n", m.System.Procs)
 	if m.DMI != nil {
 		if m.DMI.ProductName != "" {

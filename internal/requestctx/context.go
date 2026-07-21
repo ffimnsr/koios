@@ -264,7 +264,7 @@ func injectPreferences(ctx context.Context, store *memory.Store, peerID string, 
 			sb.WriteString("/")
 			sb.WriteString(record.ScopeRef)
 		}
-		sb.WriteString(fmt.Sprintf(", confidence: %.2f", record.Confidence))
+		fmt.Fprintf(&sb, ", confidence: %.2f", record.Confidence)
 		if record.LastConfirmedAt > 0 {
 			sb.WriteString(", confirmed: ")
 			sb.WriteString(time.Unix(record.LastConfirmedAt, 0).UTC().Format("2006-01-02"))
@@ -365,14 +365,12 @@ func collectToolBlocks(history []types.Message) [][]int {
 
 	for i, m := range history {
 		if len(m.ToolCalls) > 0 {
-			ids := make([]string, 0, len(m.ToolCalls))
 			for _, tc := range m.ToolCalls {
 				id := tc.ID
 				if id == "" {
 					standalone = append(standalone, []int{i})
 					continue
 				}
-				ids = append(ids, id)
 				b, ok := blocksByID[id]
 				if !ok {
 					b = &block{}

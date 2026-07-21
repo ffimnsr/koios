@@ -214,7 +214,7 @@ func TestExecuteToolAcceptsHiddenWorkspaceAlias(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		t.Fatalf("mkdir peer workspace: %v", err)
 	}
-	if err := os.WriteFile(absPath, []byte("hello\nworld\n"), 0o644); err != nil {
+	if err := os.WriteFile(absPath, []byte("hello\nworld\n"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 	h := handler.NewHandler(store, prov, handler.HandlerOptions{
@@ -479,7 +479,7 @@ func TestToolSearchRanksNameMatchesAheadOfDescriptionMatches(t *testing.T) {
 	if readIdx < 0 || headIdx < 0 || tailIdx < 0 {
 		t.Fatalf("expected ranked search to include read/head/tail matches, got %s", searchText)
 	}
-	if !(readIdx < headIdx && readIdx < tailIdx) {
+	if readIdx >= headIdx || readIdx >= tailIdx {
 		t.Fatalf("expected workspace.read to rank ahead of head/tail for query 'read', got %s", searchText)
 	}
 }

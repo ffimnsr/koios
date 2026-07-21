@@ -55,7 +55,7 @@ func TestWebhookApply_CronScheduleCreatesOneShotJob(t *testing.T) {
 	sched := scheduler.New(jobStore, webhookStubProvider{}, store, nil, "model", 1)
 	h := NewWebhookHTTPHandler(store, nil, nil, jobStore, sched, "token", nil)
 
-	_, err = h.apply(webhookEventRequest{
+	_, err = h.apply(context.Background(), webhookEventRequest{
 		Type:   "cron.schedule",
 		PeerID: "peer-1",
 		Name:   "webhook-job",
@@ -101,7 +101,7 @@ func TestWebhookApply_CronTriggerRunsJob(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	if _, err := h.apply(webhookEventRequest{
+	if _, err := h.apply(context.Background(), webhookEventRequest{
 		Type:   "cron.trigger",
 		PeerID: "peer-1",
 		JobID:  job.JobID,
@@ -123,7 +123,7 @@ func TestWebhookApply_CronTriggerRunsJob(t *testing.T) {
 }
 
 func TestWebhookAuthorized_Bearer(t *testing.T) {
-	req, err := http.NewRequest(http.MethodPost, "/v1/webhooks/events", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/webhooks/events", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestWebhookApply_AgentRunReturnsRunID(t *testing.T) {
 	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
-	runID, err := h.apply(webhookEventRequest{
+	runID, err := h.apply(context.Background(), webhookEventRequest{
 		Type:   "agent.run",
 		PeerID: "peer-1",
 		Prompt: "say hello",
@@ -160,7 +160,7 @@ func TestWebhookApply_AgentRunRequiresPrompt(t *testing.T) {
 	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
-	_, err := h.apply(webhookEventRequest{
+	_, err := h.apply(context.Background(), webhookEventRequest{
 		Type:   "agent.run",
 		PeerID: "peer-1",
 		Prompt: "",
@@ -174,7 +174,7 @@ func TestWebhookApply_AgentRunRequiresCoordinator(t *testing.T) {
 	store := session.New(20)
 	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 
-	_, err := h.apply(webhookEventRequest{
+	_, err := h.apply(context.Background(), webhookEventRequest{
 		Type:   "agent.run",
 		PeerID: "peer-1",
 		Prompt: "hello",
@@ -191,7 +191,7 @@ func TestWebhookApply_SessionWakeReturnsRunID(t *testing.T) {
 	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
-	runID, err := h.apply(webhookEventRequest{
+	runID, err := h.apply(context.Background(), webhookEventRequest{
 		Type:   "session.wake",
 		PeerID: "peer-1",
 		Prompt: "reminder: check your schedule",
@@ -211,7 +211,7 @@ func TestWebhookApply_SessionWakePersistsToMainSession(t *testing.T) {
 	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
-	runID, err := h.apply(webhookEventRequest{
+	runID, err := h.apply(context.Background(), webhookEventRequest{
 		Type:   "session.wake",
 		PeerID: "peer-1",
 		Prompt: "wake up and check the news",
@@ -243,7 +243,7 @@ func TestWebhookApply_SessionWakeRequiresPrompt(t *testing.T) {
 	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 	h.SetAgentCoordinator(coord, nil)
 
-	_, err := h.apply(webhookEventRequest{
+	_, err := h.apply(context.Background(), webhookEventRequest{
 		Type:   "session.wake",
 		PeerID: "peer-1",
 		Prompt: "",
@@ -257,7 +257,7 @@ func TestWebhookApply_SessionWakeRequiresCoordinator(t *testing.T) {
 	store := session.New(20)
 	h := NewWebhookHTTPHandler(store, nil, nil, nil, nil, "token", nil)
 
-	_, err := h.apply(webhookEventRequest{
+	_, err := h.apply(context.Background(), webhookEventRequest{
 		Type:   "session.wake",
 		PeerID: "peer-1",
 		Prompt: "hello",
@@ -290,7 +290,7 @@ func TestWebhookServeHTTP_NamedHookMappingRunsSessionWake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/hooks/github-pr", bytes.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/hooks/github-pr", bytes.NewReader(body))
 	req.SetPathValue("name", "github-pr")
 	req.Header.Set("Authorization", "Bearer token")
 	req.Header.Set("X-GitHub-Event", "pull_request")
@@ -323,7 +323,7 @@ func TestWebhookServeHTTP_NamedHookMappingRequiresSource(t *testing.T) {
 			{To: "prompt", From: "body.missing", Required: boolPtr(true)},
 		},
 	}})
-	req := httptest.NewRequest(http.MethodPost, "/v1/hooks/missing-prompt", bytes.NewReader([]byte(`{"ok":true}`)))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/hooks/missing-prompt", bytes.NewReader([]byte(`{"ok":true}`)))
 	req.SetPathValue("name", "missing-prompt")
 	req.Header.Set("Authorization", "Bearer token")
 	rec := httptest.NewRecorder()

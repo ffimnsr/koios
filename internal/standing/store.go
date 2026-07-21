@@ -124,7 +124,7 @@ func (s *Store) SaveDocument(doc *Document) (*Document, error) {
 		return nil, fmt.Errorf("marshal standing orders: %w", err)
 	}
 	tmp := s.path(doc.PeerID) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return nil, fmt.Errorf("write standing orders: %w", err)
 	}
 	if err := os.Rename(tmp, s.path(doc.PeerID)); err != nil {

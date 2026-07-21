@@ -39,9 +39,8 @@ type doctorReport struct {
 }
 
 func runDoctorCommand(cmdCtx *commandContext, cmd *cobra.Command, repair, force, nonInteractive, deep, jsonOut bool) error {
-	if nonInteractive {
-		// Accepted for compatibility; doctor currently never prompts.
-	}
+	// Accepted for compatibility; doctor currently never prompts.
+	_ = nonInteractive
 	state, err := resolveDoctorState(cmdCtx.cwdOrDefault())
 	if err != nil {
 		return err
@@ -75,7 +74,7 @@ func runDoctorCommand(cmdCtx *commandContext, cmd *cobra.Command, repair, force,
 func collectDoctorFindings(ctx context.Context, state *repoState, deep bool) ([]doctorFinding, map[string]any) {
 	findings := append([]doctorFinding(nil), state.validate()...)
 	if state.ConfigLoadError == "" {
-		findings = append(findings, collectDoctorRuntimeFindings(state, deep)...)
+		findings = append(findings, collectDoctorRuntimeFindings(ctx, state, deep)...)
 	}
 	gateway := map[string]any{}
 	if deep {
@@ -86,7 +85,7 @@ func collectDoctorFindings(ctx context.Context, state *repoState, deep bool) ([]
 	return sortDoctorFindings(findings), gateway
 }
 
-func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
+func collectDoctorRuntimeFindings(ctx context.Context, state *repoState, deep bool) []doctorFinding {
 	findings := []doctorFinding{}
 	if state.WorkspaceRoot != "" && dirExists(state.WorkspaceRoot) {
 		for _, path := range doctorWorkspaceDocPaths(state.WorkspaceRoot) {
@@ -115,7 +114,7 @@ func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
 			findings = append(findings, doctorFinding{Level: "info", Key: "sandbox.bwrap", Message: fmt.Sprintf("bubblewrap available at %s", bwrapPath), Path: bwrapPath})
 		}
 	}
-	findings = append(findings, collectDoctorBrowserFindings(state, deep)...)
+	findings = append(findings, collectDoctorBrowserFindings(ctx, state, deep)...)
 	for index, server := range state.MCPServers {
 		if !server.Enabled {
 			continue
@@ -167,11 +166,11 @@ func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
 			probeReady = false
 		}
 		if deep && probeReady {
-			findings = append(findings, probeDoctorMCPServer(server, prefix, name, transport))
+			findings = append(findings, probeDoctorMCPServer(ctx, server, prefix, name, transport))
 		}
 	}
 	// User-managed MCP server checks.
-	findings = append(findings, collectDoctorUserMCPFindings(state.Config, deep)...)
+	findings = append(findings, collectDoctorUserMCPFindings(ctx, state.Config, deep)...)
 	if state.MilvusEnabled {
 		if strings.TrimSpace(state.MilvusURL) == "" {
 			findings = append(findings, doctorFinding{Level: "error", Key: "memory.milvus.address", Message: "memory.milvus.address must not be empty when Milvus is enabled", Path: state.ConfigPath})
@@ -180,7 +179,9 @@ func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
 			findings = append(findings, doctorFinding{Level: "error", Key: "memory.milvus.collection", Message: "memory.milvus.collection must not be empty when Milvus is enabled", Path: state.ConfigPath})
 		}
 		if deep && strings.TrimSpace(state.MilvusURL) != "" {
-			conn, err := net.DialTimeout("tcp", state.MilvusURL, 2*time.Second)
+			var d net.Dialer
+			d.Timeout = 2 * time.Second
+			conn, err := d.DialContext(ctx, "tcp", state.MilvusURL)
 			if err != nil {
 				findings = append(findings, doctorFinding{Level: "warn", Key: "memory.milvus", Message: fmt.Sprintf("Milvus is enabled but not reachable at %s: %v", state.MilvusURL, err), Path: state.ConfigPath})
 			} else {
@@ -192,7 +193,7 @@ func collectDoctorRuntimeFindings(state *repoState, deep bool) []doctorFinding {
 	return findings
 }
 
-func collectDoctorBrowserFindings(state *repoState, deep bool) []doctorFinding {
+func collectDoctorBrowserFindings(ctx context.Context, state *repoState, deep bool) []doctorFinding {
 	if state == nil || state.Config == nil {
 		return nil
 	}
@@ -325,13 +326,13 @@ func collectDoctorBrowserFindings(state *repoState, deep bool) []doctorFinding {
 				})
 			}
 		case "browser_url":
-			findings = append(findings, doctorProbeBrowserEndpoint(prefix+".browser_url", profileName, profile.BrowserURL, deep))
+			findings = append(findings, doctorProbeBrowserEndpoint(ctx, prefix+".browser_url", profileName, profile.BrowserURL, deep))
 		case "ws_endpoint":
-			findings = append(findings, doctorProbeBrowserEndpoint(prefix+".ws_endpoint", profileName, profile.WSEndpoint, deep))
+			findings = append(findings, doctorProbeBrowserEndpoint(ctx, prefix+".ws_endpoint", profileName, profile.WSEndpoint, deep))
 		}
 		if deep {
 			if server, ok := derivedServers[strings.ToLower(profileName)]; ok {
-				findings = append(findings, probeDoctorMCPServer(server, prefix+".probe", profileName, "stdio"))
+				findings = append(findings, probeDoctorMCPServer(ctx, server, prefix+".probe", profileName, "stdio"))
 			}
 		}
 	}
@@ -468,10 +469,10 @@ func applyDoctorBrokenConfigRepair(state *repoState, repairs []string, force boo
 	if err != nil {
 		return nil, fmt.Errorf("read unreadable config for backup: %w", err)
 	}
-	if err := os.WriteFile(backupPath, data, 0o600); err != nil {
+	if err := os.WriteFile(backupPath, data, 0o600); err != nil { // #nosec G703
 		return nil, fmt.Errorf("backup unreadable config: %w", err)
 	}
-	if err := os.WriteFile(state.ConfigPath, []byte(config.DefaultTOML()), 0o600); err != nil {
+	if err := os.WriteFile(state.ConfigPath, []byte(config.DefaultTOML()), 0o600); err != nil { // #nosec G703
 		return nil, fmt.Errorf("replace unreadable config with defaults: %w", err)
 	}
 	repairs = append(repairs,
@@ -751,7 +752,7 @@ func maxDoctorDuration(defaultValue, minimum time.Duration) time.Duration {
 	return minimum
 }
 
-func doctorProbeBrowserEndpoint(key, profileName, rawURL string, deep bool) doctorFinding {
+func doctorProbeBrowserEndpoint(ctx context.Context, key, profileName, rawURL string, deep bool) doctorFinding {
 	rawURL = strings.TrimSpace(rawURL)
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Host == "" {
@@ -780,7 +781,9 @@ func doctorProbeBrowserEndpoint(key, profileName, rawURL string, deep bool) doct
 			host += ":80"
 		}
 	}
-	conn, err := net.DialTimeout("tcp", host, 2*time.Second)
+	var d net.Dialer
+	d.Timeout = 2 * time.Second
+	conn, err := d.DialContext(ctx, "tcp", host)
 	if err != nil {
 		return doctorFinding{
 			Level:   "warn",
@@ -842,21 +845,21 @@ func doctorBrowserExecutableCandidates(channel string) []string {
 	}
 }
 
-func probeDoctorMCPServer(server config.MCPServerConfig, prefix, name, transport string) doctorFinding {
+func probeDoctorMCPServer(ctx context.Context, server config.MCPServerConfig, prefix, name, transport string) doctorFinding {
 	timeout := 5 * time.Second
 	if server.Timeout != "" {
 		if parsed, err := time.ParseDuration(server.Timeout); err == nil && parsed > 0 {
 			timeout = parsed
 		}
 	}
-	client := newDoctorMCPClient(server, transport, timeout)
+	client := newDoctorMCPClient(ctx, server, transport, timeout)
 	if client == nil {
 		return doctorFinding{Level: "warn", Key: prefix + ".probe", Message: fmt.Sprintf("MCP server %q could not be probed", name), Hint: "check the MCP transport settings"}
 	}
 	defer client.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if err := client.Initialize(ctx); err != nil {
+	if err := client.Initialize(probeCtx); err != nil {
 		return doctorFinding{
 			Level:   "warn",
 			Key:     prefix + ".probe",
@@ -865,7 +868,7 @@ func probeDoctorMCPServer(server config.MCPServerConfig, prefix, name, transport
 			Hint:    "verify the server is running and speaks the MCP initialize/tools/list handshake",
 		}
 	}
-	tools, err := client.ListTools(ctx)
+	tools, err := client.ListTools(probeCtx)
 	if err != nil {
 		return doctorFinding{
 			Level:   "warn",
@@ -883,10 +886,10 @@ func probeDoctorMCPServer(server config.MCPServerConfig, prefix, name, transport
 	}
 }
 
-func newDoctorMCPClient(server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
+func newDoctorMCPClient(ctx context.Context, server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
 	switch transport {
 	case "stdio":
-		return mcp.NewStdioClient(server.Name, server.Command, server.Args, server.Env)
+		return mcp.NewStdioClientWithContext(ctx, server.Name, server.Command, server.Args, server.Env)
 	case "sse":
 		return mcp.NewSSEClient(server.Name, server.URL, server.Headers, timeout)
 	default:
@@ -904,7 +907,7 @@ func doctorMCPPath(server config.MCPServerConfig, transport string) string {
 // collectDoctorUserMCPFindings collects diagnostics for user-managed MCP servers
 // from the MCP registry. It does not probe by default (too slow when there are
 // many entries); use deep=true to probe each one.
-func collectDoctorUserMCPFindings(cfg *config.Config, deep bool) []doctorFinding {
+func collectDoctorUserMCPFindings(ctx context.Context, cfg *config.Config, deep bool) []doctorFinding {
 	if cfg == nil || cfg.WorkspaceRoot == "" {
 		return nil
 	}
@@ -916,7 +919,7 @@ func collectDoctorUserMCPFindings(cfg *config.Config, deep bool) []doctorFinding
 			Message: "no user-managed MCP servers (registry DB does not exist yet)",
 		}}
 	}
-	store, err := mcpregistry.New(dbPath)
+	store, err := mcpregistry.NewWithContext(ctx, dbPath)
 	if err != nil {
 		return []doctorFinding{{
 			Level:   "warn",
@@ -926,7 +929,7 @@ func collectDoctorUserMCPFindings(cfg *config.Config, deep bool) []doctorFinding
 	}
 	defer store.Close()
 
-	records, err := store.ListAll(context.Background())
+	records, err := store.ListAll(ctx)
 	if err != nil {
 		return []doctorFinding{{
 			Level:   "warn",
@@ -1019,7 +1022,7 @@ func collectDoctorUserMCPFindings(cfg *config.Config, deep bool) []doctorFinding
 				URL:     rec.URL,
 				Timeout: rec.Timeout,
 			}
-			findings = append(findings, probeDoctorMCPServer(cfg, prefix+".probe", name, transport))
+			findings = append(findings, probeDoctorMCPServer(ctx, cfg, prefix+".probe", name, transport))
 		}
 	}
 	return findings

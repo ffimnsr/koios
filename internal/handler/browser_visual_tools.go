@@ -63,24 +63,23 @@ func browserCanvasStateKey(sessionKey, profile string, pageID int) string {
 	return browserSnapshotStateKey(sessionKey, profile, pageID)
 }
 
-func (h *Handler) storeBrowserCanvasState(sessionKey, profile string, pageID int, state browserCanvasState) browserCanvasState {
+func (h *Handler) storeBrowserCanvasState(sessionKey, profile string, pageID int, state browserCanvasState) {
 	key := browserCanvasStateKey(sessionKey, profile, pageID)
 	h.browserCanvasMu.Lock()
 	defer h.browserCanvasMu.Unlock()
 	copyState := state
 	h.browserCanvas[key] = &copyState
-	return copyState
 }
 
-func (h *Handler) loadBrowserCanvasState(sessionKey, profile string, pageID int) (browserCanvasState, bool) {
+func (h *Handler) loadBrowserCanvasState(sessionKey, profile string, pageID int) browserCanvasState {
 	key := browserCanvasStateKey(sessionKey, profile, pageID)
 	h.browserCanvasMu.Lock()
 	defer h.browserCanvasMu.Unlock()
 	state := h.browserCanvas[key]
 	if state == nil {
-		return browserCanvasState{}, false
+		return browserCanvasState{}
 	}
-	return *state, true
+	return *state
 }
 
 func (h *Handler) clearBrowserCanvasState(sessionKey, profile string, pageID int) {
@@ -848,7 +847,7 @@ func (h *Handler) executeCanvasPushTool(ctx context.Context, peerID string, call
 	}
 	normalized := normalizeBrowserToolResult(result)
 	payload, _ := normalized.(map[string]any)
-	existing, _ := h.loadBrowserCanvasState(sessionKey, strings.TrimSpace(profile.Name), args.PageID)
+	existing := h.loadBrowserCanvasState(sessionKey, strings.TrimSpace(profile.Name), args.PageID)
 	stored := canvasStateFromPayload(payload, existing)
 	if stored.Title == "" {
 		stored.Title = args.Title
@@ -903,7 +902,7 @@ func (h *Handler) executeCanvasEvalTool(ctx context.Context, peerID string, call
 	if mounted, _ := payload["mounted"].(bool); !mounted {
 		return nil, fmt.Errorf("canvas has not been pushed for page %d", args.PageID)
 	}
-	existing, _ := h.loadBrowserCanvasState(sessionKey, strings.TrimSpace(profile.Name), args.PageID)
+	existing := h.loadBrowserCanvasState(sessionKey, strings.TrimSpace(profile.Name), args.PageID)
 	stored := canvasStateFromPayload(payload, existing)
 	stored.Mounted = true
 	h.storeBrowserCanvasState(sessionKey, strings.TrimSpace(profile.Name), args.PageID, stored)
@@ -953,7 +952,7 @@ func (h *Handler) executeCanvasSnapshotTool(ctx context.Context, peerID string, 
 	}
 	normalized := normalizeBrowserToolResult(result)
 	payload, _ := normalized.(map[string]any)
-	existing, _ := h.loadBrowserCanvasState(sessionKey, strings.TrimSpace(profile.Name), args.PageID)
+	existing := h.loadBrowserCanvasState(sessionKey, strings.TrimSpace(profile.Name), args.PageID)
 	stored := canvasStateFromPayload(payload, existing)
 	if mounted, ok := payload["mounted"].(bool); ok {
 		stored.Mounted = mounted

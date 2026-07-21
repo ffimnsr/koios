@@ -188,7 +188,7 @@ func (js *JobStore) save() error {
 	}
 	path := filepath.Join(js.cronDir, jobStoreFile)
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write jobs tmp: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -358,7 +358,7 @@ func pruneRunLog(path string, keepLines int) error {
 		buf.WriteByte('\n')
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

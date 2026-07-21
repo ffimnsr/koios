@@ -77,7 +77,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("peerllm: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("peerllm: migrate: %w", err)
 	}
@@ -307,8 +307,8 @@ func maskedAPIKey(key string) string {
 	return key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
 }
 
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS peer_llm_profiles (
 			id            TEXT PRIMARY KEY,
 			peer_id       TEXT NOT NULL,

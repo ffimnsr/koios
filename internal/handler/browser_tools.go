@@ -121,7 +121,7 @@ func (h *Handler) selectBrowserPage(ctx context.Context, peerID, sessionKey stri
 	return err
 }
 
-func guardBrowserURL(rawURL string) error {
+func guardBrowserURL(ctx context.Context, rawURL string) error {
 	target := strings.TrimSpace(rawURL)
 	if target == "" {
 		return fmt.Errorf("browser navigation is limited to http and https URLs")
@@ -133,14 +133,14 @@ func guardBrowserURL(rawURL string) error {
 	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
 		return fmt.Errorf("browser navigation is limited to http and https URLs")
 	}
-	if err := blockPrivateURL(parsed); err != nil {
+	if err := blockPrivateURL(ctx, parsed); err != nil {
 		return fmt.Errorf("browser navigation blocked: %w", err)
 	}
 	return nil
 }
 
-func guardBrowserURLForProfile(rawURL string, profile config.BrowserProfileConfig) error {
-	if err := guardBrowserURL(rawURL); err != nil {
+func guardBrowserURLForProfile(ctx context.Context, rawURL string, profile config.BrowserProfileConfig) error {
+	if err := guardBrowserURL(ctx, rawURL); err != nil {
 		return err
 	}
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
@@ -215,7 +215,7 @@ func (h *Handler) guardBrowserPageTarget(ctx context.Context, peerID, sessionKey
 		if page.PageID != pageID {
 			continue
 		}
-		return guardBrowserURLForProfile(page.URL, profile)
+		return guardBrowserURLForProfile(ctx, page.URL, profile)
 	}
 	return fmt.Errorf("page_id %d was not found in the active browser profile", pageID)
 }

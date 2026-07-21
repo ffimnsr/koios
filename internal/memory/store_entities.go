@@ -20,7 +20,7 @@ func (s *Store) CreateEntity(ctx context.Context, peerID string, kind EntityKind
 	if err != nil {
 		return nil, fmt.Errorf("memory entity create: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if err := insertEntityTx(ctx, tx, *entity); err != nil {
 		return nil, err
 	}
@@ -44,7 +44,7 @@ func (s *Store) UpsertEntity(ctx context.Context, peerID string, kind EntityKind
 	if err != nil {
 		return nil, fmt.Errorf("memory entity upsert: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	existing, err := findEntityByIdentityTx(ctx, tx, peerID, normalizedKind, normalizedName, normalizedAliases)
 	if err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ func (s *Store) UpdateEntity(ctx context.Context, peerID, entityID string, patch
 	if err != nil {
 		return nil, fmt.Errorf("memory entity update: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	entity, err := loadEntityTx(ctx, tx, peerID, entityID)
 	if err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func (s *Store) DeleteEntity(ctx context.Context, peerID, entityID string) error
 	if err != nil {
 		return fmt.Errorf("memory entity delete: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := loadEntityTx(ctx, tx, peerID, entityID); err != nil {
 		return err
 	}
@@ -243,7 +243,7 @@ func (s *Store) LinkChunkToEntity(ctx context.Context, peerID, entityID, chunkID
 	if err != nil {
 		return fmt.Errorf("memory entity link chunk: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	entity, err := loadEntityTx(ctx, tx, peerID, entityID)
 	if err != nil {
 		return err
@@ -274,7 +274,7 @@ func (s *Store) UnlinkChunkFromEntity(ctx context.Context, peerID, entityID, chu
 	if err != nil {
 		return fmt.Errorf("memory entity unlink chunk: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	entity, err := loadEntityTx(ctx, tx, peerID, entityID)
 	if err != nil {
 		return err
@@ -322,7 +322,7 @@ func (s *Store) RelateEntities(ctx context.Context, peerID, sourceEntityID, targ
 	if err != nil {
 		return nil, fmt.Errorf("memory entity relate: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	source, err := loadEntityTx(ctx, tx, peerID, sourceEntityID)
 	if err != nil {
 		return nil, err
@@ -366,7 +366,7 @@ func (s *Store) UnrelateEntities(ctx context.Context, peerID, sourceEntityID, ta
 	if err != nil {
 		return fmt.Errorf("memory entity unrelate: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := loadEntityTx(ctx, tx, peerID, sourceEntityID); err != nil {
 		return err
 	}

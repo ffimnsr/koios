@@ -94,7 +94,7 @@ func (s *Store) EditCandidate(ctx context.Context, peerID, candidateID string, p
 	if err != nil {
 		return nil, fmt.Errorf("memory candidate edit: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	candidate, err := loadCandidateTx(ctx, tx, peerID, candidateID)
 	if err != nil {
 		return nil, err
@@ -127,7 +127,7 @@ func (s *Store) ApproveCandidate(ctx context.Context, peerID, candidateID string
 	if err != nil {
 		return nil, nil, fmt.Errorf("memory candidate approve: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	candidate, err := loadCandidateTx(ctx, tx, peerID, candidateID)
 	if err != nil {
 		return nil, nil, err
@@ -162,7 +162,7 @@ func (s *Store) ApproveCandidate(ctx context.Context, peerID, candidateID string
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("memory candidate approve: commit: %w", err)
 	}
-	s.reindexChunkAsync(*chunk)
+	s.reindexChunkAsync(ctx, *chunk)
 	return candidate, chunk, nil
 }
 
@@ -175,7 +175,7 @@ func (s *Store) MergeCandidate(ctx context.Context, peerID, candidateID, targetC
 	if err != nil {
 		return nil, nil, fmt.Errorf("memory candidate merge: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	candidate, err := loadCandidateTx(ctx, tx, peerID, candidateID)
 	if err != nil {
 		return nil, nil, err
@@ -222,7 +222,7 @@ func (s *Store) MergeCandidate(ctx context.Context, peerID, candidateID, targetC
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("memory candidate merge: commit: %w", err)
 	}
-	s.reindexChunkAsync(*target)
+	s.reindexChunkAsync(ctx, *target)
 	return candidate, target, nil
 }
 
@@ -232,7 +232,7 @@ func (s *Store) RejectCandidate(ctx context.Context, peerID, candidateID, reason
 	if err != nil {
 		return nil, fmt.Errorf("memory candidate reject: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	candidate, err := loadCandidateTx(ctx, tx, peerID, candidateID)
 	if err != nil {
 		return nil, err
@@ -331,7 +331,7 @@ func normalizeCandidateStatusFilter(status CandidateStatus) (CandidateStatus, er
 func normalizeCandidateProvenance(provenance CandidateProvenance) (CandidateProvenance, error) {
 	provenance.CaptureKind = strings.TrimSpace(provenance.CaptureKind)
 	provenance.SourceSessionKey = strings.TrimSpace(provenance.SourceSessionKey)
-	provenance.SourceExcerpt = truncateExcerpt(strings.TrimSpace(redact.String(provenance.SourceExcerpt)), 160)
+	provenance.SourceExcerpt = truncateExcerpt(strings.TrimSpace(redact.String(provenance.SourceExcerpt)))
 	if provenance.CaptureKind == "" {
 		provenance.CaptureKind = CandidateCaptureManual
 	}

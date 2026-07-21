@@ -130,7 +130,7 @@ func TestCoordinator_Cancel(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	canceled, err := coord.Cancel(record.ID)
+	canceled, err := coord.Cancel(context.Background(), record.ID)
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}

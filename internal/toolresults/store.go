@@ -75,7 +75,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("toolresults: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("toolresults: migrate: %w", err)
 	}
@@ -164,11 +164,11 @@ func (s *Store) List(ctx context.Context, peerID string, f Filter) ([]Record, er
 	}
 	args = append(args, limit)
 	query := `SELECT id, peer_id, session_key, tool_call_id, tool_name,
-		         args_json, result_json, summary, is_error, duration_ms, created_at, provenance
-		    FROM tool_results
-		   WHERE ` + strings.Join(conds, " AND ") + `
-		   ORDER BY created_at DESC
-		   LIMIT ?`
+					         args_json, result_json, summary, is_error, duration_ms, created_at, provenance
+					    FROM tool_results
+					   WHERE ` + strings.Join(conds, " AND ") + `
+					   ORDER BY created_at DESC
+					   LIMIT ?` // #nosec G202
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("toolresults list: %w", err)
@@ -178,8 +178,8 @@ func (s *Store) List(ctx context.Context, peerID string, f Filter) ([]Record, er
 }
 
 // migrate ensures the schema is up to date.
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS tool_results (
   id           TEXT    PRIMARY KEY,
   peer_id      TEXT    NOT NULL,

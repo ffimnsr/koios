@@ -22,11 +22,11 @@ func TestIsHeartbeatOK(t *testing.T) {
 		{"HEARTBEAT_OK", 300, true},
 		{" HEARTBEAT_OK ", 300, true},
 		{"HEARTBEAT_OK All is well.", 300, true},
-		{"HEARTBEAT_OK " + rpt("x", 299), 300, true},
-		{"HEARTBEAT_OK " + rpt("x", 301), 300, false},
+		{"HEARTBEAT_OK " + rpt(299), 300, true},
+		{"HEARTBEAT_OK " + rpt(301), 300, false},
 		{"All is well. HEARTBEAT_OK", 300, true},
-		{rpt("x", 299) + " HEARTBEAT_OK", 300, true},
-		{rpt("x", 301) + " HEARTBEAT_OK", 300, false},
+		{rpt(299) + " HEARTBEAT_OK", 300, true},
+		{rpt(301) + " HEARTBEAT_OK", 300, false},
 		{"Something needs attention.", 300, false},
 		{"", 300, false},
 		{"Before HEARTBEAT_OK After", 300, false},
@@ -40,10 +40,10 @@ func TestIsHeartbeatOK(t *testing.T) {
 	}
 }
 
-func rpt(s string, n int) string {
+func rpt(n int) string {
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = s[0]
+		b[i] = 'x'
 	}
 	return string(b)
 }
@@ -211,7 +211,7 @@ func TestBuildHeartbeatMessages_UsesSessionHistoryAndHeartbeatFile(t *testing.T)
 	if err := os.MkdirAll(peerDir, 0o755); err != nil {
 		t.Fatalf("mkdir default peer dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(peerDir, "HEARTBEAT.md"), []byte("Check inbox\nReview calendar\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(peerDir, "HEARTBEAT.md"), []byte("Check inbox\nReview calendar\n"), 0o600); err != nil {
 		t.Fatalf("write HEARTBEAT.md: %v", err)
 	}
 

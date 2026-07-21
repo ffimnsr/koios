@@ -127,7 +127,7 @@ func (h *Handler) startBackgroundProcessWithContext(ctx context.Context, peerID 
 	return h.startBackgroundProcessUnchecked(ctx, peerID, p)
 }
 
-func (h *Handler) startBackgroundProcessUnchecked(_ context.Context, peerID string, p backgroundProcessStartParams) (map[string]any, error) {
+func (h *Handler) startBackgroundProcessUnchecked(ctx context.Context, peerID string, p backgroundProcessStartParams) (map[string]any, error) {
 	h.backgroundProcessesMu.Lock()
 	active := 0
 	for _, proc := range h.backgroundProcesses {
@@ -195,7 +195,7 @@ func (h *Handler) startBackgroundProcessUnchecked(_ context.Context, peerID stri
 		return nil, err
 	}
 	shell, args := shellCommand(p.Command)
-	cmd := exec.Command(shell, args...)
+	cmd := exec.CommandContext(ctx, shell, args...)
 	cmd.Dir = absWorkdir
 	cmd.Stdout = stdoutFile
 	cmd.Stderr = stderrFile

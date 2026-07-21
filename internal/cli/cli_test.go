@@ -2255,7 +2255,7 @@ func writeExecCLITestConfig(t *testing.T, dir, listenAddr string) {
 func writeExtensionTestManifest(t *testing.T, dir, content string) {
 	t.Helper()
 	path := filepath.Join(dir, "workspace", "extensions", "demo", "koios-extension.toml")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile manifest: %v", err)
 	}
 }

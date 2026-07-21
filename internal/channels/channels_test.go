@@ -70,7 +70,7 @@ func TestManagerRegisterRoutesMountsHandlers(t *testing.T) {
 		t.Fatalf("RegisterRoutes: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels/test", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/channels/test", nil)
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)

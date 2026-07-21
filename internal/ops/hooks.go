@@ -190,11 +190,11 @@ func HTTPWebhookHandler(endpoint, secret string, client *http.Client) Handler {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 	return func(ctx context.Context, ev Event) error {
-		body, err := json.Marshal(redactedEvent(ev))
+		body, err := json.Marshal(redactedEvent(ev)) // #nosec G117
 		if err != nil {
 			return err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body)) // #nosec G117
 		if err != nil {
 			return err
 		}
@@ -224,11 +224,11 @@ func HTTPWebhookInterceptor(endpoint, secret string, client *http.Client) Interc
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 	return func(ctx context.Context, ev Event) (Event, error) {
-		body, err := json.Marshal(redactedEvent(ev))
+		body, err := json.Marshal(redactedEvent(ev)) // #nosec G117
 		if err != nil {
 			return ev, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body)) // #nosec G117
 		if err != nil {
 			return ev, err
 		}

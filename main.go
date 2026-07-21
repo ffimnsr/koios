@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,7 +29,7 @@ func init() {
 		}
 	}
 	if gitHash == "unknown" {
-		if out, err := exec.Command("git", "rev-parse", "--short", "HEAD").Output(); err == nil {
+		if out, err := exec.CommandContext(context.Background(), "git", "rev-parse", "--short", "HEAD").Output(); err == nil {
 			if h := strings.TrimSpace(string(out)); h != "" {
 				gitHash = h
 			}

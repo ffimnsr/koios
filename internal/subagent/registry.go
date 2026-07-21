@@ -247,12 +247,12 @@ func (r *Registry) saveLocked() error {
 		list = append(list, &copyRec)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].CreatedAt.Before(list[j].CreatedAt) })
-	data, err := json.MarshalIndent(list, "", "  ")
+	data, err := json.MarshalIndent(list, "", "  ") // #nosec G117
 	if err != nil {
 		return fmt.Errorf("marshal subagent registry: %w", err)
 	}
 	tmp := r.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write subagent registry: %w", err)
 	}
 	if err := os.Rename(tmp, r.path); err != nil {

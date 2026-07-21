@@ -14,16 +14,7 @@ import (
 	"github.com/ffimnsr/koios/internal/types"
 )
 
-// aggregate assembles the final reply from all run.Children and records provenance.
-func (o *Orchestrator) aggregate(ctx context.Context, run *Run, req FanOutRequest) (string, error) {
-	run.mu.Lock()
-	children := append([]ChildResult(nil), run.Children...)
-	run.mu.Unlock()
-	return o.aggregateWith(ctx, run, req, children)
-}
-
 // aggregateWith aggregates a caller-supplied children slice and records provenance.
-// It is the canonical implementation; aggregate() is a thin wrapper over it.
 func (o *Orchestrator) aggregateWith(ctx context.Context, run *Run, req FanOutRequest, children []ChildResult) (string, error) {
 	start := time.Now()
 
@@ -45,7 +36,7 @@ func (o *Orchestrator) aggregateWith(ctx context.Context, run *Run, req FanOutRe
 		reducerSessionKey = fmt.Sprintf("%s::orchestrator-reducer::%s", req.PeerID, run.ID)
 		result, err = o.aggregateReducer(ctx, run, req, children)
 	case AggregateVote:
-		result, err = o.aggregateVote(ctx, run, req, children)
+		result = o.aggregateVote(ctx, run, req, children)
 	default:
 		result = aggregateCollect(children)
 	}
@@ -132,7 +123,7 @@ func (o *Orchestrator) aggregateReducer(ctx context.Context, run *Run, req FanOu
 // aggregateVote clusters child replies by cosine similarity and elects a
 // winner. If no cluster achieves a strict majority, a single LLM tie-breaker
 // call is made using the top-2 cluster summaries.
-func (o *Orchestrator) aggregateVote(ctx context.Context, run *Run, req FanOutRequest, children []ChildResult) (string, error) {
+func (o *Orchestrator) aggregateVote(ctx context.Context, run *Run, req FanOutRequest, children []ChildResult) string {
 	type entry struct {
 		label string
 		reply string
@@ -144,7 +135,7 @@ func (o *Orchestrator) aggregateVote(ctx context.Context, run *Run, req FanOutRe
 		}
 	}
 	if len(entries) == 0 {
-		return aggregateCollect(children), nil
+		return aggregateCollect(children)
 	}
 
 	threshold := req.VoteConfig.AgreementThreshold
@@ -235,7 +226,7 @@ func (o *Orchestrator) aggregateVote(ctx context.Context, run *Run, req FanOutRe
 	_ = usedLLM
 
 	if !req.VoteConfig.DisagreementReport || len(clusters) <= 1 {
-		return winner, nil
+		return winner
 	}
 
 	var sb strings.Builder
@@ -245,12 +236,12 @@ func (o *Orchestrator) aggregateVote(ctx context.Context, run *Run, req FanOutRe
 		if ci == 0 {
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("Minority cluster (%d/%d replies):\n", len(cl.indices), total))
+		fmt.Fprintf(&sb, "Minority cluster (%d/%d replies):\n", len(cl.indices), total)
 		for _, idx := range cl.indices {
-			sb.WriteString(fmt.Sprintf("  [%s]: %s\n", entries[idx].label, entries[idx].reply))
+			fmt.Fprintf(&sb, "  [%s]: %s\n", entries[idx].label, entries[idx].reply)
 		}
 	}
-	return sb.String(), nil
+	return sb.String()
 }
 
 // wordFreq returns a normalised term-frequency map for a text string.

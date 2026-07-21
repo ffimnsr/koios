@@ -86,12 +86,18 @@ type Store struct {
 
 // New opens (or creates) the MCP registry SQLite database at dbPath.
 func New(dbPath string) (*Store, error) {
+	return NewWithContext(context.Background(), dbPath)
+}
+
+// NewWithContext opens (or creates) the MCP registry SQLite database at dbPath
+// and uses ctx for startup migration work.
+func NewWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_foreign_keys=on")
 	if err != nil {
 		return nil, fmt.Errorf("mcpregistry: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(ctx, db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("mcpregistry: migrate: %w", err)
 	}
@@ -321,8 +327,8 @@ func RedactedHeaders(headers map[string]string) map[string]string {
 
 // ─── schema ─────────────────────────────────────────────────────────────────────
 
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS mcp_servers (
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mcp_servers (
 		id                TEXT PRIMARY KEY,
 		owner_peer_id     TEXT NOT NULL,
 		name              TEXT NOT NULL,

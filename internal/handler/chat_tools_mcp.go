@@ -319,7 +319,7 @@ func probeManagedMCPServer(ctx context.Context, rec *mcpregistry.ServerRecord, t
 	var client mcp.Client
 	switch transport {
 	case "stdio":
-		client = mcp.NewStdioClient(cfg.Name, cfg.Command, cfg.Args, cfg.Env)
+		client = mcp.NewStdioClientWithContext(ctx, cfg.Name, cfg.Command, cfg.Args, cfg.Env)
 	case "sse":
 		client = mcp.NewSSEClient(cfg.Name, cfg.URL, cfg.Headers, timeout)
 	default:

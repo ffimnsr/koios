@@ -36,7 +36,6 @@ type entry struct {
 type Monitor struct {
 	staleThreshold time.Duration
 	maxRestarts    int
-	trackers       []ActivityTracker
 	subsystems     map[string]*entry
 	mu             sync.Mutex
 
@@ -108,10 +107,7 @@ func (m *Monitor) RestartSubsystem(ctx context.Context, name string) error {
 func (m *Monitor) Status() map[string]any {
 	last, _ := m.lastRequestTime.Load().(time.Time)
 	idle := time.Since(last).Round(time.Second)
-	stale := false
-	if m.staleThreshold > 0 && idle >= m.staleThreshold {
-		stale = true
-	}
+	stale := m.staleThreshold > 0 && idle >= m.staleThreshold
 	m.mu.Lock()
 	subs := make(map[string]any, len(m.subsystems))
 	for name, e := range m.subsystems {

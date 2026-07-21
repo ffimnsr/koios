@@ -543,10 +543,7 @@ func newUpdateCommand(ctx *commandContext) *cobra.Command {
 		Use:   "update",
 		Short: "Show source-checkout update status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			status, err := gitStatus(ctx.cwdOrDefault())
-			if err != nil {
-				return err
-			}
+			status := gitStatus(context.Background(), ctx.cwdOrDefault())
 			payload := map[string]any{
 				"status":   status,
 				"dry_run":  dryRun,
@@ -566,10 +563,7 @@ func newUpdateCommand(ctx *commandContext) *cobra.Command {
 		Use:   "status",
 		Short: "Show git checkout update status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			status, err := gitStatus(ctx.cwdOrDefault())
-			if err != nil {
-				return err
-			}
+			status := gitStatus(context.Background(), ctx.cwdOrDefault())
 			emit(cmd, statusJSON, status)
 			return nil
 		},
@@ -1133,7 +1127,7 @@ func writeBackupArchive(output string, manifest map[string]any, items []string) 
 				hdr.Name = rel + "/"
 				return tw.WriteHeader(hdr)
 			}
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) // #nosec G122
 			if err != nil {
 				return err
 			}
@@ -1218,9 +1212,9 @@ func resetTargets(state *repoState, scope string) ([]string, error) {
 	}
 }
 
-func gitStatus(cwd string) (map[string]any, error) {
+func gitStatus(ctx context.Context, cwd string) map[string]any {
 	run := func(args ...string) string {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(ctx, "git", args...)
 		cmd.Dir = cwd
 		out, err := cmd.Output()
 		if err != nil {
@@ -1242,7 +1236,7 @@ func gitStatus(cwd string) (map[string]any, error) {
 			status["behind"] = parts[1]
 		}
 	}
-	return status, nil
+	return status
 }
 
 func initWizard(cmd *cobra.Command, state *repoState, interactive bool) (string, error) {
@@ -1384,7 +1378,7 @@ func scaffoldWorkspace(root string, force bool) error {
 				continue // already exists, skip
 			}
 		}
-		if err := os.WriteFile(path, []byte(tpl.content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(tpl.content), 0o600); err != nil {
 			return fmt.Errorf("writing %s: %w", tpl.name, err)
 		}
 	}

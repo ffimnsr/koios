@@ -63,7 +63,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("projects: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("projects: migrate: %w", err)
 	}
@@ -166,7 +166,7 @@ func (s *Store) Update(ctx context.Context, peerID, id string, patch Patch) (*Pr
 	if err != nil {
 		return nil, fmt.Errorf("project update: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	p, err := loadProjectTx(ctx, tx, peerID, id)
 	if err != nil {
@@ -280,8 +280,8 @@ func (s *Store) Delete(ctx context.Context, peerID, id string) error {
 }
 
 // migrate ensures the schema is up to date.
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS projects (
 	id          TEXT PRIMARY KEY,
 	peer_id     TEXT NOT NULL,

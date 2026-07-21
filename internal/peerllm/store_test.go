@@ -109,7 +109,7 @@ func TestStoreSetReplacesAPIKey(t *testing.T) {
 	_, err := store.Set(ctx, "alice", Input{
 		Name:     "work",
 		Provider: "anthropic",
-		APIKey:   "sk-anthropic-v1",
+		APIKey:   "sk-anthropic-v1", // #nosec G101
 	})
 	if err != nil {
 		t.Fatalf("first Set: %v", err)
@@ -119,7 +119,7 @@ func TestStoreSetReplacesAPIKey(t *testing.T) {
 	_, err = store.Set(ctx, "alice", Input{
 		Name:     "work",
 		Provider: "anthropic",
-		APIKey:   "sk-anthropic-v2",
+		APIKey:   "sk-anthropic-v2", // #nosec G101
 	})
 	if err != nil {
 		t.Fatalf("second Set: %v", err)
@@ -142,7 +142,7 @@ func TestStoreListReturnsMaskedKeys(t *testing.T) {
 	_, err := store.Set(ctx, "alice", Input{
 		Name:     "a-openai",
 		Provider: "openai",
-		APIKey:   "sk-abcdefghijklmnop",
+		APIKey:   "sk-abcdefghijklmnop", // #nosec G101
 	})
 	if err != nil {
 		t.Fatalf("Set a-openai: %v", err)
@@ -150,7 +150,7 @@ func TestStoreListReturnsMaskedKeys(t *testing.T) {
 	_, err = store.Set(ctx, "alice", Input{
 		Name:     "b-anthropic",
 		Provider: "anthropic",
-		APIKey:   "sk-anthropic-11223344",
+		APIKey:   "sk-anthropic-11223344", // #nosec G101
 	})
 	if err != nil {
 		t.Fatalf("Set b-anthropic: %v", err)
@@ -242,7 +242,7 @@ func TestStoreCrossPeerIsolation(t *testing.T) {
 	_, err = store.Set(ctx, "bob", Input{
 		Name:     "shared-name",
 		Provider: "anthropic",
-		APIKey:   "sk-bob-key",
+		APIKey:   "sk-bob-key", // #nosec G101
 	})
 	if err != nil {
 		t.Fatalf("Set bob: %v", err)

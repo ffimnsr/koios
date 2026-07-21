@@ -195,7 +195,7 @@ func NewSSEClient(name, sseURL string, headers map[string]string, timeout time.D
 }
 
 func (c *sseClient) Initialize(ctx context.Context) error {
-	sseCtx, cancel := context.WithCancel(context.Background())
+	sseCtx, cancel := context.WithCancel(ctx)
 	c.sseCancel = cancel
 
 	// Connect to SSE stream, wait for the endpoint event.

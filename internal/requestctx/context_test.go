@@ -263,7 +263,7 @@ func TestLoadIdentityMessages_IncludesTOOLSmd(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	content := "## Core Tooling\n- Build: go build ./..."
-	if err := os.WriteFile(filepath.Join(defaultPeerDir, "TOOLS.md"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(defaultPeerDir, "TOOLS.md"), []byte(content), 0o600); err != nil {
 		t.Fatalf("write TOOLS.md: %v", err)
 	}
 
@@ -287,7 +287,7 @@ func TestBuild_InjectsBootstrapOnFreshSession(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	bootstrapContent := "# BOOTSTRAP.md\n\nStartup checklist goes here."
-	if err := os.WriteFile(filepath.Join(defaultPeerDir, "BOOTSTRAP.md"), []byte(bootstrapContent), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(defaultPeerDir, "BOOTSTRAP.md"), []byte(bootstrapContent), 0o600); err != nil {
 		t.Fatalf("write BOOTSTRAP.md: %v", err)
 	}
 
@@ -319,7 +319,7 @@ func TestBuild_SkipsBootstrapWhenHistoryPresent(t *testing.T) {
 	if err := os.MkdirAll(defaultPeerDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(defaultPeerDir, "BOOTSTRAP.md"), []byte("# Startup content"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(defaultPeerDir, "BOOTSTRAP.md"), []byte("# Startup content"), 0o600); err != nil {
 		t.Fatalf("write BOOTSTRAP.md: %v", err)
 	}
 

@@ -162,7 +162,7 @@ func (o *Orchestrator) executeMultiStage(
 		stageChildren := append([]ChildResult(nil), run.Children[offset:offset+len(tasks)]...)
 		run.mu.Unlock()
 
-		aggCtx := context.Background()
+		aggCtx := ctx
 		stageAgg, aggErr := o.aggregateWith(aggCtx, run, stageReq, stageChildren)
 		if aggErr != nil {
 			slog.Warn("stage aggregation failed", "id", run.ID, "stage", stageIdx, "error", aggErr)

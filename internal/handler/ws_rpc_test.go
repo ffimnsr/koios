@@ -34,10 +34,14 @@ func TestWS_MissingPeerID(t *testing.T) {
 	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/ws"
 	_, resp, err := websocket.DefaultDialer.Dial(u, nil)
 	if err == nil {
+		resp.Body.Close()
 		t.Fatal("expected dial to fail without peer_id")
 	}
-	if resp != nil && resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	if resp != nil {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		}
 	}
 }
 
@@ -50,10 +54,14 @@ func TestWS_InvalidPeerID(t *testing.T) {
 	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/ws?peer_id=bad%20peer%3Cinjection%3E"
 	_, resp, err := websocket.DefaultDialer.Dial(u, nil)
 	if err == nil {
+		resp.Body.Close()
 		t.Fatal("expected dial to fail with invalid peer_id")
 	}
-	if resp != nil && resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	if resp != nil {
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		}
 	}
 }
 
@@ -78,7 +86,7 @@ func TestWS_Ping(t *testing.T) {
 
 func TestWS_TaskCandidateLifecycle(t *testing.T) {
 	prov := &stubProvider{response: &types.ChatResponse{}}
-	srv, _, taskStore := newTestServerWithTasks(t, prov)
+	srv, taskStore := newTestServerWithTasks(t, prov)
 	conn := dialWS(t, srv, "tasks-quebec")
 
 	sendRPC(t, conn, "1", "task.candidate.extract", map[string]any{
@@ -140,7 +148,7 @@ func TestWS_TaskCandidateLifecycle(t *testing.T) {
 
 func TestWS_WaitingLifecycle(t *testing.T) {
 	prov := &stubProvider{response: &types.ChatResponse{}}
-	srv, _, taskStore := newTestServerWithTasks(t, prov)
+	srv, taskStore := newTestServerWithTasks(t, prov)
 	conn := dialWS(t, srv, "waiting-sierra")
 
 	sendRPC(t, conn, "1", "waiting.create", map[string]any{
@@ -351,7 +359,7 @@ commands:
       Review auth and validation.
 ---
 Security checklist body.
-`), 0o644); err != nil {
+`), 0o600); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
 
@@ -426,7 +434,7 @@ name: Ops Check
 managed: true
 ---
 Ops skill body.
-`), 0o644); err != nil {
+`), 0o600); err != nil {
 		t.Fatalf("write incoming skill: %v", err)
 	}
 	store := session.New(10)

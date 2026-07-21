@@ -130,7 +130,7 @@ func (s *Store) UpdatePreference(ctx context.Context, peerID, preferenceID strin
 	if err != nil {
 		return nil, fmt.Errorf("memory preference update: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	record, err := loadPreferenceTx(ctx, tx, peerID, preferenceID)
 	if err != nil {
 		return nil, err
@@ -229,7 +229,7 @@ func normalizePreferenceFields(kind PreferenceKind, name string, value string, c
 		return "", "", "", "", "", "", 0, 0, "", "", fmt.Errorf("last_confirmed_at must be >= 0")
 	}
 	sourceSessionKey = strings.TrimSpace(sourceSessionKey)
-	sourceExcerpt = truncateExcerpt(strings.TrimSpace(redact.String(sourceExcerpt)), 160)
+	sourceExcerpt = truncateExcerpt(strings.TrimSpace(redact.String(sourceExcerpt)))
 	return normalizedKind, name, value, category, normalizedScope, scopeRef, normalizedConfidence, lastConfirmedAt, sourceSessionKey, sourceExcerpt, nil
 }
 

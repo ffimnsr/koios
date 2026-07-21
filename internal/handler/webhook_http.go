@@ -104,14 +104,15 @@ func (h *WebhookHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	ctx := r.Context()
 	if hookName := strings.TrimSpace(r.PathValue("name")); hookName != "" {
-		h.serveMappedHook(w, r, hookName)
+		h.serveMappedHook(ctx, w, r, hookName)
 		return
 	}
-	h.serveEventHook(w, r)
+	h.serveEventHook(ctx, w, r)
 }
 
-func (h *WebhookHTTPHandler) serveEventHook(w http.ResponseWriter, r *http.Request) {
+func (h *WebhookHTTPHandler) serveEventHook(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	var req webhookEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -121,7 +122,7 @@ func (h *WebhookHTTPHandler) serveEventHook(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "invalid peer_id", http.StatusBadRequest)
 		return
 	}
-	runID, err := h.apply(req)
+	runID, err := h.apply(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -136,7 +137,7 @@ func (h *WebhookHTTPHandler) serveEventHook(w http.ResponseWriter, r *http.Reque
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *WebhookHTTPHandler) serveMappedHook(w http.ResponseWriter, r *http.Request, hookPath string) {
+func (h *WebhookHTTPHandler) serveMappedHook(ctx context.Context, w http.ResponseWriter, r *http.Request, hookPath string) {
 	mapping, ok := h.findHookMapping(hookPath)
 	if !ok {
 		http.Error(w, "hook not found", http.StatusNotFound)
@@ -160,7 +161,7 @@ func (h *WebhookHTTPHandler) serveMappedHook(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "invalid peer_id", http.StatusBadRequest)
 		return
 	}
-	runID, err := h.apply(req)
+	runID, err := h.apply(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -609,7 +610,7 @@ func hookFirstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (h *WebhookHTTPHandler) apply(req webhookEventRequest) (string, error) {
+func (h *WebhookHTTPHandler) apply(ctx context.Context, req webhookEventRequest) (string, error) {
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
 		source = "webhook"
@@ -624,7 +625,7 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) (string, error) {
 			return "", errors.New("message.role is required")
 		}
 		if h.hooks != nil {
-			if err := h.hooks.Emit(context.Background(), ops.Event{
+			if err := h.hooks.Emit(ctx, ops.Event{
 				Name:   ops.HookBeforeMessage,
 				PeerID: req.PeerID,
 				Data: map[string]any{
@@ -635,9 +636,9 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) (string, error) {
 				return "", err
 			}
 		}
-		h.store.AppendWithSource(req.PeerID, source, msg)
+		h.store.AppendWithSource(ctx, req.PeerID, source, msg)
 		if h.hooks != nil {
-			_ = h.hooks.Emit(context.Background(), ops.Event{
+			_ = h.hooks.Emit(ctx, ops.Event{
 				Name:   ops.HookMessageReceived,
 				PeerID: req.PeerID,
 				Data: map[string]any{
@@ -645,7 +646,7 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) (string, error) {
 					"source": source,
 				},
 			})
-			_ = h.hooks.Emit(context.Background(), ops.Event{
+			_ = h.hooks.Emit(ctx, ops.Event{
 				Name:   ops.HookAfterMessage,
 				PeerID: req.PeerID,
 				Data: map[string]any{
@@ -676,7 +677,7 @@ func (h *WebhookHTTPHandler) apply(req webhookEventRequest) (string, error) {
 		if job == nil || job.PeerID != req.PeerID {
 			return "", errors.New("job not found")
 		}
-		_, err := h.sched.TriggerRun(req.JobID)
+		_, err := h.sched.TriggerRun(ctx, req.JobID)
 		return "", err
 	case "cron.schedule":
 		if h.sched == nil || h.jobStore == nil {

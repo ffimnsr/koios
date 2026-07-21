@@ -579,11 +579,10 @@ func TestStore_EntityGraphLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InsertChunk: %v", err)
 	}
-	project, err := s.UpsertEntity(ctx, "alice", memory.EntityKindProject, "Borealis Trip", []string{"summer trip", "borealis"}, "Planning the annual trip.", 100)
-	if err != nil {
+	if _, err := s.UpsertEntity(ctx, "alice", memory.EntityKindProject, "Borealis Trip", []string{"summer trip", "borealis"}, "Planning the annual trip.", 100); err != nil {
 		t.Fatalf("UpsertEntity project create: %v", err)
 	}
-	project, err = s.UpsertEntity(ctx, "alice", memory.EntityKindProject, "summer trip", nil, "Venue planning project.", 200)
+	project, err := s.UpsertEntity(ctx, "alice", memory.EntityKindProject, "summer trip", nil, "Venue planning project.", 200)
 	if err != nil {
 		t.Fatalf("UpsertEntity project merge: %v", err)
 	}

@@ -78,7 +78,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("bookmarks: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("bookmarks: migrate: %w", err)
 	}
@@ -173,7 +173,7 @@ func (s *Store) Update(ctx context.Context, peerID, id string, patch Patch) (*Bo
 	if err != nil {
 		return nil, fmt.Errorf("bookmark update: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	bookmark, err := loadBookmarkTx(ctx, tx, peerID, id)
 	if err != nil {
 		return nil, err
@@ -208,8 +208,8 @@ func (s *Store) Delete(ctx context.Context, peerID, id string) error {
 	return nil
 }
 
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS bookmarks (
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS bookmarks (
 	id TEXT PRIMARY KEY,
 	peer_id TEXT NOT NULL,
 	title TEXT NOT NULL,

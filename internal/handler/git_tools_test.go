@@ -58,10 +58,10 @@ func TestExecuteTool_GitStatusDiffLog(t *testing.T) {
 		ToolPolicy:     handler.ToolPolicy{Profile: "coding"},
 	})
 
-	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello\nworld\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello\nworld\n"), 0o600); err != nil {
 		t.Fatalf("write modified readme: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(repoRoot, "new.txt"), []byte("untracked\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoRoot, "new.txt"), []byte("untracked\n"), 0o600); err != nil {
 		t.Fatalf("write untracked file: %v", err)
 	}
 
@@ -239,7 +239,7 @@ func initPeerGitRepo(t *testing.T, wsStore *workspace.Manager, peerID string) st
 	runGitOrFail(t, repoRoot, "init")
 	runGitOrFail(t, repoRoot, "config", "user.name", "Koios Test")
 	runGitOrFail(t, repoRoot, "config", "user.email", "koios@example.test")
-	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoRoot, "README.md"), []byte("hello\n"), 0o600); err != nil {
 		t.Fatalf("write initial readme: %v", err)
 	}
 	runGitOrFail(t, repoRoot, "add", "README.md")
@@ -247,16 +247,15 @@ func initPeerGitRepo(t *testing.T, wsStore *workspace.Manager, peerID string) st
 	return repoRoot
 }
 
-func runGitOrFail(t *testing.T, dir string, args ...string) string {
+func runGitOrFail(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(context.Background(), "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANG=C")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
-	return strings.TrimSpace(string(out))
 }
 
 func hasGitStatusEntry(entries []struct {

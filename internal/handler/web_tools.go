@@ -139,7 +139,7 @@ func isPrivateIP(ip net.IP) bool {
 
 // blockPrivateURL returns an error when the URL's host is a private or
 // reserved IP address, stopping trivial SSRF attempts at parse time.
-func blockPrivateURL(u *url.URL) error {
+func blockPrivateURL(ctx context.Context, u *url.URL) error {
 	host := u.Hostname()
 	if ip := net.ParseIP(host); ip != nil {
 		if isPrivateIP(ip) {
@@ -147,7 +147,8 @@ func blockPrivateURL(u *url.URL) error {
 		}
 		return nil
 	}
-	addrs, err := net.LookupHost(host)
+	var r net.Resolver
+	addrs, err := r.LookupHost(ctx, host)
 	if err != nil {
 		return fmt.Errorf("could not resolve host %q: %w", host, err)
 	}
@@ -175,7 +176,8 @@ func ssrfSafeTransport() *http.Transport {
 				return nil, fmt.Errorf("blocked: connection to private address %s", host)
 			}
 		} else {
-			addrs, err := net.LookupHost(host)
+			var r net.Resolver
+			addrs, err := r.LookupHost(ctx, host)
 			if err != nil {
 				return nil, err
 			}
@@ -202,7 +204,7 @@ func (h *Handler) runWebFetchTool(ctx context.Context, p webFetchParams) (map[st
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return nil, fmt.Errorf("url must use http or https")
 	}
-	if err := blockPrivateURL(parsed); err != nil {
+	if err := blockPrivateURL(ctx, parsed); err != nil {
 		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)

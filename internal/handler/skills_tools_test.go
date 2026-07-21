@@ -24,7 +24,7 @@ func writeHandlerSkill(t *testing.T, root, dir, content string) string {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir skill dir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
 	return path
@@ -44,7 +44,10 @@ type skillsRPCMsg struct {
 func skillDialWS(t *testing.T, srv *httptest.Server, peerID string) *websocket.Conn {
 	t.Helper()
 	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/ws?peer_id=" + peerID
-	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	conn, resp, err := websocket.DefaultDialer.Dial(u, nil)
+	if resp != nil {
+		resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
@@ -71,7 +74,7 @@ func skillSendRPC(t *testing.T, conn *websocket.Conn, id, method string, params 
 
 func skillReadMsg(t *testing.T, conn *websocket.Conn) skillsRPCMsg {
 	t.Helper()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
 	_, b, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("read message: %v", err)
@@ -254,7 +257,7 @@ id: review
 name: Review
 ---
 Second body changed.
-`), 0o644); err != nil {
+`), 0o600); err != nil {
 		t.Fatalf("rewrite skill: %v", err)
 	}
 	second, err := mgr.CatalogDetails()

@@ -321,7 +321,7 @@ done
 echo "missing -- terminator" >&2
 exit 99
 `
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o700); err != nil { // #nosec G306
 		t.Fatalf("write fake bubblewrap: %v", err)
 	}
 	return path

@@ -260,7 +260,7 @@ func TestRuntime_InjectsSkillMessagesIntoAgentRuns(t *testing.T) {
 id: security-review
 name: Security Review
 ---
-Check auth, secrets, and input validation.`), 0o644); err != nil {
+Check auth, secrets, and input validation.`), 0o600); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
 	standingStore, err := standing.NewStore(t.TempDir())

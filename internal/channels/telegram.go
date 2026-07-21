@@ -310,7 +310,7 @@ func (t *Telegram) Start(ctx context.Context) error {
 		if err := t.client.DeleteWebhook(ctx, t.cfg.BotToken, false); err != nil {
 			return fmt.Errorf("telegram deleteWebhook: %w", err)
 		}
-		pollCtx, cancel := context.WithCancel(context.Background())
+		pollCtx, cancel := context.WithCancel(ctx)
 		t.mu.Lock()
 		t.cancel = cancel
 		t.mu.Unlock()
@@ -564,7 +564,7 @@ func (t *Telegram) applySessionActivationPolicy(msg *telegramMessage, sessionKey
 	return policy
 }
 
-func (t *Telegram) authorizeDirectMessage(ctx context.Context, msg *telegramMessage) (bool, *telegramSendMessageRequest, error) {
+func (t *Telegram) authorizeDirectMessage(_ context.Context, msg *telegramMessage) (bool, *telegramSendMessageRequest, error) {
 	userID := telegramUserID(msg.From)
 	if userID == 0 {
 		return false, nil, nil
@@ -876,7 +876,7 @@ func (c *telegramHTTPClient) call(ctx context.Context, token, method string, bod
 		}
 		reader = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/bot"+token+"/"+method, reader)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/bot"+token+"/"+method, reader) // #nosec G704
 	if err != nil {
 		return err
 	}
@@ -885,7 +885,7 @@ func (c *telegramHTTPClient) call(ctx context.Context, token, method string, bod
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	resp, err := httpClient.Do(req)
+	resp, err := httpClient.Do(req) // #nosec G704
 	if err != nil {
 		return err
 	}

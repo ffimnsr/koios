@@ -28,7 +28,7 @@ transport = "stdio"
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 `)
-	if err := os.WriteFile(manifestPath, content, 0o644); err != nil {
+	if err := os.WriteFile(manifestPath, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -77,7 +77,7 @@ name = "` + dir + `"
 transport = "stdio"
 command = "echo"
 `
-		if err := os.WriteFile(filepath.Join(path, ManifestFileName), []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(path, ManifestFileName), []byte(content), 0o600); err != nil {
 			t.Fatalf("WriteFile(%s): %v", dir, err)
 		}
 	}
@@ -103,7 +103,7 @@ name = "unsafe"
 transport = "stdio"
 command = "echo"
 `)
-	if err := os.WriteFile(manifestPath, content, 0o644); err != nil {
+	if err := os.WriteFile(manifestPath, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if err := os.Chmod(dir, 0o777); err != nil {
@@ -183,7 +183,7 @@ name = "default-tools"
 transport = "stdio"
 command = "echo"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	manifest, err := LoadManifest(path)
@@ -218,7 +218,7 @@ tool = "rewrite_request"
 event = "after_message"
 tool = "audit_event"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -264,7 +264,7 @@ method = "post"
 path = "/echo"
 tool = "http_echo"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -305,7 +305,7 @@ url = "https://example.test/mcp"
 channel = "signal"
 tool = "send_signal"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -346,7 +346,7 @@ url = "https://example.test/mcp"
 channel = "signal"
 tool = "send_signal"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -373,7 +373,7 @@ method = "GET"
 path = "/status"
 tool = "route_status"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -399,7 +399,7 @@ command = "echo"
 event = "after_message"
 tool = "audit_event"
 `)
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 

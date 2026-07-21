@@ -831,7 +831,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				if assistantMsg, ok := assistantMessage(assistantText, resp); ok {
 					persistedMessages = append(persistedMessages, assistantMsg)
 				}
-				rt.persistTurn(reqCopy.PeerID, sessionKey, reqCopy.Model, persistedMessages, workingMessages, assistantText, result.SuppressedReply)
+				rt.persistTurn(ctx, reqCopy.PeerID, sessionKey, reqCopy.Model, persistedMessages, workingMessages, assistantText, result.SuppressedReply)
 				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunFinish, SessionKey: sessionKey, Step: step, Message: assistantText})
 				return result, nil
 			}
@@ -1018,10 +1018,10 @@ func assistantMessage(assistantText string, resp *types.ChatResponse) (types.Mes
 	return types.Message{Role: "assistant", Content: assistantText}, true
 }
 
-func (rt *Runtime) persistTurn(peerID, sessionKey, model string, transcript, workingMessages []types.Message, assistantText string, suppressed bool) {
+func (rt *Runtime) persistTurn(ctx context.Context, peerID, sessionKey, model string, transcript, workingMessages []types.Message, assistantText string, suppressed bool) {
 	// Session persistence — unchanged behavior.
 	if len(transcript) > 0 {
-		rt.store.AppendCtx(context.Background(), sessionKey, transcript...)
+		rt.store.AppendCtx(ctx, sessionKey, transcript...)
 	}
 
 	// Long-term memory persistence stores a compact archived turn summary for
@@ -1034,7 +1034,7 @@ func (rt *Runtime) persistTurn(peerID, sessionKey, model string, transcript, wor
 	if chunk == "" {
 		return
 	}
-	memCtx, cancel := context.WithTimeout(context.Background(), minDuration(rt.defaultTimeout/4, 8*time.Second))
+	memCtx, cancel := context.WithTimeout(ctx, minDuration(rt.defaultTimeout/4, 8*time.Second))
 	defer cancel()
 	archivedChunk, err := rt.memStore.InsertChunkWithOptions(memCtx, peerID, redact.String(chunk), memory.ChunkOptions{
 		Category:       "conversation",
@@ -1216,7 +1216,7 @@ func (rt *Runtime) extractMemoryCandidates(ctx context.Context, model, summary s
 	return parseMemoryCandidateExtraction(resp.Choices[0].Message.Content)
 }
 
-func (rt *Runtime) upsertTurnEntities(ctx context.Context, peerID, sessionKey, model string, transcript []types.Message, summary string, chunkID string) error {
+func (rt *Runtime) upsertTurnEntities(ctx context.Context, peerID, _, model string, transcript []types.Message, summary string, chunkID string) error {
 	if rt == nil || rt.prov == nil || rt.memStore == nil {
 		return nil
 	}
@@ -1266,7 +1266,7 @@ func (rt *Runtime) extractEntityCandidates(ctx context.Context, model, summary s
 	}
 	entities, err := parseEntityExtraction(resp.Choices[0].Message.Content)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	return entities, nil
 }

@@ -248,7 +248,7 @@ func RunGateway(build BuildInfo) error {
 		if sessionKey == "" {
 			return
 		}
-		store.AppendWithSource(sessionKey, ev.Source, *ev.Message)
+		store.AppendWithSource(context.Background(), sessionKey, ev.Source, *ev.Message)
 	})
 	taskStore, err = tasks.New(cfg.TasksDBPath())
 	if err != nil {
@@ -397,7 +397,7 @@ func RunGateway(build BuildInfo) error {
 					continue
 				}
 				if cfg.Enabled && cfg.Every > 0 {
-					hbRunner.EnsureRunning(peerID)
+					hbRunner.EnsureRunning(context.Background(), peerID)
 					restored++
 				}
 			}

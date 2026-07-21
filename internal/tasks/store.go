@@ -120,7 +120,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("tasks: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("tasks: migrate: %w", err)
 	}
@@ -180,7 +180,7 @@ func (s *Store) ExtractAndQueue(ctx context.Context, peerID, text string, proven
 	}
 	out := make([]Candidate, 0, len(inputs))
 	for _, input := range inputs {
-		key := normalizeTaskKey(input.Title, input.Details)
+		key := normalizeTaskKey(input.Title)
 		if key == "" {
 			continue
 		}
@@ -231,7 +231,7 @@ func (s *Store) EditCandidate(ctx context.Context, peerID, candidateID string, p
 	if err != nil {
 		return nil, fmt.Errorf("task candidate edit: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	candidate, err := loadCandidateTx(ctx, tx, peerID, candidateID)
 	if err != nil {
 		return nil, err
@@ -258,7 +258,7 @@ func (s *Store) ApproveCandidate(ctx context.Context, peerID, candidateID string
 	if err != nil {
 		return nil, nil, fmt.Errorf("task candidate approve: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	candidate, err := loadCandidateTx(ctx, tx, peerID, candidateID)
 	if err != nil {
 		return nil, nil, err
@@ -310,7 +310,7 @@ func (s *Store) RejectCandidate(ctx context.Context, peerID, candidateID, reason
 	if err != nil {
 		return nil, fmt.Errorf("task candidate reject: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	candidate, err := loadCandidateTx(ctx, tx, peerID, candidateID)
 	if err != nil {
 		return nil, err
@@ -378,7 +378,7 @@ func (s *Store) UpdateTask(ctx context.Context, peerID, taskID string, patch Tas
 	if err != nil {
 		return nil, fmt.Errorf("task update: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	task, err := loadTaskTx(ctx, tx, peerID, taskID)
 	if err != nil {
 		return nil, err
@@ -413,7 +413,7 @@ func (s *Store) SnoozeTask(ctx context.Context, peerID, taskID string, until int
 	if err != nil {
 		return nil, fmt.Errorf("task snooze: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	task, err := loadTaskTx(ctx, tx, peerID, taskID)
 	if err != nil {
 		return nil, err
@@ -438,7 +438,7 @@ func (s *Store) CompleteTask(ctx context.Context, peerID, taskID string) (*Task,
 	if err != nil {
 		return nil, fmt.Errorf("task complete: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	task, err := loadTaskTx(ctx, tx, peerID, taskID)
 	if err != nil {
 		return nil, err
@@ -462,7 +462,7 @@ func (s *Store) ReopenTask(ctx context.Context, peerID, taskID string) (*Task, e
 	if err != nil {
 		return nil, fmt.Errorf("task reopen: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	task, err := loadTaskTx(ctx, tx, peerID, taskID)
 	if err != nil {
 		return nil, err
@@ -520,7 +520,7 @@ func ExtractCandidateInputs(text string) []CandidateInput {
 			if !ok {
 				continue
 			}
-			key := normalizeTaskKey(input.Title, input.Details)
+			key := normalizeTaskKey(input.Title)
 			if key == "" {
 				continue
 			}
@@ -593,7 +593,7 @@ func extractCandidateInput(unit string) (CandidateInput, bool) {
 	return CandidateInput{Title: title, Details: details}, true
 }
 
-func migrate(db *sql.DB) error {
+func migrate(ctx context.Context, db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS task_candidates (
 			id TEXT PRIMARY KEY,
@@ -649,7 +649,7 @@ func migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_waiting_on_peer_status_updated ON waiting_on(peer_id, status, updated_at DESC)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
 	}
@@ -833,7 +833,7 @@ func (s *Store) existingTaskKeys(ctx context.Context, peerID string) (map[string
 		return nil, err
 	}
 	for _, candidate := range candidates {
-		if key := normalizeTaskKey(candidate.Title, candidate.Details); key != "" {
+		if key := normalizeTaskKey(candidate.Title); key != "" {
 			seen[key] = struct{}{}
 		}
 	}
@@ -842,7 +842,7 @@ func (s *Store) existingTaskKeys(ctx context.Context, peerID string) (map[string
 		return nil, err
 	}
 	for _, task := range tasks {
-		if key := normalizeTaskKey(task.Title, task.Details); key != "" {
+		if key := normalizeTaskKey(task.Title); key != "" {
 			seen[key] = struct{}{}
 		}
 	}
@@ -881,7 +881,7 @@ func normalizeWhitespace(value string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
 }
 
-func normalizeTaskKey(title, details string) string {
+func normalizeTaskKey(title string) string {
 	key := strings.ToLower(trimTaskPunctuation(title))
 	key = strings.Join(strings.Fields(key), " ")
 	return key

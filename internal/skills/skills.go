@@ -340,7 +340,7 @@ func (m *Manager) InstallManagedSkill(sourcePath string) (InstallResult, error) 
 		return InstallResult{Scan: scan}, fmt.Errorf("install managed skill: %w", err)
 	}
 	if _, err := m.Refresh(); err != nil {
-		return InstallResult{Installed: true, TargetDir: targetDir, Skill: &parsed, Scan: scan}, nil
+		return InstallResult{Installed: true, TargetDir: targetDir, Skill: &parsed, Scan: scan}, err
 	}
 	return InstallResult{Installed: true, TargetDir: targetDir, Skill: &parsed, Scan: scan}, nil
 }
@@ -349,10 +349,7 @@ func (m *Manager) snapshot(force bool) (CatalogSnapshot, error) {
 	if m == nil || m.cfg == nil {
 		return CatalogSnapshot{}, nil
 	}
-	fingerprint, err := computeFingerprint(m.Sources())
-	if err != nil {
-		return CatalogSnapshot{}, err
-	}
+	fingerprint := computeFingerprint(m.Sources())
 	m.mu.Lock()
 	cached := m.cache
 	m.mu.Unlock()
@@ -885,7 +882,7 @@ func parseVersionParts(raw string) []int {
 	return out
 }
 
-func computeFingerprint(sources []SourceSpec) (string, error) {
+func computeFingerprint(sources []SourceSpec) string {
 	hash := sha256.New()
 	for _, source := range sources {
 		_, _ = hash.Write([]byte(string(source.Kind)))
@@ -894,7 +891,7 @@ func computeFingerprint(sources []SourceSpec) (string, error) {
 		_, _ = hash.Write([]byte{0})
 		_ = filepath.WalkDir(strings.TrimSpace(source.Path), func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				return nil
+				return err
 			}
 			if d.IsDir() {
 				return nil
@@ -904,7 +901,7 @@ func computeFingerprint(sources []SourceSpec) (string, error) {
 			}
 			info, statErr := d.Info()
 			if statErr != nil {
-				return nil
+				return statErr
 			}
 			_, _ = hash.Write([]byte(path))
 			_, _ = hash.Write([]byte(info.ModTime().UTC().Format(time.RFC3339Nano)))
@@ -913,7 +910,7 @@ func computeFingerprint(sources []SourceSpec) (string, error) {
 			return nil
 		})
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func resolveInstallSource(path string) (skillFile string, rootDir string, err error) {
@@ -950,10 +947,10 @@ func copyTree(sourceDir, targetDir string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G122
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o644)
+		return os.WriteFile(target, data, 0o600) // #nosec G703
 	})
 }

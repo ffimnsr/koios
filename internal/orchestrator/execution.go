@@ -86,7 +86,7 @@ func (o *Orchestrator) execute(ctx context.Context, cancel context.CancelFunc, r
 	run.mu.Lock()
 	children := append([]ChildResult(nil), run.Children...)
 	run.mu.Unlock()
-	o.finishRun(ctx, cancel, run, req, children)
+	o.finishRun(ctx, run, req, children)
 }
 
 // spawnAndPoll launches one subagent run and blocks until it reaches a
@@ -222,7 +222,6 @@ func (o *Orchestrator) runChild(ctx context.Context, run *Run, req FanOutRequest
 		o.publishChildProgress(run.ID, req.PeerID, req.ParentSessionKey, idx, childLabel, "fallback")
 		lastOutcome = o.spawnAndPoll(ctx, run, req, idx, *task.FallbackTask)
 		attempts++
-		succeeded = lastOutcome.status == subagent.StatusCompleted
 	}
 
 done:
@@ -309,11 +308,11 @@ func (o *Orchestrator) runChildHedged(ctx context.Context, run *Run, req FanOutR
 		}
 	}
 	if !winnerFound {
-		winner, _ = func() (childOutcome, bool) {
+		winner = func() childOutcome {
 			for r := range ch {
-				return r.outcome, false
+				return r.outcome
 			}
-			return childOutcome{status: subagent.StatusErrored, err: "all hedges failed"}, false
+			return childOutcome{status: subagent.StatusErrored, err: "all hedges failed"}
 		}()
 	}
 	return winner, winnerFound
@@ -473,7 +472,7 @@ func (o *Orchestrator) runDAGWave(
 
 // finishRun performs the aggregation pass and records terminal run state.
 func (o *Orchestrator) finishRun(
-	ctx context.Context, cancel context.CancelFunc,
+	ctx context.Context,
 	run *Run, req FanOutRequest, children []ChildResult,
 ) {
 	run.mu.Lock()
@@ -482,7 +481,7 @@ func (o *Orchestrator) finishRun(
 
 	run.appendTimeline("aggregation.started", "", 0, map[string]any{"mode": string(req.Aggregation)})
 
-	aggCtx := context.Background()
+	aggCtx := ctx
 	if req.Timeout > 0 {
 		var aggCancel context.CancelFunc
 		aggCtx, aggCancel = context.WithTimeout(aggCtx, req.Timeout/4+5*time.Second)

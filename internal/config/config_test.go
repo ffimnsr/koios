@@ -117,7 +117,7 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, DefaultConfigFile)
-	if err := os.WriteFile(path, []byte(encoded), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
 		t.Fatalf("write encoded config: %v", err)
 	}
 	loaded, err := LoadFromPath(path)
@@ -298,7 +298,7 @@ func TestEncodeTOMLRoundTripsHookMappings(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, DefaultConfigFile)
-	if err := os.WriteFile(path, []byte(encoded), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
 		t.Fatalf("write encoded config: %v", err)
 	}
 	loaded, err := LoadFromPath(path)
@@ -345,7 +345,7 @@ model = "gpt-4o"
 [workspace]
 root = "./workspace"
 `
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	cfg, err := LoadFromPath(path)
@@ -385,7 +385,7 @@ max_processes = 12
 cpu_seconds = 13
 memory_bytes = 1048576
 `
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	cfg, err := LoadFromPath(path)
@@ -424,7 +424,7 @@ root = "./workspace"
 [memory.embed]
 enabled = false
 `
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	cfg, err := LoadFromPath(path)
@@ -457,7 +457,7 @@ stop_timeout = "9s"
 log_tail_bytes = 2048
 max_processes_per_peer = 3
 `
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	cfg, err := LoadFromPath(path)
@@ -553,7 +553,7 @@ command_sender_ids = [11]
 reply_activation = true
 allowed_topic_ids = [11]
 `
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	cfg, err := LoadFromPath(path)

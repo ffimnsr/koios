@@ -142,10 +142,12 @@ func (c *gatewayClient) openConn(ctx context.Context, peer string) (*websocket.C
 	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
 		if resp != nil {
+			resp.Body.Close()
 			return nil, fmt.Errorf("websocket dial failed: %s", resp.Status)
 		}
 		return nil, err
 	}
+	resp.Body.Close()
 	return conn, nil
 }
 

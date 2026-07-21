@@ -191,7 +191,7 @@ func (h *Handler) skillScanInstall(peerID, source string) (map[string]any, error
 	}, nil
 }
 
-func (h *Handler) skillInstall(ctx context.Context, peerID, source string, confirm bool) (map[string]any, error) {
+func (h *Handler) skillInstall(_ context.Context, peerID, source string, confirm bool) (map[string]any, error) {
 	if h.skillManager == nil || h.workspaceStore == nil {
 		return nil, fmt.Errorf("skills install is not enabled")
 	}

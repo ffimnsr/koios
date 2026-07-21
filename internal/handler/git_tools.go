@@ -357,13 +357,14 @@ func parseGitStatus(repoRoot, out string) (map[string]any, error) {
 			"index_status":    string(status[0]),
 			"worktree_status": string(status[1]),
 		}
-		if status == "??" {
+		switch status {
+		case "??":
 			entry["untracked"] = true
 			untrackedCount++
-		} else if status == "!!" {
+		case "!!":
 			entry["ignored"] = true
 			ignoredCount++
-		} else {
+		default:
 			staged := status[0] != ' ' && status[0] != '?'
 			unstaged := status[1] != ' '
 			if staged {

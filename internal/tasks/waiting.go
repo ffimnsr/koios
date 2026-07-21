@@ -133,7 +133,7 @@ func (s *Store) UpdateWaitingOn(ctx context.Context, peerID, waitingID string, p
 	if err != nil {
 		return nil, fmt.Errorf("waiting update: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	item, err := loadWaitingOnTx(ctx, tx, peerID, waitingID)
 	if err != nil {
 		return nil, err
@@ -163,7 +163,7 @@ func (s *Store) SnoozeWaitingOn(ctx context.Context, peerID, waitingID string, u
 	if err != nil {
 		return nil, fmt.Errorf("waiting snooze: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	item, err := loadWaitingOnTx(ctx, tx, peerID, waitingID)
 	if err != nil {
 		return nil, err
@@ -189,7 +189,7 @@ func (s *Store) ResolveWaitingOn(ctx context.Context, peerID, waitingID string) 
 	if err != nil {
 		return nil, fmt.Errorf("waiting resolve: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	item, err := loadWaitingOnTx(ctx, tx, peerID, waitingID)
 	if err != nil {
 		return nil, err
@@ -213,7 +213,7 @@ func (s *Store) ReopenWaitingOn(ctx context.Context, peerID, waitingID string) (
 	if err != nil {
 		return nil, fmt.Errorf("waiting reopen: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	item, err := loadWaitingOnTx(ctx, tx, peerID, waitingID)
 	if err != nil {
 		return nil, err

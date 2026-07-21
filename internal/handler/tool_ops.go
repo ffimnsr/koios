@@ -114,10 +114,6 @@ func (h *Handler) memorySearch(peerID, query string, limit int, ctx context.Cont
 	return map[string]any{"results": results}, nil
 }
 
-func (h *Handler) memoryInsert(peerID, content string, ctx context.Context) (map[string]any, error) {
-	return h.memoryInsertWithOptions(peerID, content, nil, "", "", "", 0, memory.ChunkProvenance{}, ctx)
-}
-
 func (h *Handler) memoryInsertWithOptions(peerID, content string, tags []string, category string, retentionClass string, exposurePolicy string, expiresAt int64, provenance memory.ChunkProvenance, ctx context.Context) (map[string]any, error) {
 	if h.memStore == nil {
 		return nil, fmt.Errorf("memory is not enabled")

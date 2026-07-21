@@ -717,7 +717,7 @@ func (h *Handler) rpcAgentWait(ctx context.Context, wsc *wsConn, req *rpcRequest
 	wsc.reply(req.ID, record)
 }
 
-func (h *Handler) rpcAgentCancel(_ context.Context, wsc *wsConn, req *rpcRequest) {
+func (h *Handler) rpcAgentCancel(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	if h.agentCoord == nil {
 		wsc.replyErr(req.ID, errCodeServer, "agent runtime is not enabled")
 		return
@@ -748,7 +748,7 @@ func (h *Handler) rpcAgentCancel(_ context.Context, wsc *wsConn, req *rpcRequest
 	}
 
 	// Fall through to async runs managed by the coordinator.
-	record, err := h.agentCoord.Cancel(p.ID)
+	record, err := h.agentCoord.Cancel(ctx, p.ID)
 	if err != nil {
 		wsc.replyErr(req.ID, errCodeServer, err.Error())
 		return

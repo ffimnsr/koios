@@ -89,7 +89,7 @@ func (h *Handler) runCodeExecutionTool(ctx context.Context, peerID string, p cod
 		return nil, err
 	}
 	if p.Async {
-		return h.startCodeExecutionJob(peerID, prepared)
+		return h.startCodeExecutionJob(ctx, peerID, prepared)
 	}
 	result, err := h.executeCodeExecution(ctx, prepared)
 	if err != nil {
@@ -166,13 +166,13 @@ func (h *Handler) executeCodeExecution(ctx context.Context, prepared preparedCod
 	return codeExecutionResultMap(prepared, result), nil
 }
 
-func (h *Handler) startCodeExecutionJob(peerID string, prepared preparedCodeExecution) (map[string]any, error) {
+func (h *Handler) startCodeExecutionJob(ctx context.Context, peerID string, prepared preparedCodeExecution) (map[string]any, error) {
 	if h.runLedger == nil {
 		return nil, fmt.Errorf("async code_execution jobs require the run ledger")
 	}
 	id := uuid.NewString()
 	queuedAt := time.Now().UTC()
-	runCtx, runCancel := context.WithCancel(context.Background())
+	runCtx, runCancel := context.WithCancel(ctx)
 	// Ensure the context is cancelled on any early return path to avoid
 	// leaking the context when the goroutine never starts.
 	cancelled := false

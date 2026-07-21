@@ -57,10 +57,6 @@ func TestListToolsSkipsHiddenServers(t *testing.T) {
 
 func TestManagerEnsureAndStopServer(t *testing.T) {
 	var factoryCalls atomic.Int32
-	type fakeClient struct {
-		tools  []Tool
-		closed bool
-	}
 	funcNewClient := func(cfg config.MCPServerConfig) Client {
 		factoryCalls.Add(1)
 		return &fakeManagerClient{tools: []Tool{{Name: "list_pages", Description: "list pages"}}, callResult: cfg.Name}

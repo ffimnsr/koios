@@ -130,7 +130,7 @@ func newMigrateCommand(ctx *commandContext) *cobra.Command {
 			// Create backup before overwriting.
 			if backup {
 				backupPath := state.ConfigPath + ".bak." + time.Now().UTC().Format("20060102-150405")
-				if err := os.WriteFile(backupPath, raw, 0o600); err != nil {
+				if err := os.WriteFile(backupPath, raw, 0o600); err != nil { // #nosec G703
 					return fmt.Errorf("create backup: %w", err)
 				}
 				emit(cmd, jsonOut, map[string]any{"backup": backupPath})

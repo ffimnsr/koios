@@ -109,14 +109,17 @@ func (r *Runtime) Spawn(ctx context.Context, req SpawnRequest) (*RunRecord, erro
 		"announce_skip":      req.AnnounceSkip,
 		"reply_skip":         req.ReplySkip,
 	})
-	r.announce(rec, req)
+	r.announce(ctx, rec, req)
 
 	childCtx, cancel := context.WithCancel(ctx)
 	r.mu.Lock()
 	r.cancels[rec.ID] = cancel
 	r.mu.Unlock()
 
-	go r.execute(childCtx, rec.ID, req, parentKey)
+	go func() {
+		defer cancel()
+		r.execute(childCtx, rec.ID, req, parentKey)
+	}()
 	return rec, nil
 }
 
@@ -230,7 +233,7 @@ func (r *Runtime) execute(ctx context.Context, id string, req SpawnRequest, pare
 			Role:    "assistant",
 			Content: pushMsg,
 		}
-		r.publishSessionMessage(eventbus.Event{
+		r.publishSessionMessage(ctx, eventbus.Event{
 			Kind:       "session.message",
 			PeerID:     req.PeerID,
 			SessionKey: req.SourceSessionKeyOrPeer(),
@@ -461,7 +464,7 @@ func (r *Runtime) parentSemaphore(parentKey string, limit int) *parentSemaphore 
 	return sem
 }
 
-func (r *Runtime) announce(rec *RunRecord, req SpawnRequest) {
+func (r *Runtime) announce(ctx context.Context, rec *RunRecord, req SpawnRequest) {
 	if rec == nil {
 		return
 	}
@@ -477,7 +480,7 @@ func (r *Runtime) announce(rec *RunRecord, req SpawnRequest) {
 		Role:    "assistant",
 		Content: fmt.Sprintf("[subagent:%s] queued: %s", rec.ID, rec.Task),
 	}
-	r.publishSessionMessage(eventbus.Event{
+	r.publishSessionMessage(ctx, eventbus.Event{
 		Kind:       "session.message",
 		PeerID:     rec.PeerID,
 		SessionKey: target,
@@ -489,7 +492,7 @@ func (r *Runtime) announce(rec *RunRecord, req SpawnRequest) {
 	_, _ = r.reg.AppendEvent(rec.ID, "announce", msg.Content)
 }
 
-func (r *Runtime) publishSessionMessage(ev eventbus.Event, fallback types.Message) {
+func (r *Runtime) publishSessionMessage(ctx context.Context, ev eventbus.Event, fallback types.Message) {
 	if ev.Message == nil {
 		ev.Message = &fallback
 	}
@@ -503,7 +506,7 @@ func (r *Runtime) publishSessionMessage(ev eventbus.Event, fallback types.Messag
 		r.bus.Publish(ev)
 		return
 	}
-	r.store.AppendWithSource(ev.SessionKey, ev.Source, *ev.Message)
+	r.store.AppendWithSource(ctx, ev.SessionKey, ev.Source, *ev.Message)
 }
 
 func (r *Runtime) publishLifecycle(id, peerID, sessionKey, kind string, data map[string]any) {

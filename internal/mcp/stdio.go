@@ -30,7 +30,13 @@ type stdioClient struct {
 // command over stdin/stdout. The command is not started until Initialize is
 // called.
 func NewStdioClient(name, command string, args []string, env map[string]string) Client {
-	cmd := exec.Command(command, args...)
+	return NewStdioClientWithContext(context.Background(), name, command, args, env)
+}
+
+// NewStdioClientWithContext creates a new stdio MCP client bound to ctx for the
+// lifetime of the spawned subprocess.
+func NewStdioClientWithContext(ctx context.Context, name, command string, args []string, env map[string]string) Client {
+	cmd := exec.CommandContext(ctx, command, args...)
 	if len(env) > 0 {
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, k+"="+v)

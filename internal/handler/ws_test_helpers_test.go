@@ -76,7 +76,7 @@ func newTestServer(t *testing.T, prov *stubProvider) (*httptest.Server, *session
 	return srv, store
 }
 
-func newTestServerWithTasks(t *testing.T, prov *stubProvider) (*httptest.Server, *session.Store, *tasks.Store) {
+func newTestServerWithTasks(t *testing.T, prov *stubProvider) (*httptest.Server, *tasks.Store) {
 	t.Helper()
 	store := session.New(10)
 	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
@@ -96,7 +96,7 @@ func newTestServerWithTasks(t *testing.T, prov *stubProvider) (*httptest.Server,
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return srv, store, taskStore
+	return srv, taskStore
 }
 
 func newTestServerWithCalendar(t *testing.T, prov *stubProvider) (*httptest.Server, *session.Store, *calendar.Store) {
@@ -124,7 +124,10 @@ func newTestServerWithCalendar(t *testing.T, prov *stubProvider) (*httptest.Serv
 func dialWS(t *testing.T, srv *httptest.Server, peerID string) *websocket.Conn {
 	t.Helper()
 	u := "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/ws?peer_id=" + peerID
-	conn, _, err := websocket.DefaultDialer.Dial(u, nil)
+	conn, resp, err := websocket.DefaultDialer.Dial(u, nil)
+	if resp != nil {
+		resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
@@ -171,7 +174,7 @@ func sendRPC(t *testing.T, conn *websocket.Conn, id, method string, params any) 
 
 func readMsg(t *testing.T, conn *websocket.Conn) rpcMsg {
 	t.Helper()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
 	_, b, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("read message: %v", err)

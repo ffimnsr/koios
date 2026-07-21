@@ -50,7 +50,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("preferences: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("preferences: migrate: %w", err)
 	}
@@ -186,8 +186,8 @@ func (s *Store) List(ctx context.Context, peerID, scope string, limit int) ([]Pr
 }
 
 // migrate ensures the schema is up to date.
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS preferences (
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS preferences (
 	id               TEXT PRIMARY KEY,
 	peer_id          TEXT NOT NULL,
 	key              TEXT NOT NULL,

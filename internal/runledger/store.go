@@ -244,7 +244,7 @@ func (s *Store) Close() error {
 // writeLocked appends rec to the JSONL file and updates the index.
 // Caller must hold s.mu.
 func (s *Store) writeLocked(rec Record) error {
-	if err := s.enc.Encode(rec); err != nil {
+	if err := s.enc.Encode(rec); err != nil { // #nosec G117
 		return fmt.Errorf("runledger: encode: %w", err)
 	}
 	if _, exists := s.index[rec.ID]; !exists {

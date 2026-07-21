@@ -45,7 +45,7 @@ func TestHTTPRouteHandlerDispatchesScopedRoute(t *testing.T) {
 		t.Fatalf("NewHTTPRouteHandler: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, HTTPRouteNamespacePrefix+"demo.echo/echo?x=1", strings.NewReader("hello"))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, HTTPRouteNamespacePrefix+"demo.echo/echo?x=1", strings.NewReader("hello"))
 	req.Header.Set("Content-Type", "text/plain")
 	res := httptest.NewRecorder()
 	h.ServeHTTP(res, req)
@@ -80,7 +80,7 @@ func TestHTTPRouteHandlerRejectsWrongMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPRouteHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodPost, HTTPRouteNamespacePrefix+"demo.echo/echo", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, HTTPRouteNamespacePrefix+"demo.echo/echo", nil)
 	res := httptest.NewRecorder()
 	h.ServeHTTP(res, req)
 	if res.Code != http.StatusMethodNotAllowed {
@@ -103,7 +103,7 @@ func TestHTTPRouteHandlerFallsBackToPlainText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPRouteHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, HTTPRouteNamespacePrefix+"demo.text/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, HTTPRouteNamespacePrefix+"demo.text/status", nil)
 	res := httptest.NewRecorder()
 	h.ServeHTTP(res, req)
 	if res.Code != http.StatusOK || strings.TrimSpace(res.Body.String()) != "plain text response" {

@@ -156,7 +156,7 @@ func (h *Handler) runStatus(peerID, id string) (map[string]any, error) {
 	return h.runSummary(rec, true), nil
 }
 
-func (h *Handler) cancelRun(peerID, id string) (map[string]any, error) {
+func (h *Handler) cancelRun(ctx context.Context, peerID, id string) (map[string]any, error) {
 	rec, err := h.runRecord(peerID, id)
 	if err != nil {
 		return nil, err
@@ -166,7 +166,7 @@ func (h *Handler) cancelRun(peerID, id string) (map[string]any, error) {
 		if h.agentCoord == nil {
 			return nil, fmt.Errorf("agent runtime is not enabled")
 		}
-		record, err := h.agentCoord.Cancel(id)
+		record, err := h.agentCoord.Cancel(ctx, id)
 		if err != nil {
 			return nil, err
 		}
@@ -871,7 +871,7 @@ func (h *Handler) usageEstimate(ctx context.Context, peerID string, messages []t
 	}, nil
 }
 
-func (h *Handler) listModels(peerID string) map[string]any {
+func (h *Handler) listModels(ctx context.Context, peerID string) map[string]any {
 	models := []map[string]any{{
 		"name":         "default",
 		"model":        h.model,
@@ -906,7 +906,7 @@ func (h *Handler) listModels(peerID string) map[string]any {
 	}
 	// Append peer-linked BYOK provider profiles if the store is available.
 	if h.peerLLMStore != nil && strings.TrimSpace(peerID) != "" {
-		peerProfiles, err := h.peerLLMStore.List(context.Background(), peerID)
+		peerProfiles, err := h.peerLLMStore.List(ctx, peerID)
 		if err == nil && len(peerProfiles) > 0 {
 			for _, pp := range peerProfiles {
 				if !pp.Enabled {
@@ -950,7 +950,7 @@ func (h *Handler) modelCapabilitiesPayload(model, providerName string) map[strin
 	}
 }
 
-func (h *Handler) modelCapabilities(peerID, model, sessionKey string) (map[string]any, error) {
+func (h *Handler) modelCapabilities(ctx context.Context, peerID, model, sessionKey string) (map[string]any, error) {
 	if strings.TrimSpace(sessionKey) != "" && !sessionKeyOwnedByPeer(peerID, sessionKey) {
 		return nil, fmt.Errorf("session_key must belong to this peer")
 	}
@@ -976,7 +976,7 @@ func (h *Handler) modelCapabilities(peerID, model, sessionKey string) (map[strin
 
 	// If not found in config profiles, check peer BYOK provider profiles.
 	if !viaProfile && h.peerLLMStore != nil && strings.TrimSpace(peerID) != "" && requested != "" {
-		if p, err := h.peerLLMStore.Get(context.Background(), peerID, requested); err == nil && p != nil {
+		if p, err := h.peerLLMStore.Get(ctx, peerID, requested); err == nil && p != nil {
 			resolvedModel = p.DefaultModel
 			if resolvedModel == "" {
 				resolvedModel = requested

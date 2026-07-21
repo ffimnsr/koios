@@ -46,7 +46,7 @@ func successProvider(reply string) *stubProvider {
 }
 
 // buildRuntime returns a minimal subagent.Runtime backed by store.
-func buildRuntime(t *testing.T, prov *stubProvider, maxChildren int) (*subagent.Runtime, *session.Store, *subagent.Registry, *eventbus.Bus) {
+func buildRuntime(t *testing.T, prov *stubProvider, maxChildren int) (*subagent.Runtime, *session.Store, *eventbus.Bus) {
 	t.Helper()
 	store := session.New(50)
 	rt := agent.NewRuntime(store, prov, "test-model", 10*time.Second, agent.RetryPolicy{MaxAttempts: 1})
@@ -56,7 +56,7 @@ func buildRuntime(t *testing.T, prov *stubProvider, maxChildren int) (*subagent.
 	}
 	bus := eventbus.New()
 	sub := subagent.NewRuntime(rt, store, reg, bus, maxChildren)
-	return sub, store, reg, bus
+	return sub, store, bus
 }
 
 // waitRunStatus polls until the orchestration reaches one of the terminal states.
@@ -81,7 +81,7 @@ func waitRunStatus(t *testing.T, orch *Orchestrator, id string, timeout time.Dur
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 func TestOrchestrator_CollectAggregation(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("hello"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("hello"), 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -117,7 +117,7 @@ func TestOrchestrator_CollectAggregation(t *testing.T) {
 }
 
 func TestOrchestrator_WritesUnifiedLedgerRecord(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("hello"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("hello"), 4)
 	orch := New(sub, nil, bus)
 	ledger, err := runledger.New(t.TempDir())
 	if err != nil {
@@ -165,7 +165,7 @@ func TestOrchestrator_WritesUnifiedLedgerRecord(t *testing.T) {
 }
 
 func TestOrchestrator_ConcatAggregation(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("result"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("result"), 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -205,9 +205,8 @@ func TestOrchestrator_ReducerAggregation(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, store, reg, bus := buildRuntime(t, prov, 4)
+	sub, store, bus := buildRuntime(t, prov, 4)
 	agentRT := agent.NewRuntime(store, prov, "test-model", 10*time.Second, agent.RetryPolicy{MaxAttempts: 1})
-	_ = reg
 	orch := New(sub, agentRT, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -244,7 +243,7 @@ func TestOrchestrator_Cancel_KillsChildren(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -272,7 +271,7 @@ func TestOrchestrator_Cancel_KillsChildren(t *testing.T) {
 }
 
 func TestOrchestrator_WaitAll_AllChildrenFinish(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("done"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("done"), 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -316,7 +315,7 @@ func TestOrchestrator_WaitFirst_EarlyExit(t *testing.T) {
 			return nil, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -357,7 +356,7 @@ func TestOrchestrator_MaxConcurrency(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, limit+2) // subagent allows more children
+	sub, _, bus := buildRuntime(t, prov, limit+2) // subagent allows more children
 	orch := New(sub, nil, bus)
 
 	tasks := make([]ChildTask, 6)
@@ -381,7 +380,7 @@ func TestOrchestrator_MaxConcurrency(t *testing.T) {
 }
 
 func TestOrchestrator_List_FilteredByPeer(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("hi"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("hi"), 4)
 	orch := New(sub, nil, bus)
 
 	_, err := orch.Start(context.Background(), FanOutRequest{PeerID: "alice", Tasks: []ChildTask{{Task: "t"}}})
@@ -400,7 +399,7 @@ func TestOrchestrator_List_FilteredByPeer(t *testing.T) {
 }
 
 func TestOrchestrator_Get_NotFound(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("hi"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("hi"), 4)
 	orch := New(sub, nil, bus)
 
 	_, ok := orch.Get("nonexistent-id")
@@ -410,7 +409,7 @@ func TestOrchestrator_Get_NotFound(t *testing.T) {
 }
 
 func TestOrchestrator_Cancel_NotFound(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("hi"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("hi"), 4)
 	orch := New(sub, nil, bus)
 
 	if err := orch.Cancel("no-such-run"); err == nil {
@@ -419,7 +418,7 @@ func TestOrchestrator_Cancel_NotFound(t *testing.T) {
 }
 
 func TestOrchestrator_EmptyTasks_Error(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("hi"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("hi"), 4)
 	orch := New(sub, nil, bus)
 
 	_, err := orch.Start(context.Background(), FanOutRequest{PeerID: "alice", Tasks: nil})
@@ -429,7 +428,7 @@ func TestOrchestrator_EmptyTasks_Error(t *testing.T) {
 }
 
 func TestOrchestrator_EventBus_LifecyclePublished(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("ok"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("ok"), 4)
 	orch := New(sub, nil, bus)
 
 	var events []string
@@ -466,7 +465,7 @@ func TestOrchestrator_EventBus_LifecyclePublished(t *testing.T) {
 // ── Phase 2: barriers, structured output, vote aggregation ────────────────────
 
 func TestBarrier_NamedGroup(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("result"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("result"), 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -505,7 +504,7 @@ func TestBarrier_NamedGroup(t *testing.T) {
 }
 
 func TestBarrier_AllChildren(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("done"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("done"), 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -531,7 +530,7 @@ func TestBarrier_AllChildren(t *testing.T) {
 func TestStructuredOutput_ValidJSON(t *testing.T) {
 	// Provider returns valid JSON with the required key.
 	prov := successProvider(`{"answer":"42","confidence":0.9}`)
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	schema := `{"required":["answer","confidence"]}`
@@ -557,7 +556,7 @@ func TestStructuredOutput_ValidJSON(t *testing.T) {
 func TestStructuredOutput_Violation_Strict(t *testing.T) {
 	// Provider returns JSON missing the "confidence" key.
 	prov := successProvider(`{"answer":"42"}`)
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	schema := `{"required":["answer","confidence"]}`
@@ -603,7 +602,7 @@ func TestVoteAggregation_HeuristicMajority(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -645,7 +644,7 @@ func TestVoteAggregation_DisagreementReport(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -690,7 +689,7 @@ func TestRetry_SucceedsOnSecondAttempt(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -734,7 +733,7 @@ func TestFallback_UsedAfterExhaustion(t *testing.T) {
 			return nil, fmt.Errorf("primary always fails")
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -783,7 +782,7 @@ func TestHedging_FirstSuccessWins(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -855,7 +854,7 @@ func TestMaxConcurrency_Limits(t *testing.T) {
 // ── Phase 1: streaming, timeline, budget ─────────────────────────────────────
 
 func TestStreamPartials_PublishesPartialReplies(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("partial-content"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("partial-content"), 4)
 	orch := New(sub, nil, bus)
 
 	const parentSession = "alice::main"
@@ -896,7 +895,7 @@ func TestStreamPartials_PublishesPartialReplies(t *testing.T) {
 }
 
 func TestTimeline_EventsRecorded(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("ok"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("ok"), 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -941,7 +940,7 @@ func TestBudget_MaxChildWallClock(t *testing.T) {
 			return nil, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -1021,7 +1020,7 @@ func TestDAG_LinearChain(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -1069,7 +1068,7 @@ func TestDAG_DiamondPattern(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -1115,7 +1114,7 @@ func TestDAG_DiamondPattern(t *testing.T) {
 // TestDAG_CycleDetected verifies that Start returns an error when a cycle
 // exists in the task dependency graph.
 func TestDAG_CycleDetected(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("ok"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("ok"), 4)
 	orch := New(sub, nil, bus)
 
 	_, err := orch.Start(context.Background(), FanOutRequest{
@@ -1136,7 +1135,7 @@ func TestDAG_CycleDetected(t *testing.T) {
 // TestDAG_UnknownDepLabel verifies that Start returns an error when a
 // DependsOn label references a task that does not exist.
 func TestDAG_UnknownDepLabel(t *testing.T) {
-	sub, _, _, bus := buildRuntime(t, successProvider("ok"), 4)
+	sub, _, bus := buildRuntime(t, successProvider("ok"), 4)
 	orch := New(sub, nil, bus)
 
 	_, err := orch.Start(context.Background(), FanOutRequest{
@@ -1168,7 +1167,7 @@ func TestMultiStage_TwoStage(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 4)
+	sub, _, bus := buildRuntime(t, prov, 4)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -1229,7 +1228,7 @@ func TestVerifierRole(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 6)
+	sub, _, bus := buildRuntime(t, prov, 6)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{
@@ -1289,7 +1288,7 @@ func TestArbiterRole(t *testing.T) {
 			}, nil
 		},
 	}
-	sub, _, _, bus := buildRuntime(t, prov, 6)
+	sub, _, bus := buildRuntime(t, prov, 6)
 	orch := New(sub, nil, bus)
 
 	run, err := orch.Start(context.Background(), FanOutRequest{

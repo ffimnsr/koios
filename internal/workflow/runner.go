@@ -145,7 +145,7 @@ func (r *Runner) Start(ctx context.Context, workflowID, peerID string) (*Run, er
 	wfCopy := cloneWorkflow(wf)
 	initial := cloneRun(run)
 
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(ctx)
 	r.mu.Lock()
 	r.cancels[run.ID] = cancel
 	r.mu.Unlock()
@@ -363,7 +363,7 @@ func (r *Runner) executeStep(ctx context.Context, wf *Workflow, run *Run, step S
 	case StepKindWebhook:
 		output, err = r.runWebhook(ctx, run, step)
 	case StepKindCondition:
-		output, err = r.runCondition(run, step)
+		output = r.runCondition(run, step)
 	default:
 		err = fmt.Errorf("unknown step kind %q", step.Kind)
 	}
@@ -468,11 +468,11 @@ func (r *Runner) runWebhook(ctx context.Context, run *Run, step Step) (string, e
 
 // runCondition evaluates the step condition against the previous step's output
 // and returns "true" or "false" as a sentinel for routing in nextStep.
-func (r *Runner) runCondition(run *Run, step Step) (string, error) {
+func (r *Runner) runCondition(run *Run, step Step) string {
 	if evalCondition(step.Condition, run.LastOutput) {
-		return "true", nil
+		return "true"
 	}
-	return "false", nil
+	return "false"
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

@@ -43,7 +43,7 @@ func NewWithMilvus(dbPath string, embedder Embedder, mv *milvus.Client) (*Store,
 		return nil, fmt.Errorf("memory: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("memory: migrate: %w", err)
 	}

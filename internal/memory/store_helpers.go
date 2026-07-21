@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
@@ -13,39 +14,39 @@ import (
 	"github.com/ffimnsr/koios/internal/redact"
 )
 
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(schemaSQL)
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, schemaSQL)
 	if err != nil {
 		return err
 	}
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN tags TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN category TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'working'`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN exposure_policy TEXT NOT NULL DEFAULT 'auto'`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN capture_kind TEXT NOT NULL DEFAULT 'manual'`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN capture_reason TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_message_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_run_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_hook TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_candidate_id TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE chunks ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE memory_candidates ADD COLUMN capture_kind TEXT NOT NULL DEFAULT 'manual'`)
-	_, _ = db.Exec(`ALTER TABLE memory_candidates ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE memory_candidates ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE memory_preferences ADD COLUMN category TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE memory_preferences ADD COLUMN scope_ref TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE memory_preferences ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE memory_preferences ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_candidates_peer_status_created_at ON memory_candidates(peer_id, status, created_at DESC)`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_preferences_peer_kind_scope ON memory_preferences(peer_id, kind, scope, updated_at DESC)`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_preferences_peer_confirmed ON memory_preferences(peer_id, last_confirmed_at DESC, confidence DESC)`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_entities_peer_kind_name ON memory_entities(peer_id, kind, name)`)
-	_, _ = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_entity_edges_unique ON memory_entity_edges(peer_id, source_entity_id, target_entity_id, relation)`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_entity_edges_source ON memory_entity_edges(peer_id, source_entity_id, updated_at DESC)`)
-	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_memory_entity_edges_target ON memory_entity_edges(peer_id, target_entity_id, updated_at DESC)`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN tags TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN category TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'working'`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN exposure_policy TEXT NOT NULL DEFAULT 'auto'`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN capture_kind TEXT NOT NULL DEFAULT 'manual'`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN capture_reason TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN source_message_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN source_run_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN source_hook TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN source_candidate_id TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE chunks ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE memory_candidates ADD COLUMN capture_kind TEXT NOT NULL DEFAULT 'manual'`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE memory_candidates ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE memory_candidates ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE memory_preferences ADD COLUMN category TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE memory_preferences ADD COLUMN scope_ref TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE memory_preferences ADD COLUMN source_session_key TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `ALTER TABLE memory_preferences ADD COLUMN source_excerpt TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_memory_candidates_peer_status_created_at ON memory_candidates(peer_id, status, created_at DESC)`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_memory_preferences_peer_kind_scope ON memory_preferences(peer_id, kind, scope, updated_at DESC)`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_memory_preferences_peer_confirmed ON memory_preferences(peer_id, last_confirmed_at DESC, confidence DESC)`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_memory_entities_peer_kind_name ON memory_entities(peer_id, kind, name)`)
+	_, _ = db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_entity_edges_unique ON memory_entity_edges(peer_id, source_entity_id, target_entity_id, relation)`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_memory_entity_edges_source ON memory_entity_edges(peer_id, source_entity_id, updated_at DESC)`)
+	_, _ = db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_memory_entity_edges_target ON memory_entity_edges(peer_id, target_entity_id, updated_at DESC)`)
 	return nil
 }
 
@@ -109,13 +110,13 @@ func normalizeChunkOptions(opts ChunkOptions) (ChunkOptions, error) {
 
 func normalizeChunkProvenance(provenance ChunkProvenance) (ChunkProvenance, error) {
 	provenance.CaptureKind = strings.TrimSpace(provenance.CaptureKind)
-	provenance.CaptureReason = truncateExcerpt(strings.TrimSpace(redact.String(provenance.CaptureReason)), 160)
+	provenance.CaptureReason = truncateExcerpt(strings.TrimSpace(redact.String(provenance.CaptureReason)))
 	provenance.SourceSessionKey = strings.TrimSpace(provenance.SourceSessionKey)
 	provenance.SourceMessageID = strings.TrimSpace(provenance.SourceMessageID)
 	provenance.SourceRunID = strings.TrimSpace(provenance.SourceRunID)
 	provenance.SourceHook = strings.TrimSpace(provenance.SourceHook)
 	provenance.SourceCandidateID = strings.TrimSpace(provenance.SourceCandidateID)
-	provenance.SourceExcerpt = truncateExcerpt(strings.TrimSpace(redact.String(provenance.SourceExcerpt)), 160)
+	provenance.SourceExcerpt = truncateExcerpt(strings.TrimSpace(redact.String(provenance.SourceExcerpt)))
 	if provenance.CaptureKind == "" {
 		provenance.CaptureKind = CandidateCaptureManual
 	}
@@ -272,12 +273,10 @@ func maxInt64(a, b int64) int64 {
 	return b
 }
 
-func truncateExcerpt(value string, limit int) string {
-	if limit <= 0 || len(value) <= limit {
+func truncateExcerpt(value string) string {
+	limit := 160
+	if len(value) <= limit {
 		return value
-	}
-	if limit <= 3 {
-		return value[:limit]
 	}
 	return value[:limit-3] + "..."
 }

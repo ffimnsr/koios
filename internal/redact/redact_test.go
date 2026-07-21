@@ -39,7 +39,7 @@ func TestMessage_RedactsContentAndToolArguments(t *testing.T) {
 	if !strings.Contains(msg.ToolCalls[0].Function.Arguments, "[REDACTED]") {
 		t.Fatalf("expected redaction marker in tool arguments, got %q", msg.ToolCalls[0].Function.Arguments)
 	}
-	part := Message(types.Message{Role: "user", Parts: []types.ContentPart{{Type: "text", Text: `api_key=AKIAABCDEFGHIJKLMNOP`}}})
+	part := Message(types.Message{Role: "user", Parts: []types.ContentPart{{Type: "text", Text: `api_key=AKIAABCDEFGHIJKLMNOP`}}}) // #nosec G101
 	if strings.Contains(part.Parts[0].Text, "AKIAABCDEFGHIJKLMNOP") {
 		t.Fatalf("expected part text to be redacted, got %#v", part.Parts)
 	}

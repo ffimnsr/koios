@@ -172,7 +172,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("calendar: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("calendar: migrate: %w", err)
 	}
@@ -832,7 +832,7 @@ func (s *Store) recordFetchResult(ctx context.Context, sourceID string, successA
 	return err
 }
 
-func migrate(db *sql.DB) error {
+func migrate(ctx context.Context, db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS calendar_sources (
 			id TEXT PRIMARY KEY,
@@ -867,7 +867,7 @@ func migrate(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_calendar_events_peer_start ON calendar_events(peer_id, start_at ASC)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
 	}

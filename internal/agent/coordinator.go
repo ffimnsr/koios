@@ -276,7 +276,7 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 	return &record, nil
 }
 
-func (c *Coordinator) Cancel(id string) (*RunRecord, error) {
+func (c *Coordinator) Cancel(ctx context.Context, id string) (*RunRecord, error) {
 	c.mu.Lock()
 	run, ok := c.runs[id]
 	if !ok {
@@ -289,7 +289,7 @@ func (c *Coordinator) Cancel(id string) (*RunRecord, error) {
 		return nil, fmt.Errorf("run %s cannot be canceled", id)
 	}
 	cancel()
-	record, err := c.Wait(context.Background(), id)
+	record, err := c.Wait(ctx, id)
 	if err != nil {
 		return nil, err
 	}

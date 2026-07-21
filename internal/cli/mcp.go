@@ -502,7 +502,7 @@ func testMCPServer(ctx context.Context, rec *mcpregistry.ServerRecord) map[strin
 
 func testMCPServerWithTimeout(ctx context.Context, rec *mcpregistry.ServerRecord, timeout time.Duration) map[string]any {
 	transport := strings.ToLower(strings.TrimSpace(rec.Transport))
-	client := probeMCPClient(config.MCPServerConfig{
+	client := probeMCPClient(ctx, config.MCPServerConfig{
 		Name:    rec.Name,
 		Command: rec.Command,
 		Args:    rec.Args,
@@ -538,10 +538,10 @@ func testMCPServerWithTimeout(ctx context.Context, rec *mcpregistry.ServerRecord
 }
 
 // probeMCPClient creates a transport client for probing a user-managed server.
-func probeMCPClient(server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
+func probeMCPClient(ctx context.Context, server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
 	switch transport {
 	case "stdio":
-		return mcp.NewStdioClient(server.Name, server.Command, server.Args, server.Env)
+		return mcp.NewStdioClientWithContext(ctx, server.Name, server.Command, server.Args, server.Env)
 	case "sse":
 		return mcp.NewSSEClient(server.Name, server.URL, server.Headers, timeout)
 	default:

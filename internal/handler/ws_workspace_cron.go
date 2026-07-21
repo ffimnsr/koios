@@ -478,7 +478,7 @@ func (h *Handler) rpcCronDelete(_ context.Context, wsc *wsConn, req *rpcRequest)
 	wsc.reply(req.ID, map[string]bool{"ok": true})
 }
 
-func (h *Handler) rpcCronTrigger(_ context.Context, wsc *wsConn, req *rpcRequest) {
+func (h *Handler) rpcCronTrigger(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
 		ID string `json:"id"`
 	}
@@ -489,7 +489,7 @@ func (h *Handler) rpcCronTrigger(_ context.Context, wsc *wsConn, req *rpcRequest
 	if h.ownedJob(wsc, req.ID, p.ID) == nil {
 		return
 	}
-	runID, err := h.sched.TriggerRun(p.ID)
+	runID, err := h.sched.TriggerRun(ctx, p.ID)
 	if err != nil {
 		slog.Error("ws: cron trigger", "job", p.ID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "trigger failed: "+err.Error())
@@ -565,7 +565,7 @@ type heartbeatSetParams struct {
 	ActiveHours *heartbeat.ActiveHours `json:"active_hours,omitempty"`
 }
 
-func (h *Handler) rpcHeartbeatSet(_ context.Context, wsc *wsConn, req *rpcRequest) {
+func (h *Handler) rpcHeartbeatSet(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 	current, err := h.hbConfigStore.GetOrDefault(wsc.peerID, h.hbDefaultEvery)
 	if err != nil {
 		slog.Error("ws: heartbeat set load", "peer", wsc.peerID, "error", err)
@@ -605,7 +605,7 @@ func (h *Handler) rpcHeartbeatSet(_ context.Context, wsc *wsConn, req *rpcReques
 	if p.ActiveHours != nil {
 		current.ActiveHours = p.ActiveHours
 	}
-	if err := h.hbRunner.SetConfig(wsc.peerID, current); err != nil {
+	if err := h.hbRunner.SetConfig(ctx, wsc.peerID, current); err != nil {
 		slog.Error("ws: heartbeat set save", "peer", wsc.peerID, "error", err)
 		wsc.replyErr(req.ID, errCodeServer, "error saving config")
 		return
@@ -614,8 +614,8 @@ func (h *Handler) rpcHeartbeatSet(_ context.Context, wsc *wsConn, req *rpcReques
 	wsc.reply(req.ID, current)
 }
 
-func (h *Handler) rpcHeartbeatWake(_ context.Context, wsc *wsConn, req *rpcRequest) {
-	h.hbRunner.WakePeer(wsc.peerID)
+func (h *Handler) rpcHeartbeatWake(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	h.hbRunner.WakePeer(ctx, wsc.peerID)
 	slog.Info("ws: heartbeat wake", "peer", wsc.peerID)
 	wsc.reply(req.ID, map[string]bool{"ok": true})
 }

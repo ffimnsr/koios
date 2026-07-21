@@ -106,7 +106,7 @@ func TestTelegramWebhookDispatchesAndReplies(t *testing.T) {
 	}
 	route := ch.Routes()[0]
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels/telegram/webhook", strings.NewReader(`{"update_id":1,"message":{"message_id":42,"text":"hello","chat":{"id":123,"type":"private"},"from":{"id":7,"first_name":"Pat"}}}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/channels/telegram/webhook", strings.NewReader(`{"update_id":1,"message":{"message_id":42,"text":"hello","chat":{"id":123,"type":"private"},"from":{"id":7,"first_name":"Pat"}}}`))
 	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "secret")
 	route.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -144,7 +144,7 @@ func TestTelegramWebhookSplitsRepliesByChunkLimit(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels/telegram/webhook", strings.NewReader(`{"update_id":1,"message":{"message_id":42,"text":"hello","chat":{"id":123,"type":"private"},"from":{"id":7,"first_name":"Pat"}}}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/channels/telegram/webhook", strings.NewReader(`{"update_id":1,"message":{"message_id":42,"text":"hello","chat":{"id":123,"type":"private"},"from":{"id":7,"first_name":"Pat"}}}`))
 	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "secret")
 	ch.Routes()[0].Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -183,7 +183,7 @@ func TestTelegramWebhookUsesConfiguredChunkMode(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels/telegram/webhook", strings.NewReader(`{"update_id":1,"message":{"message_id":42,"text":"hello","chat":{"id":123,"type":"private"},"from":{"id":7,"first_name":"Pat"}}}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/channels/telegram/webhook", strings.NewReader(`{"update_id":1,"message":{"message_id":42,"text":"hello","chat":{"id":123,"type":"private"},"from":{"id":7,"first_name":"Pat"}}}`))
 	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "secret")
 	ch.Routes()[0].Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -210,7 +210,7 @@ func TestTelegramWebhookRejectsBadSecret(t *testing.T) {
 		t.Fatalf("NewTelegramChannel: %v", err)
 	}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/channels/telegram/webhook", strings.NewReader(`{}`))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/channels/telegram/webhook", strings.NewReader(`{}`))
 	ch.Routes()[0].Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)

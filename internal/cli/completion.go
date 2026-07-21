@@ -399,7 +399,7 @@ func listModelCompletions(ctx *commandContext) []completionItem {
 	return mapCompletionItems(items)
 }
 
-func peerForCompletion(ctx *commandContext, cmd *cobra.Command) string {
+func peerForCompletion(_ *commandContext, cmd *cobra.Command) string {
 	if cmd != nil {
 		if flag := cmd.Flags().Lookup("peer"); flag != nil {
 			if value := strings.TrimSpace(flag.Value.String()); value != "" {

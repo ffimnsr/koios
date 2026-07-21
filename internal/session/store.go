@@ -599,8 +599,8 @@ func (st *Store) AppendCtx(ctx context.Context, peerID string, msgs ...types.Mes
 
 // AppendWithSource adds msgs and tags the append with a source label for
 // subscribers. The source does not affect stored session contents.
-func (st *Store) AppendWithSource(peerID, source string, msgs ...types.Message) {
-	st.AppendCtxWithSource(context.Background(), peerID, source, msgs...)
+func (st *Store) AppendWithSource(ctx context.Context, peerID, source string, msgs ...types.Message) {
+	st.AppendCtxWithSource(ctx, peerID, source, msgs...)
 }
 
 // AppendCtxWithSource adds msgs with context support and a source label that
@@ -794,7 +794,7 @@ func (st *Store) sessionRecords(now time.Time) []sessionRecord {
 	return out
 }
 
-func (st *Store) applyLifecycle(peerID string, sess *Session, now time.Time) string {
+func (st *Store) applyLifecycle(_ string, sess *Session, now time.Time) string {
 	if sess == nil {
 		return ""
 	}
@@ -882,7 +882,7 @@ func IsZeroPolicy(p SessionPolicy) bool {
 
 // isZeroPolicy reports whether p has no meaningful fields set.
 func isZeroPolicy(p SessionPolicy) bool {
-	return p.ReplyBack == false &&
+	return !p.ReplyBack &&
 		p.InboxReadUserCount == 0 &&
 		p.ActivationMode == "" &&
 		p.GroupActivationMode == "" &&
@@ -893,13 +893,13 @@ func isZeroPolicy(p SessionPolicy) bool {
 		p.BrowserProfile == "" &&
 		p.QueueMode == "" &&
 		p.ThinkLevel == "" &&
-		p.VerboseMode == false &&
-		p.TraceMode == false &&
-		p.BlockStream == false &&
+		!p.VerboseMode &&
+		!p.TraceMode &&
+		!p.BlockStream &&
 		p.StreamChunkChars == 0 &&
 		p.StreamCoalesceMS == 0 &&
 		p.SessionKind == "" &&
-		p.ElevatedBash == false &&
+		!p.ElevatedBash &&
 		p.ProviderProfile == "" &&
 		len(p.ToolsAllow) == 0 &&
 		len(p.ToolsDeny) == 0

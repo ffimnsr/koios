@@ -54,7 +54,7 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("artifacts: open db: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	if err := migrate(db); err != nil {
+	if err := migrate(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("artifacts: migrate: %w", err)
 	}
@@ -143,7 +143,7 @@ func (s *Store) Update(ctx context.Context, peerID, id string, patch Patch) (*Ar
 	if err != nil {
 		return nil, fmt.Errorf("artifact update: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	a, err := loadArtifactTx(ctx, tx, peerID, id)
 	if err != nil {
@@ -167,8 +167,8 @@ func (s *Store) Update(ctx context.Context, peerID, id string, patch Patch) (*Ar
 }
 
 // migrate ensures the schema is up to date.
-func migrate(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS artifacts (
+func migrate(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS artifacts (
 	id         TEXT PRIMARY KEY,
 	peer_id    TEXT NOT NULL,
 	kind       TEXT NOT NULL DEFAULT '',

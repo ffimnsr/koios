@@ -52,7 +52,7 @@ func (s *Store) InsertChunkWithOptions(ctx context.Context, peerID, content stri
 	if err != nil {
 		return nil, fmt.Errorf("memory insert: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	chunk, err := insertChunkTx(ctx, tx, peerID, content, normalized, time.Now().Unix())
 	if err != nil {
 		return nil, err
@@ -60,7 +60,7 @@ func (s *Store) InsertChunkWithOptions(ctx context.Context, peerID, content stri
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("memory insert: commit: %w", err)
 	}
-	s.reindexChunkAsync(*chunk)
+	s.reindexChunkAsync(ctx, *chunk)
 	return chunk, nil
 }
 
@@ -114,7 +114,7 @@ func (s *Store) search(ctx context.Context, peerID, query string, topK int, inje
 		return candidates, nil
 	}
 	for i := range candidates {
-		emb, _ := s.loadEmbedding(candidates[i].ID)
+		emb, _ := s.loadEmbedding(ctx, candidates[i].ID)
 		if emb != nil {
 			candidates[i].Score = cosine(queryEmb, emb)
 		}
@@ -238,7 +238,7 @@ func (s *Store) DeleteChunk(ctx context.Context, peerID, chunkID string) error {
 	if err != nil {
 		return fmt.Errorf("memory delete: begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM chunk_embeddings WHERE chunk_id = ?`, chunkID); err != nil {
 		return fmt.Errorf("memory delete: embeddings: %w", err)
 	}
@@ -253,7 +253,7 @@ func (s *Store) DeleteChunk(ctx context.Context, peerID, chunkID string) error {
 	}
 	if s.milvus != nil {
 		go func() {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			if err := s.milvus.Delete(cctx, []string{chunkID}); err != nil {
 				slog.Warn("memory: milvus delete failed", "chunk", chunkID, "err", err)
@@ -272,7 +272,7 @@ func (s *Store) DeletePeer(ctx context.Context, peerID string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM chunks WHERE peer_id = ?`, peerID)
 	if err != nil {
 		return err
@@ -448,6 +448,9 @@ func (s *Store) Stats(ctx context.Context, peerID string) (*MemoryStats, error) 
 			stats.ByCategory[cat] = count
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory stats categories rows: %w", err)
+	}
 	retentionRows, err := s.db.QueryContext(ctx, statsByRetentionQuery, peerID)
 	if err != nil {
 		return nil, fmt.Errorf("memory stats retention: %w", err)
@@ -459,6 +462,9 @@ func (s *Store) Stats(ctx context.Context, peerID string) (*MemoryStats, error) 
 		if err := retentionRows.Scan(&retention, &count); err == nil {
 			stats.ByRetention[RetentionClass(retention)] = count
 		}
+	}
+	if err := retentionRows.Err(); err != nil {
+		return nil, fmt.Errorf("memory stats retention rows: %w", err)
 	}
 	stats.MilvusActive = s.milvus != nil
 	if s.milvus != nil {
@@ -481,6 +487,9 @@ func (s *Store) Stats(ctx context.Context, peerID string) (*MemoryStats, error) 
 			stats.ByPreferenceKind[PreferenceKind(kind)] = count
 		}
 	}
+	if err := prefKindRows.Err(); err != nil {
+		return nil, fmt.Errorf("memory stats preference kind rows: %w", err)
+	}
 	prefScopeRows, err := s.db.QueryContext(ctx, `SELECT COALESCE(scope,'global'), COUNT(*) FROM memory_preferences WHERE peer_id = ? GROUP BY COALESCE(scope,'global')`, peerID)
 	if err != nil {
 		return nil, fmt.Errorf("memory stats preference scopes: %w", err)
@@ -492,6 +501,9 @@ func (s *Store) Stats(ctx context.Context, peerID string) (*MemoryStats, error) 
 		if err := prefScopeRows.Scan(&scope, &count); err == nil {
 			stats.ByPreferenceScope[PreferenceScope(scope)] = count
 		}
+	}
+	if err := prefScopeRows.Err(); err != nil {
+		return nil, fmt.Errorf("memory stats preference scope rows: %w", err)
 	}
 	return stats, nil
 }
@@ -554,8 +566,8 @@ func (s *Store) milvusSearch(ctx context.Context, peerID, query string, topK int
 }
 
 // indexMilvus stores a chunk's content and embedding in Milvus.
-func (s *Store) indexMilvus(id, peerID, content string, tags []string, category string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (s *Store) indexMilvus(ctx context.Context, id, peerID, content string, tags []string, category string) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	emb, err := s.embedder.Embed(ctx, content)
 	if err != nil {
@@ -642,12 +654,12 @@ func loadChunkTx(ctx context.Context, tx *sql.Tx, peerID, chunkID string) (*Chun
 	return &chunk, nil
 }
 
-func (s *Store) reindexChunkAsync(chunk Chunk) {
+func (s *Store) reindexChunkAsync(ctx context.Context, chunk Chunk) {
 	if s.embedder != nil {
-		go s.indexEmbedding(chunk.ID, chunk.Content)
+		go s.indexEmbedding(ctx, chunk.ID, chunk.Content)
 	}
 	if s.milvus != nil && s.embedder != nil {
-		go s.indexMilvus(chunk.ID, chunk.PeerID, chunk.Content, chunk.Tags, chunk.Category)
+		go s.indexMilvus(ctx, chunk.ID, chunk.PeerID, chunk.Content, chunk.Tags, chunk.Category)
 	}
 }
 
@@ -679,8 +691,8 @@ func (s *Store) bm25Search(ctx context.Context, peerID, query string, limit int,
 	return results, rows.Err()
 }
 
-func (s *Store) indexEmbedding(chunkID, content string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (s *Store) indexEmbedding(ctx context.Context, chunkID, content string) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	emb, err := s.embedder.Embed(ctx, content)
 	if err != nil {
@@ -692,9 +704,9 @@ func (s *Store) indexEmbedding(chunkID, content string) {
 	}
 }
 
-func (s *Store) loadEmbedding(chunkID string) ([]float32, error) {
+func (s *Store) loadEmbedding(ctx context.Context, chunkID string) ([]float32, error) {
 	var blob []byte
-	err := s.db.QueryRowContext(context.Background(), `SELECT embedding FROM chunk_embeddings WHERE chunk_id = ?`, chunkID).Scan(&blob)
+	err := s.db.QueryRowContext(ctx, `SELECT embedding FROM chunk_embeddings WHERE chunk_id = ?`, chunkID).Scan(&blob)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -728,7 +740,7 @@ func (s *Store) purgeExpired(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("memory purge expired begin tx: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, id := range ids {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM chunk_embeddings WHERE chunk_id = ?`, id); err != nil {
 			return fmt.Errorf("memory purge expired embeddings: %w", err)
@@ -745,7 +757,7 @@ func (s *Store) purgeExpired(ctx context.Context) error {
 	}
 	if s.milvus != nil {
 		go func(chunkIDs []string) {
-			cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
 			if err := s.milvus.Delete(cctx, chunkIDs); err != nil {
 				slog.Warn("memory: milvus delete failed during expiry purge", "chunks", len(chunkIDs), "err", err)

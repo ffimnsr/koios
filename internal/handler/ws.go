@@ -485,7 +485,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 	return h
 }
 
-func (h *Handler) publishSessionMessage(sessionKey, source string, msg types.Message, data map[string]any) {
+func (h *Handler) publishSessionMessage(ctx context.Context, sessionKey, source string, msg types.Message, data map[string]any) {
 	if sessionKey == "" {
 		return
 	}
@@ -500,7 +500,7 @@ func (h *Handler) publishSessionMessage(sessionKey, source string, msg types.Mes
 		})
 		return
 	}
-	h.store.AppendWithSource(sessionKey, source, msg)
+	h.store.AppendWithSource(ctx, sessionKey, source, msg)
 }
 
 // ServeHTTP upgrades the connection to WebSocket and drives the per-peer
@@ -551,7 +551,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Lazily start the peer's heartbeat goroutine on first connection.
 	if h.hbRunner != nil {
-		h.hbRunner.EnsureRunning(peerID)
+		h.hbRunner.EnsureRunning(r.Context(), peerID)
 	}
 
 	slog.Info("ws: connected", "peer", peerID)

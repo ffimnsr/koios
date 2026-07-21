@@ -144,7 +144,7 @@ func (s *Scheduler) Stop() {
 
 // TriggerRun enqueues an immediate out-of-schedule run for jobID.  It does not
 // wait for the run to complete.  Returns the new run ID.
-func (s *Scheduler) TriggerRun(jobID string) (string, error) {
+func (s *Scheduler) TriggerRun(ctx context.Context, jobID string) (string, error) {
 	job := s.store.Get(jobID)
 	if job == nil {
 		return "", fmt.Errorf("job %s not found", jobID)
@@ -153,7 +153,7 @@ func (s *Scheduler) TriggerRun(jobID string) (string, error) {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.executeJob(context.Background(), job, runID)
+		s.executeJob(ctx, job, runID)
 	}()
 	return runID, nil
 }
@@ -193,7 +193,7 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 		if job.NextRunAt.IsZero() || job.NextRunAt.After(now) {
 			continue
 		}
-		if reason, deferred := s.shouldDefer(job, now); deferred {
+		if reason, deferred := s.shouldDefer(ctx, job, now); deferred {
 			s.recordSkip(job, reason)
 			continue
 		}
@@ -227,9 +227,9 @@ func (s *Scheduler) dispatch(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) shouldDefer(job *Job, now time.Time) (string, bool) {
+func (s *Scheduler) shouldDefer(ctx context.Context, job *Job, now time.Time) (string, bool) {
 	if job.Dispatch.RequireApproval && s.hooks != nil {
-		if err := s.hooks.Emit(context.Background(), ops.Event{
+		if err := s.hooks.Emit(ctx, ops.Event{
 			Name:   ops.HookCronApproval,
 			PeerID: job.PeerID,
 			Data: map[string]any{
@@ -386,7 +386,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job *Job, runID string) {
 func (s *Scheduler) runPayload(ctx context.Context, job *Job) (string, error) {
 	switch job.Payload.Kind {
 	case PayloadSystemEvent:
-		return s.runSystemEvent(job)
+		return s.runSystemEvent(ctx, job)
 	case PayloadAgentTurn:
 		return s.runAgentTurn(ctx, job)
 	default:
@@ -395,9 +395,9 @@ func (s *Scheduler) runPayload(ctx context.Context, job *Job) (string, error) {
 }
 
 // runSystemEvent appends a system message directly to the peer's session.
-func (s *Scheduler) runSystemEvent(job *Job) (string, error) {
+func (s *Scheduler) runSystemEvent(ctx context.Context, job *Job) (string, error) {
 	text := fmt.Sprintf("[system-event:%s %s] %s", job.JobID, job.Name, job.Payload.Text)
-	s.sessionStore.AppendWithSource(job.PeerID, "cron", types.Message{Role: "system", Content: text})
+	s.sessionStore.AppendWithSource(ctx, job.PeerID, "cron", types.Message{Role: "system", Content: text})
 	return "", nil
 }
 
@@ -450,11 +450,10 @@ func (s *Scheduler) runAgentTurn(ctx context.Context, job *Job) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		assistantText := result.AssistantText
-		if assistantText != "" {
-			s.sessionStore.AppendWithSource(job.PeerID, "cron", types.Message{Role: "assistant", Content: assistantText})
+		if result.AssistantText != "" {
+			s.sessionStore.AppendWithSource(ctx, job.PeerID, "cron", types.Message{Role: "assistant", Content: result.AssistantText})
+			return result.AssistantText, nil
 		}
-		return assistantText, nil
 	}
 
 	req := &types.ChatRequest{
@@ -473,7 +472,7 @@ func (s *Scheduler) runAgentTurn(ctx context.Context, job *Job) (string, error) 
 	if suppressed, _ := agent.DetectSilentReply(assistantText); suppressed {
 		return "", nil
 	}
-	s.sessionStore.AppendWithSource(job.PeerID, "cron", types.Message{Role: "assistant", Content: assistantText})
+	s.sessionStore.AppendWithSource(ctx, job.PeerID, "cron", types.Message{Role: "assistant", Content: assistantText})
 	return assistantText, nil
 }
 

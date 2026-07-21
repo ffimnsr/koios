@@ -235,7 +235,7 @@ func (m *Manager) Write(peerID, relPath, content string, appendMode bool) (strin
 		}
 		return target, nil
 	}
-	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte(content), 0o600); err != nil {
 		return "", err
 	}
 	return target, nil
@@ -283,7 +283,7 @@ func (m *Manager) Edit(peerID, relPath, oldText, newText string, replaceAll bool
 	if len(updated) > m.maxFileBytes {
 		return nil, fmt.Errorf("edited content exceeds max bytes %d", m.maxFileBytes)
 	}
-	if err := os.WriteFile(target, []byte(updated), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte(updated), 0o600); err != nil { // #nosec G703
 		return nil, err
 	}
 	return &EditResult{
@@ -346,16 +346,16 @@ func (m *Manager) Grep(peerID, relPath, pattern string, recursive bool, limit in
 	}
 
 	matches := make([]GrepMatch, 0, min(limit, 16))
-	processFile := func(path string, info fs.FileInfo) error {
+	processFile := func(path string, info fs.FileInfo) {
 		if info.IsDir() || len(matches) >= limit {
-			return nil
+			return
 		}
 		if info.Size() > int64(m.maxFileBytes) {
-			return nil
+			return
 		}
 		b, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return
 		}
 		rel, err := filepath.Rel(m.PeerRoot(peerID), path)
 		if err != nil {
@@ -378,16 +378,13 @@ func (m *Manager) Grep(peerID, relPath, pattern string, recursive bool, limit in
 				Text:   line,
 			})
 			if len(matches) >= limit {
-				return nil
+				return
 			}
 		}
-		return nil
 	}
 
 	if !info.IsDir() {
-		if err := processFile(target, info); err != nil {
-			return nil, err
-		}
+		processFile(target, info)
 		return matches, nil
 	}
 
@@ -404,9 +401,7 @@ func (m *Manager) Grep(peerID, relPath, pattern string, recursive bool, limit in
 			if err != nil {
 				continue
 			}
-			if err := processFile(filepath.Join(target, entry.Name()), info); err != nil {
-				return nil, err
-			}
+			processFile(filepath.Join(target, entry.Name()), info)
 		}
 		return matches, nil
 	}
@@ -423,9 +418,10 @@ func (m *Manager) Grep(peerID, relPath, pattern string, recursive bool, limit in
 		}
 		info, err := d.Info()
 		if err != nil {
-			return nil
+			return err
 		}
-		return processFile(path, info)
+		processFile(path, info)
+		return nil
 	})
 	if walkErr != nil && walkErr.Error() != "grep limit reached" {
 		return nil, walkErr
@@ -486,7 +482,7 @@ func (m *Manager) List(peerID, relPath string, recursive bool, limit int) ([]Ent
 		}
 		info, err := d.Info()
 		if err != nil {
-			return nil
+			return err
 		}
 		addEntry(path, info)
 		return nil
@@ -575,7 +571,7 @@ func (m *Manager) Find(peerID, relPath, pattern string, recursive bool, limit in
 		}
 		info, err := d.Info()
 		if err != nil {
-			return nil
+			return err
 		}
 		addMatch(path, info)
 		return nil

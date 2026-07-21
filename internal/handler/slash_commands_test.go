@@ -132,7 +132,7 @@ func dialSlashServerWithTasks(t *testing.T, peerID string) (*websocket.Conn, *ta
 	return dialWS(t, srv, peerID), taskStore
 }
 
-func dialSlashServerWithBookmarks(t *testing.T, peerID string) (*websocket.Conn, *session.Store, *bookmarks.Store) {
+func dialSlashServerWithBookmarks(t *testing.T, peerID string) (*websocket.Conn, *session.Store) {
 	t.Helper()
 	store := session.NewWithOptions(session.Options{MaxMessages: 50})
 	prov := &stubProvider{response: newSlashChatResponse("LLM reply")}
@@ -153,7 +153,7 @@ func dialSlashServerWithBookmarks(t *testing.T, peerID string) (*websocket.Conn,
 	})
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return dialWS(t, srv, peerID), store, bookmarkStore
+	return dialWS(t, srv, peerID), store
 }
 
 func dialSlashServerWithCalendar(t *testing.T, peerID string) (*websocket.Conn, *calendar.Store) {
@@ -307,7 +307,7 @@ func TestSlashThink_Off(t *testing.T) {
 }
 
 func TestSlashBookmarkAddAndList(t *testing.T) {
-	conn, _, _ := dialSlashServerWithBookmarks(t, "bookmark-alice")
+	conn, _ := dialSlashServerWithBookmarks(t, "bookmark-alice")
 
 	msg := sendSlashChat(t, conn, "1", "/bookmark add Sprint recap | Capture the open release work | planning,release | 1735689600")
 	got := slashAssistantText(t, msg)
@@ -326,7 +326,7 @@ func TestSlashBookmarkAddAndList(t *testing.T) {
 }
 
 func TestSlashBookmarkClipAndGet(t *testing.T) {
-	conn, store, _ := dialSlashServerWithBookmarks(t, "bookmark-bob")
+	conn, store := dialSlashServerWithBookmarks(t, "bookmark-bob")
 	store.Append("bookmark-bob",
 		types.Message{Role: "user", Content: "Please save the launch checklist and owner assignments."},
 		types.Message{Role: "assistant", Content: "Checklist: release notes, smoke test, deploy window, rollback contact."},

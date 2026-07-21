@@ -113,8 +113,8 @@ func TestListAll(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	s.Create(ctx, Input{OwnerPeerID: "alice", Name: "s1", Transport: "stdio", Command: "echo"})
-	s.Create(ctx, Input{OwnerPeerID: "bob", Name: "s2", Transport: "http", URL: "http://localhost"})
+	_, _ = s.Create(ctx, Input{OwnerPeerID: "alice", Name: "s1", Transport: "stdio", Command: "echo"})
+	_, _ = s.Create(ctx, Input{OwnerPeerID: "bob", Name: "s2", Transport: "http", URL: "http://localhost"})
 
 	all, err := s.ListAll(ctx)
 	if err != nil {

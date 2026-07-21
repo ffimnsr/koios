@@ -179,7 +179,7 @@ func (s *ConfigStore) Save(peerID string, cfg *Config) error {
 		return fmt.Errorf("marshal heartbeat config: %w", err)
 	}
 	tmp := s.path(peerID) + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write heartbeat config: %w", err)
 	}
 	if err := os.Rename(tmp, s.path(peerID)); err != nil {
