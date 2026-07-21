@@ -79,8 +79,11 @@ func TestToolDefinitionsHonorPolicy(t *testing.T) {
 	for _, tool := range h.ToolDefinitions("alice") {
 		names = append(names, tool.Function.Name)
 	}
-	if !containsString(names, "read") {
-		t.Fatalf("expected read tool, got %#v", names)
+	if !containsString(names, "workspace.read") {
+		t.Fatalf("expected canonical workspace.read tool, got %#v", names)
+	}
+	if containsString(names, "read") {
+		t.Fatalf("expected bare read alias to be hidden from tool definitions, got %#v", names)
 	}
 	if containsString(names, "memory.get") {
 		t.Fatalf("expected memory.get to be denied, got %#v", names)
@@ -115,10 +118,12 @@ func TestToolPromptRequiresExactFullToolNames(t *testing.T) {
 
 	prompt := h.ToolPrompt("alice")
 	for _, want := range []string{
-		"ALWAYS use the EXACT FULL tool name",
 		"task.create",
 		"memory.insert",
-		"domain.operation",
+		"tool.search",
+		"tool.list",
+		"tool.help",
+		"If you have a keyword, partial canonical tool name, or a small typo, call `tool.search` first.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected prompt to contain %q, got %q", want, prompt)
@@ -192,6 +197,44 @@ func TestExecuteToolInfersBareMemoryInsertAlias(t *testing.T) {
 	}
 	if !inserted.OK || inserted.Chunk.ID == "" || inserted.Chunk.Content != "Remember margin trading ships today" {
 		t.Fatalf("unexpected insert alias result: %#v", insertedAny)
+	}
+}
+
+func TestExecuteToolAcceptsHiddenWorkspaceAlias(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	absPath, err := wsStore.Resolve("alice", "notes.txt")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatalf("mkdir peer workspace: %v", err)
+	}
+	if err := os.WriteFile(absPath, []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		ToolPolicy: handler.ToolPolicy{
+			Allow: []string{"read"},
+		},
+	})
+	readAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "read",
+		Arguments: json.RawMessage(`{"path":"notes.txt"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(read->workspace.read): %v", err)
+	}
+	readRaw, _ := json.Marshal(readAny)
+	if !strings.Contains(string(readRaw), "hello") {
+		t.Fatalf("expected read alias result to include file contents, got %s", string(readRaw))
 	}
 }
 
@@ -276,20 +319,279 @@ func TestToolDefinitionsIncludeApplyPatch(t *testing.T) {
 	if !containsString(names, "apply_patch") {
 		t.Fatalf("expected apply_patch tool, got %#v", names)
 	}
-	if !containsString(names, "grep") || !containsString(names, "workspace.grep") {
-		t.Fatalf("expected grep tools, got %#v", names)
+	if !containsString(names, "workspace.grep") || containsString(names, "grep") {
+		t.Fatalf("expected only canonical workspace.grep tool, got %#v", names)
 	}
-	if !containsString(names, "find") || !containsString(names, "workspace.find") {
-		t.Fatalf("expected find tools, got %#v", names)
+	if !containsString(names, "workspace.find") || containsString(names, "find") {
+		t.Fatalf("expected only canonical workspace.find tool, got %#v", names)
 	}
-	if !containsString(names, "head") || !containsString(names, "workspace.head") || !containsString(names, "tail") || !containsString(names, "workspace.tail") {
-		t.Fatalf("expected head/tail tools, got %#v", names)
+	if !containsString(names, "workspace.head") || !containsString(names, "workspace.tail") || containsString(names, "head") || containsString(names, "tail") {
+		t.Fatalf("expected only canonical workspace head/tail tools, got %#v", names)
 	}
-	if !containsString(names, "sort") || !containsString(names, "workspace.sort") || !containsString(names, "uniq") || !containsString(names, "workspace.uniq") {
-		t.Fatalf("expected sort/uniq tools, got %#v", names)
+	if !containsString(names, "workspace.sort") || !containsString(names, "workspace.uniq") || containsString(names, "sort") || containsString(names, "uniq") {
+		t.Fatalf("expected only canonical workspace sort/uniq tools, got %#v", names)
 	}
-	if !containsString(names, "diff") || !containsString(names, "workspace.diff") {
-		t.Fatalf("expected diff tools, got %#v", names)
+	if !containsString(names, "workspace.diff") || containsString(names, "diff") {
+		t.Fatalf("expected only canonical workspace.diff tool, got %#v", names)
+	}
+}
+
+func TestToolListAndHelpExposeCanonicalTools(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		MemStore:       memStore,
+		ToolPolicy:     handler.ToolPolicy{Profile: "coding"},
+	})
+
+	listAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "tool.list",
+		Arguments: json.RawMessage(`{"domain":"workspace"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(tool.list): %v", err)
+	}
+	listRaw, _ := json.Marshal(listAny)
+	listText := string(listRaw)
+	if !strings.Contains(listText, "workspace.read") || strings.Contains(listText, `"name":"read"`) {
+		t.Fatalf("expected tool.list to expose canonical workspace.read only, got %s", listText)
+	}
+	if !strings.Contains(listText, `"tags":[`) {
+		t.Fatalf("expected tool.list to include discovery tags, got %s", listText)
+	}
+
+	helpAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "tool.help",
+		Arguments: json.RawMessage(`{"name":"read"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(tool.help): %v", err)
+	}
+	helpRaw, _ := json.Marshal(helpAny)
+	helpText := string(helpRaw)
+	if !strings.Contains(helpText, `"canonical_name":"workspace.read"`) || !strings.Contains(helpText, `"aliases":["read"]`) {
+		t.Fatalf("expected tool.help to resolve alias to canonical tool, got %s", helpText)
+	}
+	if !strings.Contains(helpText, `"tags":[`) {
+		t.Fatalf("expected tool.help to include discovery tags, got %s", helpText)
+	}
+}
+
+func TestToolSearchReturnsCompactCanonicalMatches(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		MemStore:       memStore,
+		ToolPolicy:     handler.ToolPolicy{Profile: "coding"},
+	})
+
+	searchAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "tool.search",
+		Arguments: json.RawMessage(`{"query":"workspace.read","domain":"workspace","limit":3}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(tool.search): %v", err)
+	}
+	searchRaw, _ := json.Marshal(searchAny)
+	searchText := string(searchRaw)
+	if !strings.Contains(searchText, `"name":"workspace.read"`) {
+		t.Fatalf("expected tool.search to include canonical workspace.read, got %s", searchText)
+	}
+	if strings.Contains(searchText, `"name":"read"`) {
+		t.Fatalf("expected tool.search to hide bare read alias, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"score":`) {
+		t.Fatalf("expected tool.search matches to include ranking score, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"reasons":[`) || !strings.Contains(searchText, `"exact_name"`) {
+		t.Fatalf("expected tool.search matches to include match reasons, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"top_reason":"exact_name"`) {
+		t.Fatalf("expected tool.search matches to include top_reason, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"confidence":"high"`) {
+		t.Fatalf("expected exact canonical match to be high confidence, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"tags":[`) {
+		t.Fatalf("expected tool.search matches to include discovery tags, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"count":1`) {
+		t.Fatalf("expected compact single-match count, got %s", searchText)
+	}
+}
+
+func TestToolSearchRanksNameMatchesAheadOfDescriptionMatches(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		MemStore:       memStore,
+		ToolPolicy:     handler.ToolPolicy{Profile: "coding"},
+	})
+
+	searchAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "tool.search",
+		Arguments: json.RawMessage(`{"query":"read","domain":"workspace","limit":3}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(tool.search ranked): %v", err)
+	}
+	searchRaw, _ := json.Marshal(searchAny)
+	searchText := string(searchRaw)
+	readIdx := strings.Index(searchText, `"name":"workspace.read"`)
+	headIdx := strings.Index(searchText, `"name":"workspace.head"`)
+	tailIdx := strings.Index(searchText, `"name":"workspace.tail"`)
+	if readIdx < 0 || headIdx < 0 || tailIdx < 0 {
+		t.Fatalf("expected ranked search to include read/head/tail matches, got %s", searchText)
+	}
+	if !(readIdx < headIdx && readIdx < tailIdx) {
+		t.Fatalf("expected workspace.read to rank ahead of head/tail for query 'read', got %s", searchText)
+	}
+}
+
+func TestToolSearchMatchesCanonicalNamesAcrossSeparators(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		MemStore:       memStore,
+		ToolPolicy:     handler.ToolPolicy{Profile: "coding"},
+	})
+
+	searchAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "tool.search",
+		Arguments: json.RawMessage(`{"query":"workspace read","domain":"workspace","limit":3}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(tool.search separators): %v", err)
+	}
+	searchRaw, _ := json.Marshal(searchAny)
+	searchText := string(searchRaw)
+	if !strings.Contains(searchText, `"name":"workspace.read"`) {
+		t.Fatalf("expected tool.search to match canonical name across separators, got %s", searchText)
+	}
+}
+
+func TestToolSearchToleratesSmallTypos(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		MemStore:       memStore,
+		ToolPolicy:     handler.ToolPolicy{Profile: "coding"},
+	})
+
+	searchAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "tool.search",
+		Arguments: json.RawMessage(`{"query":"workspce.read","domain":"workspace","limit":3}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(tool.search typo): %v", err)
+	}
+	searchRaw, _ := json.Marshal(searchAny)
+	searchText := string(searchRaw)
+	if !strings.Contains(searchText, `"name":"workspace.read"`) {
+		t.Fatalf("expected tool.search to recover from small typo, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"confidence":"low"`) || !strings.Contains(searchText, `"top_reason":"fuzzy_name"`) {
+		t.Fatalf("expected typo recovery to be marked low-confidence fuzzy match, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"suggestions":[`) {
+		t.Fatalf("expected low-confidence search to include suggestions, got %s", searchText)
+	}
+}
+
+func TestToolSearchSuggestsRemovingInvalidDomainFilter(t *testing.T) {
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(t.TempDir(), true, 1024)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	memStore, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = memStore.Close() })
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		MemStore:       memStore,
+		ToolPolicy:     handler.ToolPolicy{Profile: "coding"},
+	})
+
+	searchAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "tool.search",
+		Arguments: json.RawMessage(`{"query":"read","domain":"invalid","limit":3}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(tool.search invalid domain): %v", err)
+	}
+	searchRaw, _ := json.Marshal(searchAny)
+	searchText := string(searchRaw)
+	if !strings.Contains(searchText, `"count":0`) {
+		t.Fatalf("expected zero matches for invalid domain filter, got %s", searchText)
+	}
+	if !strings.Contains(searchText, `"suggestions":[`) || !strings.Contains(searchText, `Try removing the domain filter`) {
+		t.Fatalf("expected invalid domain search to suggest removing the domain filter, got %s", searchText)
 	}
 }
 
@@ -326,8 +628,8 @@ func TestToolDefinitionsMessagingProfileIncludesWaitingTools(t *testing.T) {
 	if !containsString(names, "waiting.create") || !containsString(names, "waiting.list") || !containsString(names, "waiting.resolve") {
 		t.Fatalf("expected waiting tools in messaging profile, got %#v", names)
 	}
-	if !containsString(names, "message") {
-		t.Fatalf("expected message tool in messaging profile, got %#v", names)
+	if containsString(names, "message") {
+		t.Fatalf("expected bare message alias to be hidden from messaging profile, got %#v", names)
 	}
 	for _, want := range []string{"message.send", "inbox.list", "inbox.read", "inbox.mark_read", "inbox.route", "inbox.summarize"} {
 		if !containsString(names, want) {

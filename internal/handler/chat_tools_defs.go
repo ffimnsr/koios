@@ -19,6 +19,9 @@ type toolDef struct {
 	parameters  json.RawMessage
 	// argHint is the compact argument example shown in ToolPrompt.
 	argHint string
+	// tags are optional discovery-oriented keywords used by tool.search and
+	// surfaced by tool.list/tool.help to improve browsing and ranking.
+	tags []string
 	// available returns false when the tool's backing subsystem is not
 	// configured.  nil means always available.
 	available func(*Handler) bool
@@ -27,6 +30,52 @@ type toolDef struct {
 // toolDefs contains built-in tools that are compiled directly into the
 // handler. Native plugins and MCP servers extend the catalog at runtime.
 var toolDefs = []toolDef{
+	{
+		name:        "tool.list",
+		description: "List tools currently available to this peer/session, grouped by domain with compact descriptions. Use this when you need to discover what actions are possible without carrying the full catalog in prompt text.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"domain":                 map[string]any{"type": "string"},
+				"query":                  map[string]any{"type": "string"},
+				"include_argument_hints": map[string]any{"type": "boolean"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"domain":"workspace","query":"read","include_argument_hints":false}`,
+		tags:    []string{"discover", "browse", "catalog", "tools"},
+	},
+	{
+		name:        "tool.help",
+		description: "Get detailed help for one available tool, including its canonical name, accepted aliases, description, JSON schema, and compact argument hint.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required":             []string{"name"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"name":"workspace.read"}`,
+		tags:    []string{"discover", "help", "schema", "tools"},
+	},
+	{
+		name:        "tool.search",
+		description: "Search available tools by name or description and return a compact flat list of matches. Prefer this over tool.list when you already have a keyword, partial canonical tool name, or a small typo.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query":                  map[string]any{"type": "string"},
+				"domain":                 map[string]any{"type": "string"},
+				"limit":                  map[string]any{"type": "integer"},
+				"include_argument_hints": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"query"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"query":"read","domain":"workspace","limit":5,"include_argument_hints":false}`,
+		tags:    []string{"discover", "search", "lookup", "find", "tools"},
+	},
 	{
 		name:        "session.history",
 		description: "Read stored session history for the current peer. Optional session_key must belong to this peer, and optional run_id can target one of this peer's spawned sub-sessions.",

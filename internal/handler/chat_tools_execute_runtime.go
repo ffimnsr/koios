@@ -504,6 +504,52 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.runLogs(peerID, args.ID, args.MaxBytes, args.MaxMessages)
+	case "tool.list":
+		var args struct {
+			Domain               string `json:"domain"`
+			Query                string `json:"query"`
+			IncludeArgumentHints bool   `json:"include_argument_hints"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		toolCtx, _ := agent.ToolRunContextFromContext(ctx)
+		sessionKey := toolCtx.SessionKey
+		if strings.TrimSpace(sessionKey) == "" {
+			sessionKey = peerID
+		}
+		return h.toolList(peerID, sessionKey, toolCtx.ActiveProfile, args.Domain, args.Query, args.IncludeArgumentHints), nil
+	case "tool.help":
+		var args struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		toolCtx, _ := agent.ToolRunContextFromContext(ctx)
+		sessionKey := toolCtx.SessionKey
+		if strings.TrimSpace(sessionKey) == "" {
+			sessionKey = peerID
+		}
+		return h.toolHelp(peerID, sessionKey, toolCtx.ActiveProfile, args.Name)
+	case "tool.search":
+		var args struct {
+			Query                string `json:"query"`
+			Domain               string `json:"domain"`
+			Limit                int    `json:"limit"`
+			IncludeArgumentHints bool   `json:"include_argument_hints"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		toolCtx, _ := agent.ToolRunContextFromContext(ctx)
+		sessionKey := toolCtx.SessionKey
+		if strings.TrimSpace(sessionKey) == "" {
+			sessionKey = peerID
+		}
+		return h.toolSearch(peerID, sessionKey, toolCtx.ActiveProfile, args.Query, args.Domain, args.Limit, args.IncludeArgumentHints)
 	case "usage.current":
 		var args struct {
 			PeerID string `json:"peer_id"`

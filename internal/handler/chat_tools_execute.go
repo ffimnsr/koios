@@ -34,18 +34,8 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 // dispatchTool routes the call to the appropriate executor without any
 // provenance concerns.
 func (h *Handler) dispatchTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
-	for _, dispatch := range []func(context.Context, string, agent.ToolCall) (any, error){
-		h.executeDataTool,
-		h.executeSessionWorkspaceTool,
-		h.executeRuntimeTool,
-	} {
-		result, err := dispatch(ctx, peerID, call)
-		if err == nil {
-			return result, nil
-		}
-		if !errors.Is(err, errUnhandledTool) {
-			return nil, err
-		}
+	if result, err := builtInTools.Dispatch(h, ctx, peerID, call); err == nil || !errors.Is(err, errUnhandledTool) {
+		return result, err
 	}
 	if h.pluginRegistry != nil {
 		toolCtx, _ := agent.ToolRunContextFromContext(ctx)
@@ -127,14 +117,13 @@ func (h *Handler) suggestTools(peerID, name string) []string {
 	if name == "" {
 		return nil
 	}
-	suffix := "." + name
-	var matches []string
+	toolNames := make([]string, 0)
 	for _, tool := range h.ToolDefinitions(peerID) {
-		if tool.Type == "function" && strings.HasSuffix(tool.Function.Name, suffix) {
-			matches = append(matches, tool.Function.Name)
+		if tool.Type == "function" {
+			toolNames = append(toolNames, tool.Function.Name)
 		}
 	}
-	return matches
+	return builtInTools.Suggest(toolNames, name)
 }
 
 // recordToolResult persists a provenance record for a completed tool execution.

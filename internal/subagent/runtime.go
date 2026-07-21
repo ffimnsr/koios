@@ -187,6 +187,9 @@ func (r *Runtime) execute(ctx context.Context, id string, req SpawnRequest, pare
 	r.mu.Lock()
 	delete(r.cancels, id)
 	r.mu.Unlock()
+	if current, ok := r.reg.Get(id); ok && current.Status == StatusKilled {
+		return
+	}
 	if err != nil {
 		_, _ = r.reg.Update(id, func(rec *RunRecord) {
 			rec.Status = StatusErrored
@@ -398,14 +401,17 @@ func (r *Runtime) releaseParent(parentSessionKey, parentID string) {
 		return
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	sem, ok := r.semaphores[parentKey]
-	r.mu.Unlock()
 	if !ok {
 		return
 	}
 	select {
 	case <-sem.ch:
 	default:
+	}
+	if len(sem.ch) == 0 {
+		delete(r.semaphores, parentKey)
 	}
 }
 
@@ -417,6 +423,7 @@ func (r *Runtime) acquireParentSlot(ctx context.Context, id, parentKey string, l
 		limit = r.maxChildren
 	}
 	sem := r.parentSemaphore(parentKey, limit)
+	limit = cap(sem.ch)
 	_, _ = r.reg.AppendEvent(id, "semaphore.wait", fmt.Sprintf("waiting for parent session slot %s", parentKey))
 	r.publishLifecycle(id, "", "", "subagent.waiting", map[string]any{
 		"parent_session_key": parentKey,
@@ -446,16 +453,10 @@ func (r *Runtime) acquireParentSlot(ctx context.Context, id, parentKey string, l
 func (r *Runtime) parentSemaphore(parentKey string, limit int) *parentSemaphore {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	sem, ok := r.semaphores[parentKey]
-	if ok && cap(sem.ch) == limit {
+	if sem, ok := r.semaphores[parentKey]; ok {
 		return sem
 	}
-	if ok && cap(sem.ch) != limit {
-		sem = &parentSemaphore{ch: make(chan struct{}, limit)}
-		r.semaphores[parentKey] = sem
-		return sem
-	}
-	sem = &parentSemaphore{ch: make(chan struct{}, limit)}
+	sem := &parentSemaphore{ch: make(chan struct{}, limit)}
 	r.semaphores[parentKey] = sem
 	return sem
 }

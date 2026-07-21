@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -251,6 +252,559 @@ func (h *Handler) runLogs(peerID, id string, maxBytes, maxMessages int) (map[str
 		payload["message_count"] = len(history)
 	}
 	return payload, nil
+}
+
+func (h *Handler) toolList(peerID, sessionKey, activeProfile, domain, query string, includeArgumentHints bool) map[string]any {
+	defs := h.activeDefs(peerID, sessionKey, activeProfile)
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	query = strings.ToLower(strings.TrimSpace(query))
+	groups := make(map[string][]map[string]any)
+	for _, def := range defs {
+		group := toolDomain(def.name)
+		if domain != "" && group != domain {
+			continue
+		}
+		tags := toolDiscoveryTags(def)
+		if query != "" {
+			haystack := strings.ToLower(def.name + "\n" + def.description + "\n" + def.argHint + "\n" + strings.Join(tags, " "))
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
+		groups[group] = append(groups[group], toolDiscoveryItem(def, includeArgumentHints, nil))
+	}
+	orderedDomains := make([]string, 0, len(groups))
+	for domainName := range groups {
+		orderedDomains = append(orderedDomains, domainName)
+	}
+	sort.Strings(orderedDomains)
+	outGroups := make([]map[string]any, 0, len(orderedDomains))
+	count := 0
+	for _, domainName := range orderedDomains {
+		items := groups[domainName]
+		sort.Slice(items, func(i, j int) bool {
+			return fmt.Sprint(items[i]["name"]) < fmt.Sprint(items[j]["name"])
+		})
+		count += len(items)
+		outGroups = append(outGroups, map[string]any{
+			"domain": domainName,
+			"tools":  items,
+			"count":  len(items),
+		})
+	}
+	return map[string]any{
+		"peer_id":                peerID,
+		"session_key":            sessionKey,
+		"active_profile":         activeProfile,
+		"domain_filter":          strings.TrimSpace(domain),
+		"query_filter":           strings.TrimSpace(query),
+		"include_argument_hints": includeArgumentHints,
+		"domains":                outGroups,
+		"count":                  count,
+	}
+}
+
+func (h *Handler) toolSearch(peerID, sessionKey, activeProfile, query, domain string, limit int, includeArgumentHints bool) (map[string]any, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	defs := h.activeDefs(peerID, sessionKey, activeProfile)
+	matches := make([]map[string]any, 0)
+	for _, def := range defs {
+		group := toolDomain(def.name)
+		if domain != "" && group != domain {
+			continue
+		}
+		eval := toolSearchEvaluate(def, query)
+		if eval.Score <= 0 {
+			continue
+		}
+		matches = append(matches, toolDiscoveryItem(def, includeArgumentHints, &eval))
+	}
+	if isStructuredToolQuery(query) {
+		bestScore := 0
+		for _, item := range matches {
+			if score := matchScore(item); score > bestScore {
+				bestScore = score
+			}
+		}
+		if bestScore >= 900 {
+			filtered := matches[:0]
+			for _, item := range matches {
+				if matchScore(item) >= 900 {
+					filtered = append(filtered, item)
+				}
+			}
+			matches = filtered
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		left := matchScore(matches[i])
+		right := matchScore(matches[j])
+		if left != right {
+			return left > right
+		}
+		return fmt.Sprint(matches[i]["name"]) < fmt.Sprint(matches[j]["name"])
+	})
+	totalMatches := len(matches)
+	topConfidence := "none"
+	if totalMatches > 0 {
+		topConfidence = matchConfidence(matches[0])
+	}
+	suggestions := toolSearchSuggestions(defs, query, domain, matches)
+	truncated := false
+	if limit > 0 && len(matches) > limit {
+		matches = matches[:limit]
+		truncated = true
+	}
+	return map[string]any{
+		"peer_id":                peerID,
+		"session_key":            sessionKey,
+		"active_profile":         activeProfile,
+		"query":                  strings.TrimSpace(query),
+		"domain_filter":          strings.TrimSpace(domain),
+		"include_argument_hints": includeArgumentHints,
+		"matches":                matches,
+		"count":                  totalMatches,
+		"truncated":              truncated,
+		"confidence":             topConfidence,
+		"suggestions":            suggestions,
+	}, nil
+}
+
+type toolSearchEvaluation struct {
+	Score      int
+	Reasons    []string
+	TopReason  string
+	Tags       []string
+	Confidence string
+}
+
+func toolSearchEvaluate(def toolDef, query string) toolSearchEvaluation {
+	name := strings.ToLower(strings.TrimSpace(def.name))
+	desc := strings.ToLower(strings.TrimSpace(def.description))
+	hint := strings.ToLower(strings.TrimSpace(def.argHint))
+	domain := toolDomain(def.name)
+	op := name
+	if idx := strings.LastIndex(name, "."); idx >= 0 && idx+1 < len(name) {
+		op = name[idx+1:]
+	}
+	tags := toolDiscoveryTags(def)
+	normalizedQuery := normalizeToolSearchTerm(query)
+	normalizedName := normalizeToolSearchTerm(name)
+	normalizedOp := normalizeToolSearchTerm(op)
+	structuredQuery := isStructuredToolQuery(query)
+	queryTerms := toolSearchTerms(query)
+	eval := toolSearchEvaluation{Tags: tags}
+	reasons := make(map[string]struct{})
+	add := func(reason string, delta int) {
+		if delta <= 0 {
+			return
+		}
+		eval.Score += delta
+		if _, ok := reasons[reason]; ok {
+			return
+		}
+		reasons[reason] = struct{}{}
+		eval.Reasons = append(eval.Reasons, reason)
+	}
+	switch {
+	case name == query:
+		add("exact_name", 1000)
+	case normalizedName != "" && normalizedName == normalizedQuery:
+		add("normalized_name", 950)
+	case strings.HasPrefix(name, query):
+		add("prefix_name", 800)
+	case op == query:
+		add("exact_operation", 780)
+	case strings.Contains(name, "."+query):
+		add("qualified_suffix", 700)
+	case strings.Contains(name, query):
+		add("name_contains", 600)
+	}
+	if domain == query {
+		add("exact_domain", 450)
+	}
+	if normalizedOp != "" && normalizedOp == normalizedQuery {
+		add("normalized_operation", 400)
+	}
+	if normalizedName != "" && normalizedQuery != "" && strings.HasPrefix(normalizedName, normalizedQuery) {
+		add("normalized_prefix", 250)
+	}
+	for _, tag := range tags {
+		switch {
+		case tag == query:
+			add("exact_tag", 320)
+		case normalizedQuery != "" && normalizeToolSearchTerm(tag) == normalizedQuery:
+			add("normalized_tag", 300)
+		case strings.Contains(tag, query):
+			add("tag_contains", 160)
+		}
+	}
+	if len(queryTerms) > 1 {
+		if allTermsPresent(name, queryTerms) {
+			add("all_name_terms", 300)
+		}
+		if allTermsPresent(strings.Join(tags, " "), queryTerms) {
+			add("all_tag_terms", 220)
+		}
+		if !structuredQuery && allTermsPresent(desc, queryTerms) {
+			add("all_description_terms", 120)
+		}
+		if !structuredQuery && allTermsPresent(hint, queryTerms) {
+			add("all_arg_hint_terms", 60)
+		}
+	}
+	if !structuredQuery && strings.Contains(desc, query) {
+		add("description_contains", 250)
+	}
+	if !structuredQuery && strings.Contains(hint, query) {
+		add("arg_hint_contains", 100)
+	}
+	if structuredQuery {
+		if fuzzyToolSearchMatch(normalizedName, normalizedQuery) {
+			add("fuzzy_name", 800)
+		}
+	} else {
+		if fuzzyToolSearchMatch(normalizedName, normalizedQuery) {
+			add("fuzzy_name", 220)
+		}
+		if fuzzyToolSearchMatch(normalizedOp, normalizedQuery) {
+			add("fuzzy_operation", 180)
+		}
+	}
+	for _, alias := range builtInTools.AliasesFor(def.name) {
+		alias = strings.ToLower(strings.TrimSpace(alias))
+		normalizedAlias := normalizeToolSearchTerm(alias)
+		switch {
+		case alias == query:
+			add("exact_alias", 500)
+		case normalizedAlias != "" && normalizedAlias == normalizedQuery:
+			add("normalized_alias", 450)
+		case strings.HasPrefix(alias, query):
+			add("prefix_alias", 350)
+		case strings.Contains(alias, query):
+			add("alias_contains", 250)
+		}
+		if fuzzyToolSearchMatch(normalizedAlias, normalizedQuery) {
+			add("fuzzy_alias", 150)
+		}
+	}
+	eval.Confidence = toolSearchConfidence(eval)
+	if len(eval.Reasons) > 0 {
+		eval.TopReason = eval.Reasons[0]
+	}
+	return eval
+}
+
+func toolDiscoveryItem(def toolDef, includeArgumentHints bool, eval *toolSearchEvaluation) map[string]any {
+	item := map[string]any{
+		"name":        def.name,
+		"description": def.description,
+		"domain":      toolDomain(def.name),
+		"tags":        toolDiscoveryTags(def),
+	}
+	if aliases := builtInTools.AliasesFor(def.name); len(aliases) > 0 {
+		item["aliases"] = aliases
+	}
+	if includeArgumentHints && strings.TrimSpace(def.argHint) != "" {
+		item["arg_hint"] = def.argHint
+	}
+	if eval != nil {
+		item["score"] = eval.Score
+		item["reasons"] = eval.Reasons
+		item["top_reason"] = eval.TopReason
+		item["confidence"] = eval.Confidence
+	}
+	return item
+}
+
+func toolDiscoveryTags(def toolDef) []string {
+	seen := make(map[string]struct{})
+	add := func(values ...string) {
+		for _, value := range values {
+			value = strings.ToLower(strings.TrimSpace(value))
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+		}
+	}
+	add(toolDomain(def.name))
+	add(def.tags...)
+	add(toolSearchTerms(def.name)...)
+	for _, alias := range builtInTools.AliasesFor(def.name) {
+		add(toolSearchTerms(alias)...)
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func toolSearchConfidence(eval toolSearchEvaluation) string {
+	if eval.Score <= 0 {
+		return "none"
+	}
+	for _, reason := range eval.Reasons {
+		switch reason {
+		case "exact_name", "normalized_name", "prefix_name", "exact_operation", "qualified_suffix", "name_contains", "exact_alias", "normalized_alias", "prefix_alias", "normalized_operation":
+			return "high"
+		}
+	}
+	for _, reason := range eval.Reasons {
+		switch reason {
+		case "exact_domain", "normalized_prefix", "exact_tag", "normalized_tag", "tag_contains", "all_name_terms", "all_tag_terms", "all_description_terms", "all_arg_hint_terms", "description_contains", "arg_hint_contains", "alias_contains":
+			return "medium"
+		}
+	}
+	return "low"
+}
+
+func toolSearchSuggestions(defs []toolDef, query, domain string, matches []map[string]any) []map[string]any {
+	suggestions := make([]map[string]any, 0, 4)
+	if len(matches) == 0 {
+		if domain != "" {
+			suggestions = append(suggestions, map[string]any{
+				"kind":    "hint",
+				"message": fmt.Sprintf("No tools matched in the %q domain. Try removing the domain filter or browse that domain with tool.list.", domain),
+			})
+		}
+		suggestions = append(suggestions, map[string]any{
+			"kind":    "hint",
+			"message": "Try tool.list to browse by domain, or tool.help if you know the canonical tool name.",
+		})
+		closest := toolSearchClosestCandidates(defs, query, domain, 3)
+		for _, candidate := range closest {
+			suggestions = append(suggestions, map[string]any{
+				"kind":    "tool",
+				"name":    candidate["name"],
+				"domain":  candidate["domain"],
+				"message": "Closest available canonical tool.",
+			})
+		}
+		return suggestions
+	}
+	if matchConfidence(matches[0]) == "low" {
+		suggestions = append(suggestions, map[string]any{
+			"kind":    "hint",
+			"message": "Top result is a low-confidence fuzzy or metadata match. Confirm it with tool.help before calling it.",
+		})
+		if domain == "" {
+			suggestions = append(suggestions, map[string]any{
+				"kind":    "hint",
+				"message": "If you know the domain, rerun tool.search with a domain filter to narrow the result set.",
+			})
+		}
+	}
+	return suggestions
+}
+
+func toolSearchClosestCandidates(defs []toolDef, query, domain string, limit int) []map[string]any {
+	normalizedQuery := normalizeToolSearchTerm(query)
+	queryTerms := toolSearchTerms(query)
+	candidates := make([]map[string]any, 0, len(defs))
+	for _, def := range defs {
+		group := toolDomain(def.name)
+		if domain != "" && group != domain {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(def.name))
+		normalizedName := normalizeToolSearchTerm(name)
+		if normalizedName == "" || normalizedQuery == "" {
+			continue
+		}
+		score := 0
+		distance := levenshteinDistance(normalizedName, normalizedQuery)
+		if distance <= 6 {
+			score += maxIntValue(0, 120-distance*15)
+		}
+		if allTermsPresent(name, queryTerms) {
+			score += 60
+		}
+		if strings.Contains(name, query) {
+			score += 40
+		}
+		if score <= 0 {
+			continue
+		}
+		candidates = append(candidates, map[string]any{
+			"name":   def.name,
+			"domain": group,
+			"score":  score,
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		left := matchScore(candidates[i])
+		right := matchScore(candidates[j])
+		if left != right {
+			return left > right
+		}
+		return fmt.Sprint(candidates[i]["name"]) < fmt.Sprint(candidates[j]["name"])
+	})
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	for _, candidate := range candidates {
+		delete(candidate, "score")
+	}
+	return candidates
+}
+
+func toolSearchTerms(value string) []string {
+	return strings.FieldsFunc(strings.ToLower(strings.TrimSpace(value)), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+}
+
+func isStructuredToolQuery(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.ContainsAny(value, ".-_/") || strings.ContainsRune(value, ' ')
+}
+
+func normalizeToolSearchTerm(value string) string {
+	terms := toolSearchTerms(value)
+	if len(terms) == 0 {
+		return ""
+	}
+	return strings.Join(terms, "")
+}
+
+func allTermsPresent(haystack string, terms []string) bool {
+	if len(terms) == 0 {
+		return false
+	}
+	for _, term := range terms {
+		if !strings.Contains(haystack, term) {
+			return false
+		}
+	}
+	return true
+}
+
+func fuzzyToolSearchMatch(candidate, query string) bool {
+	if candidate == "" || query == "" || candidate == query {
+		return false
+	}
+	if len(query) < 4 || absInt(len(candidate)-len(query)) > 1 {
+		return false
+	}
+	return levenshteinDistance(candidate, query) == 1
+}
+
+func levenshteinDistance(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if a == "" {
+		return len(b)
+	}
+	if b == "" {
+		return len(a)
+	}
+	prev := make([]int, len(b)+1)
+	curr := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		curr[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			curr[j] = minInt(
+				curr[j-1]+1,
+				prev[j]+1,
+				prev[j-1]+cost,
+			)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(b)]
+}
+
+func minInt(values ...int) int {
+	best := values[0]
+	for _, value := range values[1:] {
+		if value < best {
+			best = value
+		}
+	}
+	return best
+}
+
+func maxIntValue(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func matchScore(item map[string]any) int {
+	value, ok := item["score"]
+	if !ok {
+		return 0
+	}
+	score, ok := value.(int)
+	if ok {
+		return score
+	}
+	return 0
+}
+
+func matchConfidence(item map[string]any) string {
+	value, ok := item["confidence"]
+	if !ok {
+		return "none"
+	}
+	confidence, ok := value.(string)
+	if ok {
+		return confidence
+	}
+	return "none"
+}
+
+func (h *Handler) toolHelp(peerID, sessionKey, activeProfile, name string) (map[string]any, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	canonical := h.NormalizeToolName(peerID, name)
+	for _, def := range h.activeDefs(peerID, sessionKey, activeProfile) {
+		if def.name != canonical {
+			continue
+		}
+		item := toolDiscoveryItem(def, true, nil)
+		item["requested_name"] = name
+		item["canonical_name"] = canonical
+		item["parameters"] = json.RawMessage(def.parameters)
+		return item, nil
+	}
+	return nil, fmt.Errorf("tool %q is not available", name)
+}
+
+func toolDomain(name string) string {
+	name = strings.TrimSpace(name)
+	if idx := strings.Index(name, "."); idx > 0 {
+		return name[:idx]
+	}
+	return "core"
 }
 
 func (h *Handler) usageCurrent(peerID string) map[string]any {

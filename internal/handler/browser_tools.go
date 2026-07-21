@@ -326,12 +326,7 @@ func browserAliasName(toolName string) string {
 }
 
 func isBuiltInToolName(name string) bool {
-	for _, def := range toolDefs {
-		if def.name == name {
-			return true
-		}
-	}
-	return false
+	return builtInTools.Has(name)
 }
 
 func (h *Handler) invokeBrowserAliasTool(ctx context.Context, peerID, sessionKey, alias string, args map[string]any) (any, error) {

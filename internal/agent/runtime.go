@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -265,7 +266,7 @@ type Runtime struct {
 
 type activeStreamState struct {
 	cancel      context.CancelFunc
-	interrupted bool
+	interrupted atomic.Bool
 }
 
 func NormalizeQueueMode(mode string) string {
@@ -372,7 +373,7 @@ func (rt *Runtime) Steer(sessionKey, message string) error {
 	rt.steeringQueues[sessionKey] = append(q, message)
 	if NormalizeQueueMode(rt.sessionPolicy(sessionKey).QueueMode) == QueueModeSteer {
 		if active := rt.activeStreams[sessionKey]; active != nil && active.cancel != nil {
-			active.interrupted = true
+			active.interrupted.Store(true)
 			active.cancel()
 		}
 	}
@@ -614,7 +615,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			})
 		}
 		if reqCopy.ToolExecutor != nil {
-			caps := providerCapabilitiesFor(rt.prov, built.Request.Model)
+			caps := providerCapabilitiesFor(rt.providerForContext(callCtx), built.Request.Model)
 			if caps.SupportsNativeTools || caps.Name == "" {
 				built.Request.Tools = reqCopy.ToolExecutor.ToolDefinitionsForRun(reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile)
 			}
@@ -665,7 +666,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				rt.unregisterActiveStream(sessionKey, activeStream)
 			}
 			attemptCancel()
-			if err != nil && activeStream != nil && activeStream.interrupted {
+			if err != nil && activeStream != nil && activeStream.interrupted.Load() {
 				if steered := rt.drainSteering(sessionKey); len(steered) > 0 {
 					for _, msg := range steered {
 						workingMessages = append(workingMessages, types.Message{Role: "user", Content: msg})
@@ -891,11 +892,7 @@ func (rt *Runtime) skillAllowlist(peerID, activeProfile string) []string {
 }
 
 func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bool, sink *captureResponseWriter) (string, *types.ChatResponse, error) {
-	// Use per-request provider override if set.
-	prov := rt.prov
-	if p := ProviderOverrideFromContext(ctx); p != nil {
-		prov = p
-	}
+	prov := rt.providerForContext(ctx)
 	if rt.hooks != nil {
 		ev, err := rt.hooks.Intercept(ctx, ops.Event{
 			Name: ops.HookBeforeLLM,
@@ -962,6 +959,13 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 		},
 	})
 	return text, resp, nil
+}
+
+func (rt *Runtime) providerForContext(ctx context.Context) Provider {
+	if p := ProviderOverrideFromContext(ctx); p != nil {
+		return p
+	}
+	return rt.prov
 }
 
 func eventString(data map[string]any, key, fallback string) string {

@@ -280,12 +280,7 @@ func (r *pluginRegistry) InstallHooks(manager *ops.Manager) {
 }
 
 func builtinToolDefined(name string) bool {
-	for _, def := range toolDefs {
-		if def.name == name {
-			return true
-		}
-	}
-	return false
+	return builtInTools.Has(name)
 }
 
 func defaultRuntimePlugins() []runtimePlugin {

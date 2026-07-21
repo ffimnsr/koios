@@ -31,6 +31,9 @@ var toolProfiles = map[string][]string{
 	// It allows read-only file access and safe web tools, but no writes,
 	// no exec, no process management, and no browser automation.
 	"sandbox": {
+		"tool.list",
+		"tool.help",
+		"tool.search",
 		"time.now",
 		"subagent.status",
 		"session.history",
@@ -65,6 +68,9 @@ var toolProfiles = map[string][]string{
 
 var toolGroups = map[string][]string{
 	"group:sessions": {
+		"tool.list",
+		"tool.help",
+		"tool.search",
 		"time.now",
 		"subagent.status",
 		"session.history",
@@ -264,7 +270,7 @@ func (p ToolPolicy) Allows(name string) bool {
 	if profile == "" || profile == "full" {
 		return true
 	}
-	base := expandToolTokens(toolProfiles[profile])
+	base := expandToolTokens(builtInTools.ProfileTokens(profile))
 	return matchesToolToken(base, name)
 }
 
@@ -281,28 +287,5 @@ func matchesToolToken(tokens map[string]bool, name string) bool {
 }
 
 func expandToolTokens(tokens []string) map[string]bool {
-	expanded := make(map[string]bool)
-	for _, raw := range tokens {
-		token := strings.TrimSpace(raw)
-		if token == "" {
-			continue
-		}
-		if token == "group:openclaw" {
-			for _, d := range toolDefs {
-				expanded[d.name] = true
-			}
-			for _, name := range defaultPluginToolNames() {
-				expanded[name] = true
-			}
-			continue
-		}
-		if group, ok := toolGroups[token]; ok {
-			for _, name := range group {
-				expanded[name] = true
-			}
-			continue
-		}
-		expanded[token] = true
-	}
-	return expanded
+	return builtInTools.ExpandTokens(tokens)
 }

@@ -181,6 +181,133 @@ func TestRuntime_SpawnEnforcesParentSessionConcurrency(t *testing.T) {
 	t.Fatalf("expected queued subagents to complete after semaphore release")
 }
 
+func TestRuntime_SpawnPreservesKilledStatusAfterCancellation(t *testing.T) {
+	store := session.New(20)
+	started := make(chan struct{}, 1)
+	prov := &stubProvider{
+		complete: func(ctx context.Context, _ *types.ChatRequest) (*types.ChatResponse, error) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	reg, err := NewRegistry("")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	subrt := NewRuntime(rt, store, reg, nil, 1)
+
+	rec, err := subrt.Spawn(context.Background(), SpawnRequest{
+		PeerID:           "alice",
+		ParentSessionKey: "alice",
+		SourceSessionKey: "alice",
+		Task:             "child task",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for subagent to start")
+	}
+	if err := subrt.Kill(rec.ID); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, ok := subrt.Get(rec.ID)
+		if ok && current.Status == StatusKilled {
+			if current.SubTurn.State != SubTurnKilled {
+				t.Fatalf("expected killed subturn state, got %#v", current.SubTurn)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	current, _ := subrt.Get(rec.ID)
+	t.Fatalf("expected killed status to persist, got %#v", current)
+}
+
+func TestRuntime_SpawnKeepsExistingSemaphoreLimitUntilParentDrains(t *testing.T) {
+	store := session.New(20)
+	gate := make(chan struct{})
+	prov := &stubProvider{
+		complete: func(ctx context.Context, _ *types.ChatRequest) (*types.ChatResponse, error) {
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{
+					Message: types.Message{Role: "assistant", Content: "done"},
+				}},
+			}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	reg, err := NewRegistry("")
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	subrt := NewRuntime(rt, store, reg, nil, 1)
+
+	first, err := subrt.Spawn(context.Background(), SpawnRequest{
+		PeerID:           "alice",
+		ParentSessionKey: "alice",
+		SourceSessionKey: "alice",
+		Task:             "child task 1",
+		MaxChildren:      1,
+	})
+	if err != nil {
+		t.Fatalf("Spawn(first): %v", err)
+	}
+	second, err := subrt.Spawn(context.Background(), SpawnRequest{
+		PeerID:           "alice",
+		ParentSessionKey: "alice",
+		SourceSessionKey: "alice",
+		Task:             "child task 2",
+		MaxChildren:      2,
+	})
+	if err != nil {
+		t.Fatalf("Spawn(second): %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	queued := false
+	for time.Now().Before(deadline) {
+		current, ok := subrt.Get(second.ID)
+		if ok && current.Status == StatusQueued && !current.SubTurn.ReservedSlot {
+			queued = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !queued {
+		firstRec, _ := subrt.Get(first.ID)
+		secondRec, _ := subrt.Get(second.ID)
+		t.Fatalf("expected second subagent to remain queued; first=%#v second=%#v", firstRec, secondRec)
+	}
+	close(gate)
+
+	waitDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		firstRec, firstOK := subrt.Get(first.ID)
+		secondRec, secondOK := subrt.Get(second.ID)
+		if firstOK && secondOK && firstRec.Status == StatusCompleted && secondRec.Status == StatusCompleted {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("expected mixed-limit queued subagents to complete after semaphore release")
+}
+
 func TestRuntime_AnnouncementAndReplyFlagsPublishViaBus(t *testing.T) {
 	store := session.New(20)
 	prov := &stubProvider{

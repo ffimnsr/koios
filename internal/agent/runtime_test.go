@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -30,6 +31,11 @@ type stubProvider struct {
 
 type stubToolExecutor struct {
 	execute func(ctx context.Context, peerID string, call agent.ToolCall) (any, error)
+	defs    []types.Tool
+}
+
+type stubProviderResolver struct {
+	resolve func(ctx context.Context, peerID, sessionKey, modelOverride string) (agent.Provider, string, error)
 }
 
 func (s stubToolExecutor) ToolPromptForRun(peerID, sessionKey, activeProfile string) string {
@@ -39,11 +45,15 @@ func (s stubToolExecutor) ToolPromptForRun(peerID, sessionKey, activeProfile str
 
 func (s stubToolExecutor) ToolDefinitionsForRun(peerID, sessionKey, activeProfile string) []types.Tool {
 	_, _, _ = peerID, sessionKey, activeProfile
-	return nil
+	return append([]types.Tool(nil), s.defs...)
 }
 
 func (s stubToolExecutor) ExecuteTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
 	return s.execute(ctx, peerID, call)
+}
+
+func (s stubProviderResolver) ResolveProvider(ctx context.Context, peerID, sessionKey, modelOverride string) (agent.Provider, string, error) {
+	return s.resolve(ctx, peerID, sessionKey, modelOverride)
 }
 
 func (s *stubProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
@@ -59,6 +69,11 @@ func (s *stubProvider) CompleteStream(ctx context.Context, req *types.ChatReques
 
 func (s *stubProvider) Capabilities(string) types.ProviderCapabilities {
 	return s.caps
+}
+
+func mustRawJSON(t *testing.T, raw string) json.RawMessage {
+	t.Helper()
+	return json.RawMessage(raw)
 }
 
 func TestRuntime_DirectScopeUsesSenderSession(t *testing.T) {
@@ -150,6 +165,61 @@ func TestRuntime_RetryStatusCodeFilter(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("expected one attempt, got %d", attempts)
+	}
+}
+
+func TestRuntime_UsesResolvedProviderCapabilitiesForToolSupport(t *testing.T) {
+	store := session.New(20)
+	globalProv := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "global"}}}}, nil
+		},
+		caps: types.ProviderCapabilities{Name: "global", SupportsNativeTools: false},
+	}
+	var captured *types.ChatRequest
+	resolvedProv := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			captured = req
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "resolved"}}}}, nil
+		},
+		caps: types.ProviderCapabilities{Name: "resolved", SupportsNativeTools: true},
+	}
+	rt := agent.NewRuntime(store, globalProv, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetProviderResolver(stubProviderResolver{
+		resolve: func(_ context.Context, peerID, sessionKey, modelOverride string) (agent.Provider, string, error) {
+			_, _, _ = peerID, sessionKey, modelOverride
+			return resolvedProv, "resolved-model", nil
+		},
+	})
+
+	toolExec := stubToolExecutor{
+		execute: func(context.Context, string, agent.ToolCall) (any, error) { return nil, nil },
+		defs: []types.Tool{{
+			Type: "function",
+			Function: types.ToolFunction{
+				Name:        "task.create",
+				Description: "create a task",
+				Parameters:  mustRawJSON(t, `{"type":"object"}`),
+			},
+		}},
+	}
+
+	if _, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:       "peer",
+		Scope:        agent.ScopeMain,
+		Messages:     []types.Message{{Role: "user", Content: "hello"}},
+		ToolExecutor: toolExec,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected resolved provider to capture request")
+	}
+	if captured.Model != "resolved-model" {
+		t.Fatalf("expected resolved model, got %q", captured.Model)
+	}
+	if len(captured.Tools) != 1 || captured.Tools[0].Function.Name != "task.create" {
+		t.Fatalf("expected resolved provider capabilities to keep native tools, got %#v", captured.Tools)
 	}
 }
 
