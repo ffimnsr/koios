@@ -587,12 +587,12 @@ func TestStructuredOutput_Violation_Strict(t *testing.T) {
 func TestVoteAggregation_HeuristicMajority(t *testing.T) {
 	// 3 children return similar replies, 1 returns a different one.
 	// The majority cluster should win without an LLM call.
-	callIdx := 0
+	var callIdx int32
 	prov := &stubProvider{
 		complete: func(_ context.Context, _ *types.ChatRequest) (*types.ChatResponse, error) {
-			callIdx++
+			n := atomic.AddInt32(&callIdx, 1)
 			reply := "The answer is Paris"
-			if callIdx == 4 {
+			if n == 4 {
 				reply = "I think it's Berlin"
 			}
 			return &types.ChatResponse{
@@ -631,12 +631,12 @@ func TestVoteAggregation_HeuristicMajority(t *testing.T) {
 func TestVoteAggregation_DisagreementReport(t *testing.T) {
 	// Each child returns a completely different reply → no majority → falls back
 	// to largest cluster, appends disagreement report.
-	idx := 0
+	var idx int32
 	prov := &stubProvider{
 		complete: func(_ context.Context, _ *types.ChatRequest) (*types.ChatResponse, error) {
-			idx++
+			n := atomic.AddInt32(&idx, 1)
 			replies := []string{"alpha response", "beta response", "gamma response"}
-			r := replies[(idx-1)%len(replies)]
+			r := replies[(int(n)-1)%len(replies)]
 			return &types.ChatResponse{
 				Choices: []types.ChatChoice{{
 					Message: types.Message{Role: "assistant", Content: r},

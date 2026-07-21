@@ -40,6 +40,7 @@ tasks:
   test:
     commands:
       - command: go test ./...
+      - command: go test  -race ./...
     description: Run all tests
   install-githooks:
     commands:
