@@ -17,6 +17,7 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg.LLMPromptReserveTokens = 8192
 	cfg.LLMMaxToolDefinitions = 12
 	cfg.LLMMaxToolResultChars = 2048
+	cfg.AgentMaxSteps = 120
 	cfg.AgentRetryStatusCodes = []int{429, 500, 503}
 	cfg.ToolsAllow = []string{"read", "write"}
 	cfg.ToolsDeny = []string{"exec"}
@@ -85,6 +86,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 			t.Fatalf("expected encoded config to contain %q, got:\n%s", expected, encoded)
 		}
 	}
+	if !strings.Contains(encoded, "max_steps = 120") {
+		t.Fatalf("expected max_steps in encoded config, got:\n%s", encoded)
+	}
 	if !strings.Contains(encoded, "retry_status_codes = [429, 500, 503]") {
 		t.Fatalf("expected retry_status_codes array in encoded config, got:\n%s", encoded)
 	}
@@ -137,6 +141,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	loaded, err := LoadFromPath(path)
 	if err != nil {
 		t.Fatalf("LoadFromPath: %v", err)
+	}
+	if loaded.AgentMaxSteps != 120 {
+		t.Fatalf("unexpected agent.max_steps after round-trip: %d", loaded.AgentMaxSteps)
 	}
 	if len(loaded.AgentRetryStatusCodes) != 3 || loaded.AgentRetryStatusCodes[0] != 429 || loaded.AgentRetryStatusCodes[1] != 500 || loaded.AgentRetryStatusCodes[2] != 503 {
 		t.Fatalf("unexpected retry_status_codes after round-trip: %#v", loaded.AgentRetryStatusCodes)

@@ -118,7 +118,44 @@ func TestRuntime_DirectScopeUsesSenderSession(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if got := store.Len(); got != 2 {
-		t.Fatalf("expected two isolated sender sessions, got %d", got)
+		t.Fatalf("expected 2 sessions, got %d", got)
+	}
+}
+
+func TestRuntime_UsesConfiguredDefaultMaxStepsWhenOmitted(t *testing.T) {
+	store := session.New(20)
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: `<tool_call>{"name":"time.now","arguments":{}}</tool_call>`}}}}, nil
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetDefaultMaxSteps(2)
+
+	res, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "what time is it?"}},
+		ToolExecutor: stubToolExecutor{execute: func(_ context.Context, _ string, call agent.ToolCall) (any, error) {
+			if call.Name != "time.now" {
+				t.Fatalf("unexpected tool name %q", call.Name)
+			}
+			return map[string]string{"utc": "2026-04-29T00:00:00Z"}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Steps != 2 {
+		t.Fatalf("expected configured default max_steps to allow second step, got %d", res.Steps)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", callCount)
 	}
 }
 

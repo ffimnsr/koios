@@ -321,6 +321,7 @@ func RunGateway(build BuildInfo) error {
 		MaxBackoff:     cfg.AgentRetryMaxBackoff,
 		StatusCodes:    cfg.AgentRetryStatusCodes,
 	})
+	agentRuntime.SetDefaultMaxSteps(cfg.AgentMaxSteps)
 	agentRuntime.SetHooks(hooks)
 	agentRuntime.SetContextBudget(cfg.LLMContextWindowTokens, cfg.LLMPromptReserveTokens, cfg.LLMMaxToolDefinitions, cfg.LLMMaxToolResultChars)
 	agentRuntime.EnableMemory(memStore, cfg.MemoryInject, cfg.MemoryTopK)

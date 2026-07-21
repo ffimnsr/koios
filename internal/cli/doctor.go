@@ -552,6 +552,9 @@ func repairDoctorConfig(state *repoState) ([]string, error) {
 	if cfg.AgentMaxChildren < 1 {
 		fixInt(&cfg.AgentMaxChildren, "agent.max_children", defaultCfg.AgentMaxChildren)
 	}
+	if cfg.AgentMaxSteps < 1 {
+		fixInt(&cfg.AgentMaxSteps, "agent.max_steps", defaultCfg.AgentMaxSteps)
+	}
 	if cfg.AgentRetryAttempts < 1 {
 		fixInt(&cfg.AgentRetryAttempts, "agent.retry_attempts", defaultCfg.AgentRetryAttempts)
 	}

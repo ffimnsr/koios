@@ -400,7 +400,6 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			PeerID:       peerID,
 			SessionKey:   targetSessionKey,
 			Messages:     []types.Message{{Role: "user", Content: args.Message}},
-			MaxSteps:     toolLoopMaxSteps,
 			ToolExecutor: h,
 			Timeout:      timeout,
 		})

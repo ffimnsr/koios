@@ -2,8 +2,6 @@ package handler
 
 import "encoding/json"
 
-const toolLoopMaxSteps = 4
-
 func mustJSONSchema(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {

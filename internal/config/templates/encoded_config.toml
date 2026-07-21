@@ -44,6 +44,7 @@ every = %s
 
 [agent]
 max_children = %d
+max_steps = %d
 retry_attempts = %d
 retry_initial_backoff = %s
 retry_max_backoff = %s

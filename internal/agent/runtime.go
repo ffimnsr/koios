@@ -274,6 +274,7 @@ type Runtime struct {
 	promptReserveTokens int
 	maxToolDefinitions  int
 	maxToolResultChars  int
+	defaultMaxSteps     int
 
 	steeringMu     sync.Mutex
 	steeringQueues map[string][]string // sessionKey → pending user messages
@@ -503,6 +504,14 @@ func NewRuntime(store *session.Store, prov Provider, model string, timeout time.
 		promptReserveTokens: 4000,
 		maxToolDefinitions:  24,
 		maxToolResultChars:  4000,
+		defaultMaxSteps:     80,
+	}
+}
+
+// SetDefaultMaxSteps configures the default step budget used when a run omits MaxSteps.
+func (rt *Runtime) SetDefaultMaxSteps(maxSteps int) {
+	if maxSteps > 0 {
+		rt.defaultMaxSteps = maxSteps
 	}
 }
 
@@ -573,10 +582,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		reqCopy.Timeout = rt.defaultTimeout
 	}
 	if reqCopy.MaxSteps <= 0 {
-		if reqCopy.ToolExecutor != nil || reqCopy.Stream {
-			reqCopy.MaxSteps = 4
-		} else {
-			reqCopy.MaxSteps = 1
+		reqCopy.MaxSteps = rt.defaultMaxSteps
+		if reqCopy.MaxSteps <= 0 {
+			reqCopy.MaxSteps = 80
 		}
 	}
 	callCtx, cancel := context.WithTimeout(ctx, reqCopy.Timeout)

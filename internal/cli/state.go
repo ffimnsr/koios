@@ -35,6 +35,7 @@ type repoState struct {
 	CompactReserve           int
 	CronMaxConcurrent        int
 	AgentMaxChildren         int
+	AgentMaxSteps            int
 	AgentRetryAttempts       int
 	AgentRetryInitialBackoff time.Duration
 	AgentRetryMaxBackoff     time.Duration
@@ -112,6 +113,7 @@ func resolveRepoStateForDoctor(cwd string, allowConfigError bool) (*repoState, e
 		CompactReserve:           cfg.CompactReserve,
 		CronMaxConcurrent:        cfg.CronMaxConcurrentRuns,
 		AgentMaxChildren:         cfg.AgentMaxChildren,
+		AgentMaxSteps:            cfg.AgentMaxSteps,
 		AgentRetryAttempts:       cfg.AgentRetryAttempts,
 		AgentRetryInitialBackoff: cfg.AgentRetryInitialBackoff,
 		AgentRetryMaxBackoff:     cfg.AgentRetryMaxBackoff,
@@ -185,6 +187,9 @@ func (s *repoState) validate() []doctorFinding {
 	}
 	if s.AgentMaxChildren < 1 {
 		findings = append(findings, doctorFinding{Level: "error", Key: "agent.max_children", Message: "agent.max_children must be >= 1", Path: s.ConfigPath})
+	}
+	if s.AgentMaxSteps < 1 {
+		findings = append(findings, doctorFinding{Level: "error", Key: "agent.max_steps", Message: "agent.max_steps must be >= 1", Path: s.ConfigPath})
 	}
 	if s.AgentRetryAttempts < 1 {
 		findings = append(findings, doctorFinding{Level: "error", Key: "agent.retry_attempts", Message: "agent.retry_attempts must be >= 1", Path: s.ConfigPath})

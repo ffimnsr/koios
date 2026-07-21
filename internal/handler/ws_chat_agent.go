@@ -139,7 +139,6 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 		Messages:      p.Messages,
 		Stream:        p.Stream,
 		BlockStream:   streamCfg.BlockMode,
-		MaxSteps:      toolLoopMaxSteps,
 		MaxTokens:     p.MaxTokens,
 		Temperature:   p.Temperature,
 		TopP:          p.TopP,

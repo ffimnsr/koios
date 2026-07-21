@@ -153,6 +153,7 @@ every = "30m"
 
 [agent]
 max_children = 4
+max_steps = 80
 retry_attempts = 3
 retry_initial_backoff = "500ms"
 retry_max_backoff = "5s"

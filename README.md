@@ -43,7 +43,7 @@ Key sections:
 - `[session]`, `[compaction]`, `[memory]` for context and storage behavior
 - `session.prune_keep_tool_messages` prunes older tool chatter from active request context without compacting the whole session
 - `session.retention`, `session.max_entries`, `session.idle_reset_after`, and `session.daily_reset_time` control session cleanup and auto-reset
-- `[cron]`, `[heartbeat]`, `[agent]` for scheduler and agent runtime settings
+- `[cron]`, `[heartbeat]`, `[agent]` for scheduler and agent runtime settings (`agent.max_steps` defaults chat/agent runs to `80` unless overridden per request)
 - `[tools]` chat-tool profiles, allow/deny lists, and exec approval settings
 - `[mcp]` startup MCP servers for stdio/http/sse transports; useful when extending the Koios container with bundled MCP binaries
 - `[channels.telegram]` for Telegram delivery, DM policy, and optional inbox routing into an owner peer
@@ -461,7 +461,7 @@ Execute an agent turn with scoped session handling, shared context assembly, opt
 | `sender_id` | `string` | Used with `scope=direct` to key the session |
 | `session_key` | `string` | Explicit session key override |
 | `stream` | `bool` | Stream token deltas |
-| `max_steps` | `int` | Maximum runtime steps; currently defaults to `1` and exits on first successful reply |
+| `max_steps` | `int` | Maximum runtime steps; when omitted, uses `[agent].max_steps` from config (`80` by default) |
 | `timeout` | `string` | Go duration string, e.g. `"30s"` |
 
 **Session scopes:**

@@ -316,6 +316,7 @@ type Config struct {
 	HeartbeatEnabled      bool
 
 	AgentMaxChildren         int
+	AgentMaxSteps            int
 	AgentRetryAttempts       int
 	AgentRetryInitialBackoff time.Duration
 	AgentRetryMaxBackoff     time.Duration
@@ -523,6 +524,7 @@ type fileConfig struct {
 	} `toml:"heartbeat"`
 	Agent struct {
 		MaxChildren         *int   `toml:"max_children"`
+		MaxSteps            *int   `toml:"max_steps"`
 		RetryAttempts       *int   `toml:"retry_attempts"`
 		RetryInitialBackoff string `toml:"retry_initial_backoff"`
 		RetryMaxBackoff     string `toml:"retry_max_backoff"`
@@ -645,6 +647,7 @@ func Default() *Config {
 		HeartbeatEvery:                30 * time.Minute,
 		HeartbeatEnabled:              true,
 		AgentMaxChildren:              4,
+		AgentMaxSteps:                 80,
 		AgentRetryAttempts:            3,
 		AgentRetryInitialBackoff:      500 * time.Millisecond,
 		AgentRetryMaxBackoff:          5 * time.Second,
@@ -805,6 +808,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		cfg.HeartbeatEnabled,
 		strconv.Quote(cfg.HeartbeatEvery.String()),
 		cfg.AgentMaxChildren,
+		cfg.AgentMaxSteps,
 		cfg.AgentRetryAttempts,
 		strconv.Quote(cfg.AgentRetryInitialBackoff.String()),
 		strconv.Quote(cfg.AgentRetryMaxBackoff.String()),
@@ -1391,6 +1395,9 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 
 	if src.Agent.MaxChildren != nil && *src.Agent.MaxChildren > 0 {
 		dst.AgentMaxChildren = *src.Agent.MaxChildren
+	}
+	if src.Agent.MaxSteps != nil && *src.Agent.MaxSteps > 0 {
+		dst.AgentMaxSteps = *src.Agent.MaxSteps
 	}
 	if src.Agent.RetryAttempts != nil && *src.Agent.RetryAttempts > 0 {
 		dst.AgentRetryAttempts = *src.Agent.RetryAttempts
@@ -2010,6 +2017,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.AgentMaxChildren < 1 {
 		return fmt.Errorf("agent.max_children must be >= 1")
+	}
+	if cfg.AgentMaxSteps < 1 {
+		return fmt.Errorf("agent.max_steps must be >= 1")
 	}
 	if cfg.AgentRetryAttempts < 1 {
 		return fmt.Errorf("agent.retry_attempts must be >= 1")
