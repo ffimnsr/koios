@@ -12,6 +12,17 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-07-21
+
+### Added
+
+- add reasoning (`a610d57`)
+
+
+### Maintenance
+
+- update task images (`7544e06`)
+
 ## [0.7.8] - 2026-07-21
 
 ### Added
@@ -312,7 +323,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.8...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.9...HEAD
+[0.7.9]: https://github.com/ffimnsr/koios/releases/tag/v0.7.9
 [0.7.8]: https://github.com/ffimnsr/koios/releases/tag/v0.7.8
 [0.7.7]: https://github.com/ffimnsr/koios/releases/tag/v0.7.7
 [0.7.6]: https://github.com/ffimnsr/koios/releases/tag/v0.7.6
