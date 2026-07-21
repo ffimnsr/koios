@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.10] - 2026-07-21
+
+### Added
+
+- update max steps so calls won't stop (`a2c204d`)
+
 ## [0.7.9] - 2026-07-21
 
 ### Added
@@ -323,7 +329,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.9...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.10...HEAD
+[0.7.10]: https://github.com/ffimnsr/koios/releases/tag/v0.7.10
 [0.7.9]: https://github.com/ffimnsr/koios/releases/tag/v0.7.9
 [0.7.8]: https://github.com/ffimnsr/koios/releases/tag/v0.7.8
 [0.7.7]: https://github.com/ffimnsr/koios/releases/tag/v0.7.7
