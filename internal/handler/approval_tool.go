@@ -170,6 +170,10 @@ func shellApprovalFilter(approval pendingApproval) bool {
 	return approval.Kind == "shell_execution"
 }
 
+func skillApprovalFilter(approval pendingApproval) bool {
+	return approval.Kind == "skill_install"
+}
+
 func (h *Handler) rpcApprovalPending(_ context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
 		Kind string `json:"kind"`

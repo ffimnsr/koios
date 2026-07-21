@@ -47,6 +47,7 @@ import (
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/scratchpad"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/skills"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/tasks"
@@ -323,9 +324,11 @@ func RunGateway(build BuildInfo) error {
 	agentRuntime.SetHooks(hooks)
 	agentRuntime.EnableMemory(memStore, cfg.MemoryInject, cfg.MemoryTopK)
 	agentRuntime.SetMemoryLCM(cfg.MemoryLCMWindow, cfg.MemoryNamespaces)
+	skillMgr := skills.NewManager(cfg, workspaceDir)
 	agentRuntime.SetPruning(cfg.SessionPruneKeepToolMessages)
 	agentRuntime.SetStandingOrders(standingMgr)
 	agentRuntime.SetIdentityDir(cfg.WorkspaceRoot)
+	agentRuntime.SetSkillManager(skillMgr)
 	agentRuntime.EnableTasks(taskStore)
 	// Wire peer-aware provider resolver for BYOK support.
 	if peerLLMStore != nil {
@@ -515,6 +518,7 @@ func RunGateway(build BuildInfo) error {
 		HBConfigStore:   hbConfigStore,
 		HBDefaultEvery:  cfg.HeartbeatEvery,
 		StandingManager: standingMgr,
+		SkillManager:    skillMgr,
 		AgentRuntime:    agentRuntime,
 		AgentCoord:      agentCoord,
 		SubRuntime:      subRuntime,

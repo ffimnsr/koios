@@ -13,10 +13,12 @@ import (
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/channels"
+	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/skills"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 	"github.com/ffimnsr/koios/internal/workspace"
@@ -327,6 +329,204 @@ func TestWS_ServerCapabilities_WorkspaceMethods(t *testing.T) {
 	}
 	if !containsString(result.Methods, "workspace.list") || !containsString(result.Methods, "workspace.head") || !containsString(result.Methods, "workspace.tail") || !containsString(result.Methods, "workspace.grep") || !containsString(result.Methods, "workspace.find") || !containsString(result.Methods, "workspace.sort") || !containsString(result.Methods, "workspace.uniq") || !containsString(result.Methods, "workspace.diff") || !containsString(result.Methods, "workspace.write") {
 		t.Fatalf("expected workspace methods in capabilities, got %#v", result.Methods)
+	}
+}
+
+func TestWS_SkillsCatalogRPC(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	cfg := config.Default()
+	cfg.WorkspaceRoot = workspaceRoot
+	skillPath := filepath.Join(workspaceRoot, "skills", "security-review", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte(`---
+id: security-review
+name: Security Review
+version: "1.0.0"
+commands:
+  - name: security-review
+    assistant_text: |
+      Review auth and validation.
+---
+Security checklist body.
+`), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		SkillManager: skills.NewManager(cfg, projectRoot),
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "skills-caps", "server.capabilities", nil)
+	capsMsg := readUntilID(t, conn, "skills-caps")
+	if capsMsg.Error != nil {
+		t.Fatalf("server.capabilities rpc error: %#v", capsMsg.Error)
+	}
+	var caps struct {
+		Capabilities map[string]bool `json:"capabilities"`
+		Methods      []string        `json:"methods"`
+	}
+	if err := json.Unmarshal(capsMsg.Result, &caps); err != nil {
+		t.Fatalf("unmarshal server.capabilities result: %v", err)
+	}
+	if !caps.Capabilities["skills"] || !containsString(caps.Methods, "skills.catalog") || !containsString(caps.Methods, "skills.refresh") {
+		t.Fatalf("expected skills capability and methods, got %#v", caps)
+	}
+
+	sendRPC(t, conn, "skills1", "skills.catalog", map[string]any{"include_blocked": true, "include_shadowed": true})
+	msg := readUntilID(t, conn, "skills1")
+	if msg.Error != nil {
+		t.Fatalf("skills.catalog rpc error: %#v", msg.Error)
+	}
+	var result struct {
+		Count   int `json:"count"`
+		Entries []struct {
+			Status   string `json:"status"`
+			Selected bool   `json:"selected"`
+			Skill    struct {
+				ID      string `json:"id"`
+				Name    string `json:"name"`
+				Version string `json:"version"`
+				Source  string `json:"source"`
+			} `json:"skill"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
+		t.Fatalf("unmarshal skills.catalog result: %v", err)
+	}
+	if result.Count < 1 || len(result.Entries) < 1 {
+		t.Fatalf("expected at least one skill entry, got %#v", result)
+	}
+	if result.Entries[0].Skill.ID != "security-review" || result.Entries[0].Skill.Version != "1.0.0" || !result.Entries[0].Selected {
+		t.Fatalf("unexpected skills.catalog entry: %#v", result.Entries[0])
+	}
+}
+
+func TestWS_SkillsInstallRPC(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	cfg := config.Default()
+	cfg.WorkspaceRoot = workspaceRoot
+	incomingPath := filepath.Join(workspaceRoot, "peers", "alice", "incoming", "ops-check", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(incomingPath), 0o755); err != nil {
+		t.Fatalf("mkdir incoming skill dir: %v", err)
+	}
+	if err := os.WriteFile(incomingPath, []byte(`---
+id: ops-check
+name: Ops Check
+managed: true
+---
+Ops skill body.
+`), 0o644); err != nil {
+		t.Fatalf("write incoming skill: %v", err)
+	}
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	wsStore, err := workspace.New(workspaceRoot, true, 1<<20)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		WorkspaceRoot:  workspaceRoot,
+		SkillManager:   skills.NewManager(cfg, projectRoot),
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "skills-install-caps", "server.capabilities", nil)
+	capsMsg := readUntilID(t, conn, "skills-install-caps")
+	if capsMsg.Error != nil {
+		t.Fatalf("server.capabilities rpc error: %#v", capsMsg.Error)
+	}
+	var caps struct {
+		Methods []string `json:"methods"`
+	}
+	if err := json.Unmarshal(capsMsg.Result, &caps); err != nil {
+		t.Fatalf("unmarshal server.capabilities result: %v", err)
+	}
+	if !containsString(caps.Methods, "skills.scan_install") || !containsString(caps.Methods, "skills.install") || !containsString(caps.Methods, "skills.pending") || !containsString(caps.Methods, "skills.approve") || !containsString(caps.Methods, "skills.reject") {
+		t.Fatalf("expected skills install methods, got %#v", caps.Methods)
+	}
+
+	sendRPC(t, conn, "skills-scan", "skills.scan_install", map[string]any{"path": "incoming/ops-check"})
+	msg := readUntilID(t, conn, "skills-scan")
+	if msg.Error != nil {
+		t.Fatalf("skills.scan_install rpc error: %#v", msg.Error)
+	}
+	var scan struct {
+		Path     string `json:"path"`
+		Resolved string `json:"resolved"`
+		Safe     bool   `json:"safe"`
+	}
+	if err := json.Unmarshal(msg.Result, &scan); err != nil {
+		t.Fatalf("unmarshal skills.scan_install result: %v", err)
+	}
+	if !scan.Safe || scan.Path != "incoming/ops-check" || !strings.Contains(scan.Resolved, filepath.Join("peers", "alice", "incoming", "ops-check")) {
+		t.Fatalf("unexpected skills.scan_install result: %#v", scan)
+	}
+
+	sendRPC(t, conn, "skills-install", "skills.install", map[string]any{"path": "incoming/ops-check", "confirm": false})
+	msg = readUntilID(t, conn, "skills-install")
+	if msg.Error != nil {
+		t.Fatalf("skills.install rpc error: %#v", msg.Error)
+	}
+	var requested struct {
+		Status   string `json:"status"`
+		Approval struct {
+			ID string `json:"id"`
+		} `json:"approval"`
+	}
+	if err := json.Unmarshal(msg.Result, &requested); err != nil {
+		t.Fatalf("unmarshal skills.install result: %v", err)
+	}
+	if requested.Status != "approval_required" || requested.Approval.ID == "" {
+		t.Fatalf("expected approval_required result, got %s", string(msg.Result))
+	}
+
+	sendRPC(t, conn, "skills-pending", "skills.pending", map[string]any{})
+	msg = readUntilID(t, conn, "skills-pending")
+	if msg.Error != nil {
+		t.Fatalf("skills.pending rpc error: %#v", msg.Error)
+	}
+	if !strings.Contains(string(msg.Result), requested.Approval.ID) {
+		t.Fatalf("expected skill approval id in pending result, got %s", string(msg.Result))
+	}
+
+	sendRPC(t, conn, "skills-approve", "skills.approve", map[string]any{"id": requested.Approval.ID})
+	msg = readUntilID(t, conn, "skills-approve")
+	if msg.Error != nil {
+		t.Fatalf("skills.approve rpc error: %#v", msg.Error)
+	}
+	var approved struct {
+		Status  string `json:"status"`
+		Install struct {
+			Installed bool `json:"installed"`
+			Skill     *struct {
+				ID string `json:"id"`
+			} `json:"skill"`
+		} `json:"install"`
+	}
+	if err := json.Unmarshal(msg.Result, &approved); err != nil {
+		t.Fatalf("unmarshal skills.approve result: %v", err)
+	}
+	if approved.Status != "installed" || !approved.Install.Installed || approved.Install.Skill == nil || approved.Install.Skill.ID != "ops-check" {
+		t.Fatalf("unexpected skills.approve result: %s", string(msg.Result))
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ManagedSkillsDir(), "ops-check", "SKILL.md")); err != nil {
+		t.Fatalf("expected installed skill in managed dir: %v", err)
 	}
 }
 

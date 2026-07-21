@@ -313,17 +313,18 @@ Example response:
       "memory": false,
       "cron": true,
       "standing": true,
+      "skills": true,
       "heartbeat": false,
       "subagents": false,
       "workspace": true,
       "exec": true,
       "web": true
     },
-    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.find", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
+    "methods": ["ping", "server.capabilities", "chat", "session.history", "session.reset", "standing.get", "standing.set", "standing.clear", "skills.catalog", "skills.refresh", "skills.scan_install", "skills.install", "skills.pending", "skills.approve", "skills.reject", "agent.run", "agent.start", "agent.get", "agent.wait", "agent.cancel", "memory.search", "memory.insert", "memory.get", "memory.list", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.find", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.pending", "exec.approve", "exec.reject", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "heartbeat.get", "heartbeat.set", "heartbeat.wake", "subagent.list", "subagent.spawn", "subagent.get", "subagent.status", "subagent.kill", "subagent.steer", "subagent.transcript"],
     "chat_tools": ["time.now", "subagent.status", "session.history", "session.list", "session.spawn", "session.send", "session.patch", "memory.search", "memory.insert", "memory.get", "memory.entity.create", "memory.entity.update", "memory.entity.get", "memory.entity.list", "memory.entity.search", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.list", "workspace.read", "workspace.head", "workspace.tail", "workspace.grep", "workspace.find", "workspace.sort", "workspace.uniq", "workspace.diff", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "read", "head", "tail", "grep", "find", "sort", "uniq", "diff", "write", "edit", "apply_patch", "exec", "web_search", "web_fetch", "cron.list", "cron.create", "cron.get", "cron.update", "cron.delete", "cron.trigger", "cron.runs", "session.reset"],
     "idempotency": {
       "params_field": "idempotency_key",
-      "methods": ["chat", "session.reset", "presence.set", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.cancel", "agent.steer", "subagent.spawn", "subagent.kill", "subagent.steer", "memory.insert", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "exec", "exec.approve", "exec.reject", "cron.create", "cron.update", "cron.delete", "cron.trigger", "heartbeat.set", "heartbeat.wake", "server.set_log_level"]
+      "methods": ["chat", "session.reset", "presence.set", "standing.set", "standing.clear", "agent.run", "agent.start", "agent.cancel", "agent.steer", "subagent.spawn", "subagent.kill", "subagent.steer", "memory.insert", "memory.delete", "memory.entity.create", "memory.entity.update", "memory.entity.link_chunk", "memory.entity.relate", "memory.entity.touch", "memory.entity.delete", "memory.entity.unlink_chunk", "memory.entity.unrelate", "workspace.write", "workspace.edit", "workspace.mkdir", "workspace.delete", "skills.approve", "skills.reject", "exec", "exec.approve", "exec.reject", "cron.create", "cron.update", "cron.delete", "cron.trigger", "heartbeat.set", "heartbeat.wake", "server.set_log_level"]
     },
     "stream_notifications": ["stream.delta", "stream.event", "session.message"]
   }
@@ -934,6 +935,129 @@ workspace sandbox used by agent tools.
 
 ```json
 {"id":"27","method":"workspace.edit","params":{"path":"project/readme.md","old_text":"Hello","new_text":"Hi","replace_all":false}}
+```
+
+### `skills.catalog` / `skills.refresh` / `skills.scan_install` / `skills.install` / `skills.pending` / `skills.approve` / `skills.reject`
+
+Manage the resolved `SKILL.md` catalog and the managed-skill install lifecycle over RPC.
+
+- `skills.catalog` returns the resolved catalog for this daemon, including source, metadata, blocked reasons, selection state, and watcher refresh metadata.
+- `skills.refresh` forces a catalog rebuild and returns the refreshed snapshot.
+- `skills.scan_install` scans a workspace-relative skill path for risky install patterns before approval or install.
+- `skills.install` starts a managed-skill install. With `confirm: false`, it returns `status: "approval_required"` and a pending approval id.
+- `skills.pending`, `skills.approve`, and `skills.reject` are skill-scoped approval aliases so clients do not need to use the generic approval RPCs for skill installs.
+
+Catalog example:
+
+```json
+{"id":"28","method":"skills.catalog","params":{"include_blocked":true,"include_shadowed":true}}
+```
+
+```json
+{
+  "id": "28",
+  "result": {
+    "generation": 1721570000000000000,
+    "refreshed_at": "2026-07-21T15:00:00Z",
+    "fingerprint": "7c6d...",
+    "auto_refreshed": false,
+    "current_version": "0.1.0",
+    "count": 1,
+    "entries": [
+      {
+        "status": "active",
+        "selected": true,
+        "skill": {
+          "id": "security-review",
+          "name": "Security Review",
+          "version": "1.0.0",
+          "source": "workspace",
+          "commands": [
+            {"name": "security-review", "assistant_text": "Review auth and validation."}
+          ]
+        }
+      }
+    ]
+  }
+}
+```
+
+Refresh example:
+
+```json
+{"id":"29","method":"skills.refresh"}
+```
+
+Scan example:
+
+```json
+{"id":"30","method":"skills.scan_install","params":{"path":"incoming/ops-check"}}
+```
+
+Install request example:
+
+```json
+{"id":"31","method":"skills.install","params":{"path":"incoming/ops-check","confirm":false}}
+```
+
+```json
+{
+  "id": "31",
+  "result": {
+    "status": "approval_required",
+    "approval": {
+      "id": "skill-approval-id"
+    }
+  }
+}
+```
+
+Skill-scoped approval lifecycle examples:
+
+```json
+{"id":"32","method":"skills.pending"}
+```
+
+```json
+{"id":"33","method":"skills.approve","params":{"id":"skill-approval-id"}}
+```
+
+```json
+{"id":"34","method":"skills.reject","params":{"id":"skill-approval-id"}}
+```
+
+End-to-end WebSocket sequence example:
+
+1. Fetch the resolved catalog.
+2. Scan a workspace-relative incoming skill.
+3. Request installation.
+4. List pending skill approvals.
+5. Approve or reject the install.
+
+```json
+{"id":"40","method":"skills.catalog","params":{"include_blocked":true,"include_shadowed":true}}
+
+{"id":"41","method":"skills.scan_install","params":{"path":"incoming/ops-check"}}
+
+{"id":"42","method":"skills.install","params":{"path":"incoming/ops-check","confirm":false}}
+
+{"id":"42","result":{"status":"approval_required","approval":{"id":"skill-approval-id"}}}
+
+{"id":"43","method":"skills.pending"}
+
+{"id":"43","result":{"pending":[{"id":"skill-approval-id","kind":"skill_install","action":"install"}]}}
+
+{"id":"44","method":"skills.approve","params":{"id":"skill-approval-id"}}
+
+{"id":"44","result":{"status":"installed","install":{"installed":true,"skill":{"id":"ops-check"}}}}
+```
+
+Reject example instead of approval:
+
+```json
+{"id":"45","method":"skills.reject","params":{"id":"skill-approval-id"}}
+
+{"id":"45","result":{"ok":true}}
 ```
 
 ### `exec` / `exec.pending` / `exec.approve` / `exec.reject`

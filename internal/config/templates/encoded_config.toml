@@ -78,7 +78,10 @@ dirs = [%s]
 allow = [%s]
 deny = [%s]
 
-%s%s
+[skills]
+dirs = [%s]
+
+%s%s%s
 [tools.exec]
 enabled = %t
 enable_deny_patterns = %t

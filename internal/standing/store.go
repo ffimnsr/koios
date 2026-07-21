@@ -35,6 +35,7 @@ type Profile struct {
 	ToolProfile   string   `json:"tool_profile,omitempty"`
 	ToolsAllow    []string `json:"tools_allow,omitempty"`
 	ToolsDeny     []string `json:"tools_deny,omitempty"`
+	SkillsAllow   []string `json:"skills_allow,omitempty"`
 	ResponseStyle string   `json:"response_style,omitempty"`
 	ThinkLevel    string   `json:"think_level,omitempty"`
 	VerboseMode   *bool    `json:"verbose_mode,omitempty"`
@@ -343,6 +344,7 @@ func normalizeProfile(profile Profile) Profile {
 	profile.ThinkLevel = strings.TrimSpace(profile.ThinkLevel)
 	profile.ToolsAllow = trimStringSlice(profile.ToolsAllow)
 	profile.ToolsDeny = trimStringSlice(profile.ToolsDeny)
+	profile.SkillsAllow = trimStringSlice(profile.SkillsAllow)
 	return profile
 }
 
@@ -351,6 +353,7 @@ func (p Profile) isZero() bool {
 		p.ToolProfile == "" &&
 		len(p.ToolsAllow) == 0 &&
 		len(p.ToolsDeny) == 0 &&
+		len(p.SkillsAllow) == 0 &&
 		p.ResponseStyle == "" &&
 		p.ThinkLevel == "" &&
 		p.VerboseMode == nil &&

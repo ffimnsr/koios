@@ -148,6 +148,34 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			args.Context = 3
 		}
 		return h.workspaceDiff(peerID, args.Path, args.OtherPath, args.Content, args.Context)
+	case "skills.catalog":
+		var args struct {
+			IncludeBlocked  bool `json:"include_blocked"`
+			IncludeShadowed bool `json:"include_shadowed"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.skillCatalog(args.IncludeBlocked, args.IncludeShadowed)
+	case "skills.refresh":
+		return h.skillRefresh()
+	case "skills.scan_install":
+		var args struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.skillScanInstall(peerID, args.Path)
+	case "skills.install":
+		var args struct {
+			Path    string `json:"path"`
+			Confirm bool   `json:"confirm"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.skillInstall(ctx, peerID, args.Path, args.Confirm)
 	case "session.list":
 		type sessionEntry struct {
 			kind         string

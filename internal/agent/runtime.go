@@ -19,6 +19,7 @@ import (
 	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/ffimnsr/koios/internal/requestctx"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/skills"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
@@ -253,6 +254,7 @@ type Runtime struct {
 	memNamespaces     []string
 	pruneToolMessages int
 	standingManager   *standing.Manager
+	skillManager      *skills.Manager
 	hooks             *ops.Manager
 	identityDir       string
 
@@ -334,6 +336,11 @@ func (rt *Runtime) SetStandingOrders(manager *standing.Manager) {
 // SetHooks configures lifecycle hooks for runtime events.
 func (rt *Runtime) SetHooks(hooks *ops.Manager) {
 	rt.hooks = hooks
+}
+
+// SetSkillManager configures the workspace/project skill loader.
+func (rt *Runtime) SetSkillManager(manager *skills.Manager) {
+	rt.skillManager = manager
 }
 
 // SetIdentityDir configures the workspace root directory from which identity
@@ -558,6 +565,12 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Step: step, Error: err.Error()})
 			return result, err
 		}
+		skillSystem, err := rt.skillSystemMessages(reqCopy)
+		if err != nil {
+			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Step: step, Error: err.Error()})
+			return result, err
+		}
+		extraSystem = append(extraSystem, skillSystem...)
 		built, err := requestctx.Build(callCtx, requestctx.BuildOptions{
 			Model:             reqCopy.Model,
 			Messages:          stepMessages,
@@ -857,6 +870,24 @@ func (rt *Runtime) standingSystemMessages(req RunRequest) ([]types.Message, erro
 		return nil, err
 	}
 	return []types.Message{*msg}, nil
+}
+
+func (rt *Runtime) skillSystemMessages(req RunRequest) ([]types.Message, error) {
+	if rt.skillManager == nil || req.Scope == ScopeGlobal {
+		return nil, nil
+	}
+	return rt.skillManager.SystemMessages(req.ActiveProfile, rt.skillAllowlist(req.PeerID, req.ActiveProfile))
+}
+
+func (rt *Runtime) skillAllowlist(peerID, activeProfile string) []string {
+	if rt.standingManager == nil || strings.TrimSpace(peerID) == "" {
+		return nil
+	}
+	resolved, err := rt.standingManager.ResolveProfile(peerID, activeProfile)
+	if err != nil || resolved == nil {
+		return nil
+	}
+	return append([]string(nil), resolved.Profile.SkillsAllow...)
 }
 
 func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bool, sink *captureResponseWriter) (string, *types.ChatResponse, error) {

@@ -42,6 +42,56 @@ var toolDefs = []toolDef{
 		argHint: `{"limit":50,"session_key":"optional — must be your own peer ID or start with '<your-peer-id>::'","run_id":"optional sub-session id"}`,
 	},
 	{
+		name:        "skills.catalog",
+		description: "List the resolved SKILL.md catalog, including active, shadowed, and optionally blocked skills with source and metadata.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"include_blocked":  map[string]any{"type": "boolean"},
+				"include_shadowed": map[string]any{"type": "boolean"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"include_blocked":true,"include_shadowed":true}`,
+		available: func(h *Handler) bool { return h.skillManager != nil },
+	},
+	{
+		name:        "skills.refresh",
+		description: "Force a refresh of the resolved skills catalog and return the new watcher/catalog state.",
+		parameters:  mustJSONSchema(map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}),
+		argHint:     `{}`,
+		available:   func(h *Handler) bool { return h.skillManager != nil },
+	},
+	{
+		name:        "skills.scan_install",
+		description: "Scan a workspace-relative SKILL.md file or skill directory for risky install patterns before installation.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"incoming/my-skill"}`,
+		available: func(h *Handler) bool { return h.skillManager != nil && h.workspaceStore != nil },
+	},
+	{
+		name:        "skills.install",
+		description: "Install a workspace-relative skill into the managed skills directory. Returns approval_required until confirmed.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"confirm": map[string]any{"type": "boolean"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"path":"incoming/my-skill","confirm":false}`,
+		available: func(h *Handler) bool { return h.skillManager != nil && h.workspaceStore != nil },
+	},
+	{
 		name:        "bookmark.create",
 		description: "Save a titled bookmark for later recall with optional labels, reminder date, and provenance fields.",
 		parameters: mustJSONSchema(map[string]any{

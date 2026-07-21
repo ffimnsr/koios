@@ -19,6 +19,21 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg.ExtensionDirs = []string{"./extensions-extra", "/opt/koios/extensions"}
 	cfg.ExtensionAllow = []string{"filesystem", "demo.http"}
 	cfg.ExtensionDeny = []string{"blocked"}
+	cfg.SkillDirs = []string{"./skills-extra", "/opt/koios/skills"}
+	cfg.SkillOverrides = map[string]SkillOverride{
+		"security-review": {
+			Enabled:     configBoolPtr(true),
+			Name:        "Security Review",
+			Description: "Override description",
+			Agents:      []string{"security", "review"},
+			Trust:       "trusted",
+			Commands: []SkillCommandOverride{{
+				Name:          "security-review",
+				Description:   "Run the security review skill",
+				AssistantText: "Review these areas: {{args}}",
+			}},
+		},
+	}
 	cfg.ExecCustomDenyPatterns = []string{"rm -rf"}
 	cfg.ExecCustomAllowPatterns = []string{"git status"}
 	cfg.ExecIsolationEnabled = true
@@ -65,6 +80,13 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 		`dirs = ["./extensions-extra", "/opt/koios/extensions"]`,
 		`allow = ["filesystem", "demo.http"]`,
 		`deny = ["blocked"]`,
+		`[skills]`,
+		`dirs = ["./skills-extra", "/opt/koios/skills"]`,
+		`[skills.overrides."security-review"]`,
+		`name = "Security Review"`,
+		`agents = ["security", "review"]`,
+		`[[skills.overrides."security-review".commands]]`,
+		`assistant_text = "Review these areas: {{args}}"`,
 		`[channels.telegram]`,
 		`bot_token = "123:token"`,
 		`mode = "webhook"`,
@@ -129,6 +151,22 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	if len(loaded.ExtensionDeny) != 1 || loaded.ExtensionDeny[0] != "blocked" {
 		t.Fatalf("unexpected extension deny list after round-trip: %#v", loaded.ExtensionDeny)
 	}
+	if len(loaded.SkillDirs) != 2 || loaded.SkillDirs[0] != filepath.Join(dir, "skills-extra") || loaded.SkillDirs[1] != "/opt/koios/skills" {
+		t.Fatalf("unexpected skill dirs after round-trip: %#v", loaded.SkillDirs)
+	}
+	override, ok := loaded.SkillOverrides["security-review"]
+	if !ok || override.Name != "Security Review" || override.Description != "Override description" || override.Trust != "trusted" {
+		t.Fatalf("unexpected skill override after round-trip: %#v", loaded.SkillOverrides)
+	}
+	if override.Enabled == nil || !*override.Enabled {
+		t.Fatalf("expected enabled override after round-trip: %#v", override)
+	}
+	if len(override.Agents) != 2 || override.Agents[0] != "security" || override.Agents[1] != "review" {
+		t.Fatalf("unexpected skill override agents after round-trip: %#v", override)
+	}
+	if len(override.Commands) != 1 || override.Commands[0].Name != "security-review" || override.Commands[0].AssistantText != "Review these areas: {{args}}" {
+		t.Fatalf("unexpected skill override commands after round-trip: %#v", override.Commands)
+	}
 	if len(loaded.ExecIsolationPaths) != 1 || loaded.ExecIsolationPaths[0].Source != "/tmp/src" || loaded.ExecIsolationPaths[0].Target != "/mnt/src" || loaded.ExecIsolationPaths[0].Mode != "ro" {
 		t.Fatalf("unexpected isolation paths after round-trip: %#v", loaded.ExecIsolationPaths)
 	}
@@ -164,6 +202,15 @@ func TestValidateRejectsBlankExtensionDirs(t *testing.T) {
 	err := validate(cfg)
 	if err == nil || !strings.Contains(err.Error(), "extensions.dirs[1]") {
 		t.Fatalf("expected extension dir validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsBlankSkillDirs(t *testing.T) {
+	cfg := Default()
+	cfg.SkillDirs = []string{"/ok", "   "}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "skills.dirs[1]") {
+		t.Fatalf("expected skill dir validation error, got %v", err)
 	}
 }
 

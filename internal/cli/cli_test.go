@@ -341,7 +341,7 @@ func TestScaffoldWorkspaceCreatesBootstrapDocs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, subdir := range []string{"sessions", "cron", "agents", "memory", "db", "peers"} {
+	for _, subdir := range []string{"sessions", "cron", "agents", "memory", "db", "skills", filepath.Join("managed", "skills"), "peers"} {
 		if info, err := os.Stat(filepath.Join(root, subdir)); err != nil || !info.IsDir() {
 			t.Fatalf("expected subdir %q to exist, err=%v", subdir, err)
 		}

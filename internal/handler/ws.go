@@ -41,6 +41,7 @@
 //	brief.generate
 //	session.history
 //	session.reset
+//	skills.catalog / .refresh / .scan_install / .install / .pending / .approve / .reject
 //	bookmark.create / .capture_session / .list / .get / .search / .update / .delete
 //	standing.get / .set / .clear / .profile.set / .profile.delete / .profile.activate
 //	agent.run / .start / .get / .wait / .cancel
@@ -90,6 +91,7 @@ import (
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/scratchpad"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/skills"
 	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/subagent"
 	"github.com/ffimnsr/koios/internal/tasks"
@@ -252,6 +254,7 @@ type Handler struct {
 	hbConfigStore           *heartbeat.ConfigStore
 	hbDefaultEvery          time.Duration
 	standingManager         *standing.Manager
+	skillManager            *skills.Manager
 	agentRuntime            *agent.Runtime
 	agentCoord              *agent.Coordinator
 	subRuntime              *subagent.Runtime
@@ -338,6 +341,7 @@ type HandlerOptions struct {
 	HBConfigStore       *heartbeat.ConfigStore
 	HBDefaultEvery      time.Duration
 	StandingManager     *standing.Manager
+	SkillManager        *skills.Manager
 	AgentRuntime        *agent.Runtime
 	AgentCoord          *agent.Coordinator
 	SubRuntime          *subagent.Runtime
@@ -434,6 +438,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		hbConfigStore:           opts.HBConfigStore,
 		hbDefaultEvery:          opts.HBDefaultEvery,
 		standingManager:         opts.StandingManager,
+		skillManager:            opts.SkillManager,
 		agentRuntime:            opts.AgentRuntime,
 		agentCoord:              opts.AgentCoord,
 		subRuntime:              opts.SubRuntime,

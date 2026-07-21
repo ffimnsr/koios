@@ -22,6 +22,7 @@ package handler
 //	/calendar [list|add [<name> |] <path-or-url> [| <timezone>]|remove <id>|agenda [today|this_week|next_conflict] [timezone]]
 //	/brief [daily|weekly] [timezone]
 //	/review [weekly|daily] [timezone]
+//	/skills [list|refresh|scan <path>|install <path>|approve <id>|reject <id>|pending]
 //	/restart  (owner-only)
 //
 // When a recognised command is found, handleSlashCommand processes it and
@@ -42,6 +43,7 @@ import (
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/skills"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/types"
 )
@@ -164,9 +166,26 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 	case "review":
 		h.slashBrief(ctx, wsc, req, arg, briefing.KindWeekly)
 		return true
+	case "skills":
+		h.slashSkills(ctx, wsc, req, arg)
+		return true
 	case "restart":
 		h.slashRestart(wsc, req)
 		return true
+	}
+	if h.skillManager != nil {
+		if match, err := h.skillManager.Command(name); err == nil && match != nil {
+			text := strings.TrimSpace(match.Command.AssistantText)
+			if text == "" {
+				text = strings.TrimSpace(match.Skill.Content)
+			}
+			text = strings.ReplaceAll(text, "{{args}}", strings.TrimSpace(arg))
+			if text == "" {
+				text = fmt.Sprintf("Skill command /%s has no assistant_text or skill body to render.", name)
+			}
+			slashReply(wsc, req, text)
+			return true
+		}
 	}
 	return false
 }
@@ -603,6 +622,119 @@ func (h *Handler) slashReset(wsc *wsConn, req *rpcRequest) {
 }
 
 // ── /compact ──────────────────────────────────────────────────────────────────
+
+func (h *Handler) slashSkills(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string) {
+	if h.skillManager == nil {
+		slashReply(wsc, req, "Skills are not enabled.")
+		return
+	}
+	parts := strings.Fields(strings.TrimSpace(arg))
+	if len(parts) == 0 || parts[0] == "list" || parts[0] == "catalog" {
+		result, err := h.skillCatalog(true, true)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, err.Error())
+			return
+		}
+		entries, _ := result["entries"].([]skills.CatalogEntry)
+		if len(entries) == 0 {
+			slashReply(wsc, req, "No skills found.")
+			return
+		}
+		var lines []string
+		for _, entry := range entries {
+			line := fmt.Sprintf("- %s [%s] (%s)", entry.Skill.ID, entry.Status, entry.Skill.Source)
+			if entry.Selected {
+				line += " selected"
+			}
+			if entry.Skill.Version != "" {
+				line += " v" + entry.Skill.Version
+			}
+			if entry.ShadowedBy != "" {
+				line += " shadowed"
+			}
+			if len(entry.BlockedReasons) > 0 {
+				line += " — " + strings.Join(entry.BlockedReasons, "; ")
+			}
+			lines = append(lines, line)
+		}
+		wsc.reply(req.ID, map[string]any{"assistant_text": strings.Join(lines, "\n"), "skills": result, "done": true})
+		return
+	}
+	switch strings.ToLower(parts[0]) {
+	case "refresh":
+		result, err := h.skillRefresh()
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, err.Error())
+			return
+		}
+		wsc.reply(req.ID, map[string]any{"assistant_text": fmt.Sprintf("Skills refreshed. %d catalog entries loaded.", result["count"]), "skills": result, "done": true})
+	case "scan":
+		if len(parts) < 2 {
+			slashReply(wsc, req, "Usage: /skills scan <workspace-path>")
+			return
+		}
+		result, err := h.skillScanInstall(wsc.peerID, trimLeadingFields(strings.TrimSpace(arg), 1))
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, err.Error())
+			return
+		}
+		text := "Install scan passed."
+		if safe, _ := result["safe"].(bool); !safe {
+			text = "Install scan found risky patterns."
+		}
+		wsc.reply(req.ID, map[string]any{"assistant_text": text, "skills": result, "done": true})
+	case "install":
+		if len(parts) < 2 {
+			slashReply(wsc, req, "Usage: /skills install <workspace-path>")
+			return
+		}
+		result, err := h.skillInstall(ctx, wsc.peerID, trimLeadingFields(strings.TrimSpace(arg), 1), false)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, err.Error())
+			return
+		}
+		approval, _ := result["approval"].(pendingApproval)
+		text := "Skill install queued for approval."
+		if approval.ID != "" {
+			text = fmt.Sprintf("Skill install queued for approval: %s", approval.ID)
+		}
+		wsc.reply(req.ID, map[string]any{"assistant_text": text, "skills": result, "done": true})
+	case "approve":
+		if len(parts) < 2 {
+			slashReply(wsc, req, "Usage: /skills approve <approval-id>")
+			return
+		}
+		result, err := h.approvePendingAction(ctx, wsc.peerID, parts[1], skillApprovalFilter)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, err.Error())
+			return
+		}
+		wsc.reply(req.ID, map[string]any{"assistant_text": "Skill install approved.", "skills": result, "done": true})
+	case "reject":
+		if len(parts) < 2 {
+			slashReply(wsc, req, "Usage: /skills reject <approval-id>")
+			return
+		}
+		if err := h.rejectPendingAction(wsc.peerID, parts[1], skillApprovalFilter); err != nil {
+			wsc.replyErr(req.ID, errCodeServer, err.Error())
+			return
+		}
+		slashReply(wsc, req, "Skill install rejected.")
+	case "pending":
+		pending := h.approvals.list(wsc.peerID, skillApprovalFilter)
+		if len(pending) == 0 {
+			slashReply(wsc, req, "No pending skill approvals.")
+			return
+		}
+		lines := make([]string, 0, len(pending))
+		for _, approval := range pending {
+			lines = append(lines, fmt.Sprintf("- %s %s", approval.ID, approval.Summary))
+		}
+		wsc.reply(req.ID, map[string]any{"assistant_text": strings.Join(lines, "\n"), "pending": pending, "done": true})
+	default:
+		slashReply(wsc, req, "Usage: /skills [list|refresh|scan <path>|install <path>|approve <id>|reject <id>|pending]")
+	}
+}
 
 func (h *Handler) slashCompact(ctx context.Context, wsc *wsConn, req *rpcRequest, arg string) {
 	switch arg {

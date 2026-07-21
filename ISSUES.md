@@ -341,52 +341,66 @@ This file is a merged checklist for the feature gap between Koios and the refere
 
 ## Skills & Extensions
 
-- [ ] `SKILL.md` based skills system with frontmatter
+- [x] `SKILL.md` based skills system with frontmatter
+	- Notes: Koios now loads Markdown skills from `SKILL.md` files with YAML frontmatter (`id`, `name`, `description`, `enabled`, `agents`, and `requires` for load-time gating) and injects active skill content into system prompts as first-class runtime context.
 	- Research notes: All three upstreams are useful here, but OpenClaw and IronClaw are the strongest references. OpenClaw has explicit authoring docs for `SKILL.md` plus loader/config behavior, while IronClaw has a typed skills catalog/config/runtime with formal docs. PicoClaw also has a concrete Markdown-skill system, especially useful for import and launcher UX.
 	- References: OpenClaw `skills/skill-creator/SKILL.md`, `docs/tools/creating-skills.md`, `docs/tools/skills.md`; PicoClaw `pkg/skills/loader.go`, `web/backend/api/skills.go`; IronClaw `docs/capabilities/skills.mdx`, `crates/ironclaw_skills/src/types.rs`, `.claude/rules/skills.md`.
-- [ ] Skill loading from workspace, project, personal, managed, bundled, and extra directories
+- [x] Skill loading from workspace, project, personal, managed, bundled, and extra directories
+	- Notes: Skills now load from deterministic source tiers spanning `workspace/skills`, `workspace/managed/skills`, `~/.koios/workspace/skills`, `<project>/skills`, `<project>/internal/skills/bundled`, and configured extra directories under `[skills].dirs`.
 	- Research notes: OpenClaw is the clearest reference for multi-source loading because it already distinguishes bundled, managed, and user/workspace skill locations. PicoClaw also has strong registry/import/install plumbing. IronClaw has the best typed config for installed, user, bundled, and workspace skill directories.
 	- References: OpenClaw `docs/tools/skills.md`, `docs/tools/skills-config.md`, `src/agents/skills*.ts`; PicoClaw `pkg/skills/loader.go`, `cmd/picoclaw/internal/skills/list.go`; IronClaw `src/config/skills.rs`, `src/skills/mod.rs`, `docs/capabilities/skills.mdx`.
-- [ ] Deterministic skill precedence rules
+- [x] Deterministic skill precedence rules
+	- Notes: When duplicate skill ids exist, later-higher precedence sources override earlier ones in this fixed order: bundled < managed < extra < personal < project < workspace.
 	- Research notes: OpenClaw and IronClaw are the strongest references because both expose explicit loader/config rules instead of hiding precedence inside UI code. PicoClaw's loader is still useful for migration and import behavior, but the precedence story is less clearly documented than OpenClaw or IronClaw.
 	- References: OpenClaw `docs/tools/skills-config.md`, `src/agents/skills.ts`; PicoClaw `pkg/skills/loader.go`; IronClaw `src/config/skills.rs`, `src/skills/mod.rs`.
-- [ ] Per-agent skill allowlists
+- [x] Per-agent skill allowlists
+	- Notes: Standing profiles now accept `skills_allow`, letting a profile opt into only the named skills it should inject for that active agent/persona.
 	- Research notes: OpenClaw is the clearest design reference because it already threads skills through agent/runtime selection surfaces. PicoClaw exposes skill enable/disable and agent UI flows that are useful for configuration UX. IronClaw's typed skills config is the strongest reference if Koios wants policy to live in structured settings instead of prompt files.
 	- References: OpenClaw `src/agents/skills.ts`, `src/gateway/server-methods/skills.ts`; PicoClaw `web/frontend/src/components/agent/skills/*`, `web/backend/api/skills.go`; IronClaw `src/config/skills.rs`, `src/channels/web/handlers/skills.rs`.
-- [ ] Load-time gating based on OS, env vars, binaries, and config
+- [x] Load-time gating based on OS, env vars, binaries, and config
+	- Notes: Skill frontmatter `requires` gates loading by `os`, required environment variables, required binaries on `PATH`, and selected truthy config flags such as `tools.exec.enabled`.
 	- Research notes: OpenClaw is the best direct reference because its skill docs and loader already discuss conditional loading and config-driven gating. PicoClaw also has practical loader/install checks. IronClaw is the strongest typed reference if Koios wants explicit gating fields and trust rules in catalog metadata.
 	- References: OpenClaw `docs/tools/skills-config.md`, `docs/tools/creating-skills.md`; PicoClaw `pkg/skills/loader.go`, `pkg/tools/skills_install.go`; IronClaw `crates/ironclaw_skills/src/catalog.rs`, `src/config/skills.rs`.
-- [ ] Skills watcher and auto-refresh
+- [x] Skills watcher and auto-refresh
+	- Notes: The skills catalog is now cached and fingerprinted across all discovery roots, auto-refreshes on `SKILL.md` changes, and can also be refreshed explicitly through `skills.refresh` and `/skills refresh`.
 	- Research notes: OpenClaw is the best visible reference for making skills feel live-managed rather than restart-only. PicoClaw's launcher/backend stack is the strongest secondary reference for exposing refresh operations in UI and API. IronClaw has the better web/API contract if Koios wants watcher state surfaced to the dashboard.
 	- References: OpenClaw `src/gateway/server-methods/skills.ts`, `ui/src/ui/controllers/skills.ts`; PicoClaw `web/backend/api/skills.go`, `web/frontend/src/components/agent/skills/*`; IronClaw `src/channels/web/handlers/skills.rs`, `docs/drafts/ui-reference/skills.mdx`.
-- [ ] Skill config overrides
+- [x] Skill config overrides
+	- Notes: Koios now supports `[skills.overrides.<id>]` config overrides for enablement, display metadata, agent targeting, trust, and skill-owned slash commands, including round-trip encoding in generated config templates.
 	- Research notes: OpenClaw has the clearest user-facing config story for skill overrides today. PicoClaw also exposes install/import/update management surfaces that can carry override settings. IronClaw's config-backed skills system is the best reference if Koios wants per-skill structured overrides in persistent config.
 	- References: OpenClaw `docs/tools/skills-config.md`, `src/agents/skills.ts`; PicoClaw `pkg/skills/loader.go`, `web/backend/api/skills.go`; IronClaw `src/config/skills.rs`, `src/skills/mod.rs`.
 - [ ] Skill-local env and API key injection
 	- Research notes: IronClaw is the strongest architectural reference here because its extension/tool auth model and secrets plumbing are already explicit and typed. OpenClaw also has a strong plugin/skill runtime with secrets and setup surfaces. PicoClaw is useful for practical installer/UI flows, but less explicit about per-skill secret injection than the other two.
 	- References: OpenClaw `docs/tools/creating-skills.md`, `docs/plugins/sdk-overview.md`; PicoClaw `pkg/tools/skills_install.go`, `web/backend/api/skills.go`; IronClaw `src/tools/wasm/capabilities_schema.rs`, `src/bridge/auth_manager.rs`, `src/cli/tool.rs`.
-- [ ] Installer metadata for skills
+- [x] Installer metadata for skills
+	- Notes: Skill frontmatter and resolved catalog entries now surface installer-oriented metadata including `version`, `origin`, `trust`, `managed`, `setup`, and `requires.min_koios_version` so installs and catalog tooling can expose provenance and gating details.
 	- Research notes: OpenClaw and PicoClaw are the clearest references because both already have registry/install UX where installer metadata matters. IronClaw's catalog types are the stronger typed reference if Koios wants explicit version, origin, trust, and setup metadata.
 	- References: OpenClaw `docs/tools/skills.md`, `src/cli/skills-cli.ts`, `ui/src/ui/views/skills.ts`; PicoClaw `pkg/skills/clawhub_registry.go`, `pkg/tools/skills_install.go`, `web/frontend/src/components/agent/hub/*`; IronClaw `crates/ironclaw_skills/src/catalog.rs`, `src/cli/skills.rs`.
-- [ ] Dangerous-code scanning for skill installs
+- [x] Dangerous-code scanning for skill installs
+	- Notes: Managed skill installs now support preflight scanning via `skills.scan_install` and `/skills scan`, flagging risky shell/install patterns before approval or copy into the managed skill store.
 	- Research notes: OpenClaw is the best practical reference because its managed-skill and installer story already assumes a higher-trust install pipeline. PicoClaw has install/import hooks where static scanning can slot in naturally. IronClaw's trust-focused skills model is the strongest reference if Koios wants explicit trust levels and approval gates.
 	- References: OpenClaw `docs/tools/skills.md`, `src/cli/skills-cli.ts`; PicoClaw `pkg/tools/skills_install.go`, `web/backend/api/skills.go`; IronClaw `docs/capabilities/skills.mdx`, `crates/ironclaw_skills/src/catalog.rs`, `src/config/skills.rs`.
-- [ ] User-invocable slash commands from skills
+- [x] User-invocable slash commands from skills
+	- Notes: Skills can now declare `commands` in frontmatter, which resolve to user-invocable `/<name>` slash commands with optional `assistant_text` templates and `{{args}}` substitution.
 	- Research notes: OpenClaw is the clearest reference because its command system and skills/tooling already coexist in the same agent environment. PicoClaw has a strong skill UI/install system but the current search did not surface the same chat-native skill command layer. IronClaw's skills and web API surfaces are the strongest architectural base if Koios wants commands to be extension-owned.
 	- References: OpenClaw `docs/tools/skills.md`, `src/auto-reply/commands-registry.shared.ts`; PicoClaw `web/frontend/src/components/agent/skills/*`; IronClaw `src/extensions/mod.rs`, `src/channels/web/types.rs`.
-- [ ] Managed skills (auto-install, version-gated, globally available)
+- [x] Managed skills (auto-install, version-gated, globally available)
+	- Notes: Koios now has a managed skills tier under `workspace/managed/skills`, supports approved installs into that tier, and applies minimum-version gating during catalog resolution so managed skills can be globally available across sessions.
 	- Research notes: OpenClaw is the primary reference because it already has the vocabulary and installer flow for managed skills. PicoClaw is the strongest secondary reference for registry-backed search/install UX. IronClaw's typed config/catalog is the cleanest place to borrow version gating and activation semantics from.
 	- References: OpenClaw `docs/tools/skills.md`, `src/commands/onboard-skills.ts`, `src/agents/skills.ts`; PicoClaw `pkg/skills/clawhub_registry.go`, `web/frontend/src/components/agent/hub/*`; IronClaw `src/config/skills.rs`, `crates/ironclaw_skills/src/catalog.rs`.
-- [ ] Bundled skills shipped with daemon
+- [x] Bundled skills shipped with daemon
+	- Notes: Koios now loads bundled skills from `internal/skills/bundled`, and the daemon ships with built-in bundled skill content plus bundled command definitions.
 	- Research notes: All three repos support this idea in some form. OpenClaw has bundled skills plus onboarding helpers, PicoClaw exposes built-in/global/workspace skills in its launcher, and IronClaw explicitly distinguishes bundled skills in config and docs.
 	- References: OpenClaw `src/commands/onboard-skills.ts`, `docs/tools/skills.md`; PicoClaw `web/frontend/src/components/agent/skills/*`, `pkg/skills/loader.go`; IronClaw `src/config/skills.rs`, `docs/capabilities/skills.mdx`.
 - [ ] Skills registry search (ClawHub API integration)
 	- Research notes: PicoClaw is actually the clearest visible implementation reference because it already has registry search/install UX end to end. OpenClaw is also strong here through its managed-skill and hub-oriented flows. IronClaw has the right catalog architecture, but the current search surfaced less of a public registry UX than PicoClaw.
 	- References: OpenClaw `ui/src/ui/views/skills.ts`, `src/cli/skills-cli.ts`; PicoClaw `pkg/skills/clawhub_registry.go`, `web/frontend/src/components/agent/hub/*`; IronClaw `crates/ironclaw_skills/src/catalog.rs`, `src/cli/skills.rs`.
-- [ ] Skill install gating + confirmation flow
+- [x] Skill install gating + confirmation flow
+	- Notes: `skills.install` and `/skills install` now require approval before copying a skill into the managed tier, reuse the existing approval store, and preserve scan metadata in the pending approval record.
 	- Research notes: OpenClaw and PicoClaw are the clearest UX references because both already expose install flows that can require confirmation. IronClaw is the strongest typed policy reference because it already models trust, activation, and configuration separately.
 	- References: OpenClaw `src/cli/skills-cli.ts`, `ui/src/ui/controllers/skills.ts`; PicoClaw `pkg/tools/skills_install.go`, `web/frontend/src/components/agent/hub/*`; IronClaw `docs/capabilities/skills.mdx`, `src/cli/skills.rs`, `src/config/skills.rs`.
-- [ ] User-local skills directory (`~/.koios/workspace/skills/`)
+- [x] User-local skills directory (`~/.koios/workspace/skills/`)
+	- Notes: Koios now resolves and scans the user-local skills root via `Config.PersonalSkillsDir()` and includes it in the default discovery chain.
 	- Research notes: OpenClaw and IronClaw both clearly distinguish user-local and workspace-level skill roots, so they are the main references. PicoClaw is also useful because its launcher presents global and workspace skill scopes separately.
 	- References: OpenClaw `docs/tools/skills.md`, `docs/tools/skills-config.md`; PicoClaw `web/frontend/src/components/agent/skills/*`, `pkg/skills/loader.go`; IronClaw `src/config/skills.rs`, `docs/capabilities/skills.mdx`.
 - [x] `SOUL.md` injected prompt template
@@ -889,6 +903,30 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Layered personalization model: global preferences, project instructions, and styles
 	- Research notes: Claude's current personalization model is useful because it separates account-wide preferences, project-specific instructions, and response styles instead of merging everything into one generic memory surface. That separation reduces prompt clutter and makes it clearer which instructions are behavioral defaults versus task-specific context versus output formatting preferences. Koios already has standing orders, but it would likely benefit from splitting them into similarly distinct layers.
 	- Suggested Koios shape: preserve standing orders as one layer, but add explicit profile preferences, workspace or project instructions, and named output styles that can be combined or overridden independently.
+	- Concrete plan:
+		- Inventory the current standing-order and memory injection path, including where instructions are stored, loaded, ranked, merged into prompts, displayed to users, and mutated by tools.
+		- Define explicit layer types and precedence: built-in system defaults, standing orders, user profile preferences, workspace/project instructions, named response styles, session overrides, and task-local instructions.
+		- Add a persisted personalization model with stable IDs, layer type, scope, enabled/disabled state, priority, source/provenance, timestamps, and optional expiration or review metadata.
+		- Implement a deterministic resolver that combines layers into the final instruction bundle, preserves provenance per emitted instruction, detects conflicting guidance, and applies narrower scopes after broader scopes.
+		- Keep standing orders as a compatibility layer by migrating or adapting existing records into the new resolver without silently changing their priority.
+		- Add CRUD surfaces for each layer: CLI commands first, then API/UI hooks where existing settings or memory management surfaces already exist.
+		- Add named output styles as reusable style records that can be selected per request or session and overridden without changing global or project preferences.
+		- Add prompt assembly changes so the model receives compact grouped sections such as `Global preferences`, `Project instructions`, `Style`, and `Session overrides` instead of one flattened memory block.
+		- Add observability and audit support: show which layers contributed to a response, why an instruction was included, and which source wins when two layers conflict.
+		- Document privacy and safety behavior, especially which layers are user-editable, project-scoped, exported/imported, or excluded from no-memory/incognito sessions.
+	- Acceptance criteria:
+		- Users can create, list, update, disable, and delete profile preferences, project instructions, and named styles independently.
+		- A request can select a named style without mutating standing orders, profile preferences, or project instructions.
+		- Project instructions override or narrow global preferences only for matching workspaces/projects.
+		- The final prompt context is grouped by personalization layer and includes provenance for debugging or UI display.
+		- Existing standing orders continue to apply through the new resolver and have an explicit migration or compatibility story.
+		- Conflicting instructions produce deterministic resolution with visible provenance instead of order-dependent prompt clutter.
+	- Test plan:
+		- Unit-test resolver precedence, scope matching, disabled entries, conflict handling, and provenance output.
+		- Add migration or compatibility tests covering existing standing-order records.
+		- Add CLI/API tests for layer CRUD and style selection.
+		- Add prompt-assembly golden tests proving grouped sections are emitted compactly and in stable order.
+		- Add privacy tests proving no-memory/incognito sessions do not create or mutate durable personalization records.
 	- References: Claude personalization features, https://support.claude.com/en/articles/10185728-understanding-claude-s-personalization-features ; Claude memory announcement, https://claude.com/blog/memory
 - [ ] Auto-referenced connectors with visible provenance
 	- Research notes: A notable improvement in ChatGPT's 2025 connector rollout is that connected Gmail, Google Calendar, and Google Contacts data can be referenced automatically in chat when relevant, instead of requiring explicit manual fetch each time. This pattern matters because personal assistants become much more fluid when they can opportunistically ground responses in the user's actual tools. The tradeoff is that automatic connector use must be explainable and scoped carefully.

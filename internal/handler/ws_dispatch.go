@@ -95,6 +95,48 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcStandingProfileActivate(ctx, wsc, req)
+	case "skills.catalog":
+		if h.skillManager == nil {
+			wsc.replyErr(req.ID, errCodeServer, "skills are not enabled")
+			return
+		}
+		h.rpcSkillCatalog(ctx, wsc, req)
+	case "skills.refresh":
+		if h.skillManager == nil {
+			wsc.replyErr(req.ID, errCodeServer, "skills are not enabled")
+			return
+		}
+		h.rpcSkillRefresh(ctx, wsc, req)
+	case "skills.scan_install":
+		if h.skillManager == nil || h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "skills install scanning is not enabled")
+			return
+		}
+		h.rpcSkillScanInstall(ctx, wsc, req)
+	case "skills.install":
+		if h.skillManager == nil || h.workspaceStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "skills install is not enabled")
+			return
+		}
+		h.rpcSkillInstall(ctx, wsc, req)
+	case "skills.pending":
+		if h.skillManager == nil {
+			wsc.replyErr(req.ID, errCodeServer, "skills are not enabled")
+			return
+		}
+		h.rpcSkillPending(ctx, wsc, req)
+	case "skills.approve":
+		if h.skillManager == nil {
+			wsc.replyErr(req.ID, errCodeServer, "skills are not enabled")
+			return
+		}
+		h.rpcSkillApprove(ctx, wsc, req)
+	case "skills.reject":
+		if h.skillManager == nil {
+			wsc.replyErr(req.ID, errCodeServer, "skills are not enabled")
+			return
+		}
+		h.rpcSkillReject(ctx, wsc, req)
 
 	// ── Agent run ─────────────────────────────────────────────────────────
 	case "agent.run":
@@ -794,6 +836,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		"cron":          h.jobStore != nil && h.sched != nil,
 		"heartbeat":     h.hbRunner != nil && h.hbConfigStore != nil,
 		"standing":      h.standingManager != nil,
+		"skills":        h.skillManager != nil,
 		"subagents":     h.subRuntime != nil,
 		"workspace":     h.workspaceStore != nil,
 		"exec":          h.workspaceStore != nil,
@@ -814,6 +857,12 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 	}
 	if caps["standing"] {
 		methods = append(methods, "standing.get", "standing.set", "standing.clear", "standing.profile.set", "standing.profile.delete", "standing.profile.activate")
+	}
+	if caps["skills"] {
+		methods = append(methods, "skills.catalog", "skills.refresh", "skills.pending", "skills.approve", "skills.reject")
+		if h.workspaceStore != nil {
+			methods = append(methods, "skills.scan_install", "skills.install")
+		}
 	}
 	if caps["agent_runtime"] {
 		methods = append(methods,

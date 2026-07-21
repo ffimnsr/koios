@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,9 +13,12 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/memory"
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/session"
+	"github.com/ffimnsr/koios/internal/skills"
+	"github.com/ffimnsr/koios/internal/standing"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -170,6 +174,64 @@ func TestRuntime_ResultIncludesUsage(t *testing.T) {
 	}
 	if res.Usage.PromptTokens != 11 || res.Usage.CompletionTokens != 7 || res.Usage.TotalTokens != 18 {
 		t.Fatalf("unexpected usage: %#v", res.Usage)
+	}
+}
+
+func TestRuntime_InjectsSkillMessagesIntoAgentRuns(t *testing.T) {
+	store := session.New(20)
+	workspaceRoot := t.TempDir()
+	projectRoot := t.TempDir()
+	cfg := config.Default()
+	cfg.WorkspaceRoot = workspaceRoot
+	if err := os.MkdirAll(filepath.Join(workspaceRoot, "skills", "security-review"), 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "skills", "security-review", "SKILL.md"), []byte(`---
+id: security-review
+name: Security Review
+---
+Check auth, secrets, and input validation.`), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	standingStore, err := standing.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("standing.NewStore: %v", err)
+	}
+	standingMgr := standing.NewManager(standingStore, workspaceRoot)
+	if _, err := standingStore.SaveDocument(&standing.Document{PeerID: "peer", DefaultProfile: "ops", Profiles: map[string]standing.Profile{"ops": {SkillsAllow: []string{"security-review"}}}}); err != nil {
+		t.Fatalf("SaveDocument: %v", err)
+	}
+	var captured *types.ChatRequest
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			captured = req
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetStandingOrders(standingMgr)
+	rt.SetSkillManager(skills.NewManager(cfg, projectRoot))
+	_, err = rt.Run(context.Background(), agent.RunRequest{
+		PeerID:        "peer",
+		Scope:         agent.ScopeMain,
+		ActiveProfile: "ops",
+		Messages:      []types.Message{{Role: "user", Content: "review this auth change"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected captured request")
+	}
+	found := false
+	for _, msg := range captured.Messages {
+		if msg.Role == "system" && strings.Contains(msg.Content, "Security Review") && strings.Contains(msg.Content, "input validation") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected injected skill message, got %#v", captured.Messages)
 	}
 }
 

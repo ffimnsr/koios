@@ -186,6 +186,28 @@ dirs = []
 allow = []
 deny = []
 
+[skills]
+# Extra directories to scan for SKILL.md-based skills. Automatic roots are:
+# - ./workspace/skills
+# - ./workspace/managed/skills
+# - ~/.koios/workspace/skills
+# - ./skills
+# - ./internal/skills/bundled
+# Later roots override earlier ones when ids collide.
+dirs = []
+# Optional per-skill config overrides keyed by skill id.
+# [skills.overrides."security-review"]
+# enabled = true
+# name = "Security Review"
+# description = "Tighten auth + validation review"
+# agents = ["security", "review"]
+# trust = "trusted"
+#
+# [[skills.overrides."security-review".commands]]
+# name = "security-review"
+# description = "Run the security review skill"
+# assistant_text = "Review these areas: {{args}}"
+
 # [hooks]
 # webhook_token = "replace-me"
 # timeout = "2s"

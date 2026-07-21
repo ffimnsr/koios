@@ -1359,7 +1359,7 @@ func scaffoldWorkspace(root string, force bool) error {
 	if root == "" {
 		return fmt.Errorf("workspace.root is not configured")
 	}
-	subdirs := []string{"sessions", "cron", "agents", "memory", "db", "peers", filepath.Join("peers", workspace.DefaultPeerID)}
+	subdirs := []string{"sessions", "cron", "agents", "memory", "db", "skills", filepath.Join("managed", "skills"), "peers", filepath.Join("peers", workspace.DefaultPeerID)}
 	for _, sub := range subdirs {
 		if err := os.MkdirAll(filepath.Join(root, sub), 0o755); err != nil {
 			return fmt.Errorf("creating %s/: %w", sub, err)

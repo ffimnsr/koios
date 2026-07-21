@@ -27,6 +27,23 @@ func (c *Config) AgentDir() string { return filepath.Join(c.WorkspaceRoot, "agen
 // ExtensionsDir returns the path where user-installed extension manifests are stored.
 func (c *Config) ExtensionsDir() string { return filepath.Join(c.WorkspaceRoot, "extensions") }
 
+// WorkspaceSkillsDir returns the path where workspace-local skills are stored.
+func (c *Config) WorkspaceSkillsDir() string { return filepath.Join(c.WorkspaceRoot, "skills") }
+
+// ManagedSkillsDir returns the path where runtime-managed skills are stored.
+func (c *Config) ManagedSkillsDir() string {
+	return filepath.Join(c.WorkspaceRoot, "managed", "skills")
+}
+
+// PersonalSkillsDir returns the user-local skills directory.
+func (c *Config) PersonalSkillsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".koios", "workspace", "skills")
+}
+
 // BrowserDir returns the path where managed browser profile data is stored.
 func (c *Config) BrowserDir() string { return filepath.Join(c.WorkspaceRoot, "browser") }
 
@@ -163,6 +180,27 @@ type BrowserProfileConfig struct {
 type BrowserConfig struct {
 	DefaultProfile string                 `toml:"default_profile"`
 	Profiles       []BrowserProfileConfig `toml:"profiles"`
+}
+
+type SkillCommandOverride struct {
+	Name          string `toml:"name"`
+	Description   string `toml:"description"`
+	AssistantText string `toml:"assistant_text"`
+}
+
+type SkillOverride struct {
+	Enabled     *bool                  `toml:"enabled"`
+	Name        string                 `toml:"name"`
+	Description string                 `toml:"description"`
+	Agents      []string               `toml:"agents"`
+	Trust       string                 `toml:"trust"`
+	Commands    []SkillCommandOverride `toml:"commands"`
+}
+
+type SkillSearchPath struct {
+	Kind string
+	Path string
+	Rank int
 }
 
 type TelegramChannelConfig struct {
@@ -311,6 +349,8 @@ type Config struct {
 	ProcessStopTimeout            time.Duration
 	ProcessLogTailBytes           int
 	ProcessMaxProcessesPerPeer    int
+	SkillDirs                     []string
+	SkillOverrides                map[string]SkillOverride
 	ExtensionDirs                 []string
 	ExtensionAllow                []string
 	ExtensionDeny                 []string
@@ -392,6 +432,10 @@ type fileConfig struct {
 		Allow []string `toml:"allow"`
 		Deny  []string `toml:"deny"`
 	} `toml:"extensions"`
+	Skills struct {
+		Dirs      []string                 `toml:"dirs"`
+		Overrides map[string]SkillOverride `toml:"overrides"`
+	} `toml:"skills"`
 	Browser  BrowserConfig `toml:"browser"`
 	Channels struct {
 		Telegram struct {
@@ -607,6 +651,8 @@ func Default() *Config {
 		ProcessStopTimeout:            5 * time.Second,
 		ProcessLogTailBytes:           64 * 1024,
 		ProcessMaxProcessesPerPeer:    8,
+		SkillDirs:                     nil,
+		SkillOverrides:                nil,
 		ExtensionDirs:                 nil,
 		ExtensionAllow:                nil,
 		ExtensionDeny:                 nil,
@@ -709,6 +755,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 	browserSection := encodeBrowserSection(cfg)
 	hooksSection := encodeHooksSection(cfg)
 	channelsSection := encodeChannelsSection(cfg)
+	skillOverridesSection := encodeSkillOverridesSection(cfg)
 
 	return fmt.Sprintf(encodedTOMLTemplate,
 		strconv.Quote(cfg.ListenAddr),
@@ -763,6 +810,8 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		inlineQuotedStringSlice(cfg.ExtensionDirs),
 		inlineQuotedStringSlice(cfg.ExtensionAllow),
 		inlineQuotedStringSlice(cfg.ExtensionDeny),
+		inlineQuotedStringSlice(cfg.SkillDirs),
+		skillOverridesSection,
 		hooksSection,
 		channelsSection,
 		cfg.ExecEnabled,
@@ -787,6 +836,53 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		}(),
 		cfg.MonitorMaxRestarts,
 	)
+}
+
+func encodeSkillOverridesSection(cfg *Config) string {
+	if cfg == nil || len(cfg.SkillOverrides) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(cfg.SkillOverrides))
+	for key := range cfg.SkillOverrides {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, key := range keys {
+		override := cfg.SkillOverrides[key]
+		fmt.Fprintf(&b, "\n[skills.overrides.%s]\n", strconv.Quote(key))
+		if override.Enabled != nil {
+			fmt.Fprintf(&b, "enabled = %t\n", *override.Enabled)
+		}
+		if strings.TrimSpace(override.Name) != "" {
+			fmt.Fprintf(&b, "name = %s\n", strconv.Quote(override.Name))
+		}
+		if strings.TrimSpace(override.Description) != "" {
+			fmt.Fprintf(&b, "description = %s\n", strconv.Quote(override.Description))
+		}
+		if len(override.Agents) > 0 {
+			fmt.Fprintf(&b, "agents = [%s]\n", inlineQuotedStringSlice(override.Agents))
+		}
+		if strings.TrimSpace(override.Trust) != "" {
+			fmt.Fprintf(&b, "trust = %s\n", strconv.Quote(override.Trust))
+		}
+		for _, command := range override.Commands {
+			b.WriteString("[[skills.overrides.")
+			b.WriteString(strconv.Quote(key))
+			b.WriteString(".commands]]\n")
+			fmt.Fprintf(&b, "name = %s\n", strconv.Quote(command.Name))
+			if strings.TrimSpace(command.Description) != "" {
+				fmt.Fprintf(&b, "description = %s\n", strconv.Quote(command.Description))
+			}
+			if strings.TrimSpace(command.AssistantText) != "" {
+				fmt.Fprintf(&b, "assistant_text = %s\n", strconv.Quote(command.AssistantText))
+			}
+		}
+	}
+	return strings.TrimPrefix(b.String(), "\n")
 }
 
 func (c *Config) hiddenSecret(path string) string {
@@ -1082,6 +1178,19 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.Extensions.Dirs != nil {
 		dst.ExtensionDirs = append([]string(nil), src.Extensions.Dirs...)
+	}
+	if src.Skills.Dirs != nil {
+		dst.SkillDirs = append([]string(nil), src.Skills.Dirs...)
+	}
+	if src.Skills.Overrides != nil {
+		dst.SkillOverrides = make(map[string]SkillOverride, len(src.Skills.Overrides))
+		for key, value := range src.Skills.Overrides {
+			normalizedKey := strings.ToLower(strings.TrimSpace(key))
+			if normalizedKey == "" {
+				continue
+			}
+			dst.SkillOverrides[normalizedKey] = value
+		}
 	}
 	if src.Extensions.Allow != nil {
 		dst.ExtensionAllow = append([]string(nil), src.Extensions.Allow...)
@@ -1570,6 +1679,9 @@ func resolveRelativePaths(cfg *Config, root string) {
 	for i, dir := range cfg.ExtensionDirs {
 		cfg.ExtensionDirs[i] = makeAbs(root, dir)
 	}
+	for i, dir := range cfg.SkillDirs {
+		cfg.SkillDirs[i] = makeAbs(root, dir)
+	}
 	for i := range cfg.Browser.Profiles {
 		cfg.Browser.Profiles[i].UserDataDir = makeAbs(root, cfg.Browser.Profiles[i].UserDataDir)
 		cfg.Browser.Profiles[i].ExecutablePath = makeAbs(root, cfg.Browser.Profiles[i].ExecutablePath)
@@ -1585,6 +1697,28 @@ func (c *Config) ExtensionSearchPaths() []string {
 			paths = append(paths, dir)
 		}
 	}
+	return paths
+}
+
+// SkillSearchPaths returns skill discovery roots in deterministic precedence order.
+// Later entries override earlier ones when the same skill id is defined multiple times.
+func (c *Config) SkillSearchPaths(projectRoot string) []SkillSearchPath {
+	paths := []SkillSearchPath{
+		{Kind: "bundled", Path: filepath.Join(projectRoot, "internal", "skills", "bundled"), Rank: 10},
+		{Kind: "managed", Path: c.ManagedSkillsDir(), Rank: 20},
+	}
+	for _, dir := range c.SkillDirs {
+		if strings.TrimSpace(dir) != "" {
+			paths = append(paths, SkillSearchPath{Kind: "extra", Path: dir, Rank: 30})
+		}
+	}
+	if dir := c.PersonalSkillsDir(); strings.TrimSpace(dir) != "" {
+		paths = append(paths, SkillSearchPath{Kind: "personal", Path: dir, Rank: 40})
+	}
+	if strings.TrimSpace(projectRoot) != "" {
+		paths = append(paths, SkillSearchPath{Kind: "project", Path: filepath.Join(projectRoot, "skills"), Rank: 50})
+	}
+	paths = append(paths, SkillSearchPath{Kind: "workspace", Path: c.WorkspaceSkillsDir(), Rank: 60})
 	return paths
 }
 
@@ -1917,6 +2051,26 @@ func validate(cfg *Config) error {
 	for i, value := range cfg.ExtensionDeny {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("extensions.deny[%d] must not be empty", i)
+		}
+	}
+	for i, dir := range cfg.SkillDirs {
+		if strings.TrimSpace(dir) == "" {
+			return fmt.Errorf("skills.dirs[%d] must not be empty", i)
+		}
+	}
+	for key, override := range cfg.SkillOverrides {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("skills.overrides contains an empty key")
+		}
+		for index, agent := range override.Agents {
+			if strings.TrimSpace(agent) == "" {
+				return fmt.Errorf("skills.overrides.%s.agents[%d] must not be empty", key, index)
+			}
+		}
+		for index, command := range override.Commands {
+			if strings.TrimSpace(command.Name) == "" {
+				return fmt.Errorf("skills.overrides.%s.commands[%d].name must not be empty", key, index)
+			}
 		}
 	}
 	if len(cfg.HookMappings) > 0 && strings.TrimSpace(cfg.WebhookToken) == "" {
