@@ -12,6 +12,13 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-07-21
+
+### Added
+
+- update the koios to support context compaction (`5410fbe`)
+- update the tasks and fix the test on race (`46f82de`)
+
 ## [0.7.7] - 2026-07-21
 
 ### Added
@@ -305,7 +312,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.7...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.8...HEAD
+[0.7.8]: https://github.com/ffimnsr/koios/releases/tag/v0.7.8
 [0.7.7]: https://github.com/ffimnsr/koios/releases/tag/v0.7.7
 [0.7.6]: https://github.com/ffimnsr/koios/releases/tag/v0.7.6
 [0.7.5]: https://github.com/ffimnsr/koios/releases/tag/v0.7.5
