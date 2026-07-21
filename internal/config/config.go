@@ -260,6 +260,18 @@ type Config struct {
 	Model          string
 	BaseURL        string
 	LLMIdleTimeout time.Duration
+	// LLMContextWindowTokens is the approximate prompt+completion budget used for
+	// local context trimming before dispatch. Zero disables request-side budgeting.
+	LLMContextWindowTokens int
+	// LLMPromptReserveTokens reserves completion/tool-call headroom inside the
+	// context window when MaxTokens is not explicitly set on the request.
+	LLMPromptReserveTokens int
+	// LLMMaxToolDefinitions caps how many native tool schemas are sent on one
+	// request after relevance ranking. Zero disables schema capping.
+	LLMMaxToolDefinitions int
+	// LLMMaxToolResultChars caps one tool-result payload kept in active run
+	// context. Zero disables tool-result truncation.
+	LLMMaxToolResultChars int
 
 	// DefaultProfile, when set, names the ModelProfile to use as the primary
 	// LLM. Its Provider/APIKey/Model/BaseURL override the flat [llm] fields.
@@ -418,11 +430,15 @@ type fileConfig struct {
 	} `toml:"server"`
 	LLM struct {
 		// DefaultProfile selects a named profile as the primary LLM.
-		DefaultProfile   string         `toml:"default_profile"`
-		IdleTimeout      string         `toml:"idle_timeout"`
-		LightweightModel string         `toml:"lightweight_model"`
-		FallbackModels   []string       `toml:"fallback_models"`
-		Profiles         []ModelProfile `toml:"profiles"`
+		DefaultProfile      string         `toml:"default_profile"`
+		IdleTimeout         string         `toml:"idle_timeout"`
+		ContextWindowTokens *int           `toml:"context_window_tokens"`
+		PromptReserveTokens *int           `toml:"prompt_reserve_tokens"`
+		MaxToolDefinitions  *int           `toml:"max_tool_definitions"`
+		MaxToolResultChars  *int           `toml:"max_tool_result_chars"`
+		LightweightModel    string         `toml:"lightweight_model"`
+		FallbackModels      []string       `toml:"fallback_models"`
+		Profiles            []ModelProfile `toml:"profiles"`
 	} `toml:"llm"`
 	MCP struct {
 		Servers []MCPServerConfig `toml:"servers"`
@@ -589,11 +605,15 @@ type fileConfig struct {
 // Default returns sane defaults for a local-first Koios setup.
 func Default() *Config {
 	return &Config{
-		ListenAddr:     ":8080",
-		Provider:       "openai",
-		Model:          "gpt-4o",
-		LLMIdleTimeout: 30 * time.Second,
-		DefaultProfile: "default",
+		ListenAddr:             ":8080",
+		Provider:               "openai",
+		Model:                  "gpt-4o",
+		LLMIdleTimeout:         30 * time.Second,
+		LLMContextWindowTokens: 32000,
+		LLMPromptReserveTokens: 4000,
+		LLMMaxToolDefinitions:  24,
+		LLMMaxToolResultChars:  4000,
+		DefaultProfile:         "default",
 		ModelProfiles: []ModelProfile{{
 			Name:     "default",
 			Provider: "openai",
@@ -610,7 +630,7 @@ func Default() *Config {
 		SessionIdlePruneAfter:         0,
 		SessionIdlePruneKeep:          0,
 		SessionDailyResetTime:         "",
-		CompactThreshold:              0,
+		CompactThreshold:              60,
 		CompactReserve:                20,
 		MemoryEmbedEnabled:            false,
 		MemoryEmbedModel:              "text-embedding-3-small",
@@ -999,6 +1019,10 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 	profiles[selectedIndex].Model = cfg.Model
 	b.WriteString("[llm]\n")
 	fmt.Fprintf(&b, "idle_timeout = %s\n", strconv.Quote(cfg.LLMIdleTimeout.String()))
+	fmt.Fprintf(&b, "context_window_tokens = %d\n", cfg.LLMContextWindowTokens)
+	fmt.Fprintf(&b, "prompt_reserve_tokens = %d\n", cfg.LLMPromptReserveTokens)
+	fmt.Fprintf(&b, "max_tool_definitions = %d\n", cfg.LLMMaxToolDefinitions)
+	fmt.Fprintf(&b, "max_tool_result_chars = %d\n", cfg.LLMMaxToolResultChars)
 	fmt.Fprintf(&b, "default_profile = %s\n", strconv.Quote(defaultProfile))
 	if cfg.LightweightModel != "" {
 		fmt.Fprintf(&b, "lightweight_model = %s\n", strconv.Quote(cfg.LightweightModel))
@@ -1132,9 +1156,21 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 
 	if src.LLM.IdleTimeout != "" {
-		if d, err := time.ParseDuration(src.LLM.IdleTimeout); err == nil && d >= 0 {
+		if d, err := time.ParseDuration(src.LLM.IdleTimeout); err == nil {
 			dst.LLMIdleTimeout = d
 		}
+	}
+	if src.LLM.ContextWindowTokens != nil && *src.LLM.ContextWindowTokens >= 0 {
+		dst.LLMContextWindowTokens = *src.LLM.ContextWindowTokens
+	}
+	if src.LLM.PromptReserveTokens != nil && *src.LLM.PromptReserveTokens >= 0 {
+		dst.LLMPromptReserveTokens = *src.LLM.PromptReserveTokens
+	}
+	if src.LLM.MaxToolDefinitions != nil && *src.LLM.MaxToolDefinitions >= 0 {
+		dst.LLMMaxToolDefinitions = *src.LLM.MaxToolDefinitions
+	}
+	if src.LLM.MaxToolResultChars != nil && *src.LLM.MaxToolResultChars >= 0 {
+		dst.LLMMaxToolResultChars = *src.LLM.MaxToolResultChars
 	}
 	if src.LLM.LightweightModel != "" {
 		dst.LightweightModel = src.LLM.LightweightModel
@@ -1927,6 +1963,21 @@ func validate(cfg *Config) error {
 	}
 	if cfg.LLMIdleTimeout < 0 {
 		return fmt.Errorf("llm.idle_timeout must be >= 0")
+	}
+	if cfg.LLMContextWindowTokens < 0 {
+		return fmt.Errorf("llm.context_window_tokens must be >= 0")
+	}
+	if cfg.LLMPromptReserveTokens < 0 {
+		return fmt.Errorf("llm.prompt_reserve_tokens must be >= 0")
+	}
+	if cfg.LLMContextWindowTokens > 0 && cfg.LLMPromptReserveTokens >= cfg.LLMContextWindowTokens {
+		return fmt.Errorf("llm.prompt_reserve_tokens must be < llm.context_window_tokens when budgeting is enabled")
+	}
+	if cfg.LLMMaxToolDefinitions < 0 {
+		return fmt.Errorf("llm.max_tool_definitions must be >= 0")
+	}
+	if cfg.LLMMaxToolResultChars < 0 {
+		return fmt.Errorf("llm.max_tool_result_chars must be >= 0")
 	}
 	switch cfg.Provider {
 	case "openai", "anthropic", "openrouter", "nvidia":

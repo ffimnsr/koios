@@ -12,6 +12,10 @@ allowed_origins = []
 idle_timeout = "30s"
 # idle_timeout cancels a streaming response if the provider stops sending bytes.
 # Set to "0s" to disable the stall watchdog.
+context_window_tokens = 32000
+prompt_reserve_tokens = 4000
+max_tool_definitions = 24
+max_tool_result_chars = 4000
 default_profile = "default"
 # lightweight_model is used for simple/short queries (≤15 words).
 # lightweight_model = ""
@@ -124,7 +128,7 @@ daily_reset_time = ""
 prune_keep_tool_messages = 8
 
 [compaction]
-threshold = 0
+threshold = 60
 reserve = 20
 
 [memory]

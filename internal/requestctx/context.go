@@ -2,6 +2,7 @@ package requestctx
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -93,6 +94,15 @@ type BuildOptions struct {
 	// PreferenceLimit controls how many structured preference/decision records
 	// are injected. When <= 0, a default limit is used.
 	PreferenceLimit int
+	// MaxPromptTokens enables approximate local prompt budgeting. Zero disables
+	// token-aware trimming.
+	MaxPromptTokens int
+	// ResponseReserveTokens reserves headroom for the completion inside the
+	// context window. Applied only when MaxPromptTokens > 0.
+	ResponseReserveTokens int
+	// ExtraTokenReserve reserves additional prompt space for payloads attached
+	// after Build, such as native tool schemas.
+	ExtraTokenReserve int
 	// IdentityDir is the workspace root directory. When non-empty, AGENTS.md,
 	// SOUL.md, USER.md, IDENTITY.md, and TOOLS.md are read for PeerID from
 	// peers/<peer>/, then peers/default/, and prepended to the
@@ -103,10 +113,19 @@ type BuildOptions struct {
 
 // BuildResult contains the assembled request plus related metadata.
 type BuildResult struct {
-	Request        *types.ChatRequest
-	MemoryHits     int
-	InjectedMemory string
-	PrunedMessages int
+	Request                   *types.ChatRequest
+	MemoryHits                int
+	InjectedMemory            string
+	PrunedMessages            int
+	BudgetTrimmedMessages     int
+	SummarizedHistoryMessages int
+	HistoryBytesPruned        int
+	DroppedInjectedMemory     bool
+	DroppedContinuity         bool
+	DroppedBootstrap          bool
+	EstimatedPromptTokens     int
+	EstimatedPromptBytes      int
+	OverBudgetAfterTrimming   bool
 }
 
 // ValidateMessages rejects messages with roles outside the known set.
@@ -150,20 +169,22 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		}
 		sysMessages = append(append([]types.Message(nil), opts.ExtraSystem...), sysMessages...)
 	}
-	// Inject BOOTSTRAP.md once at session start (no prior history). It is
-	// skipped on subsequent turns to avoid re-injecting session notes each turn.
-	if len(opts.History) == 0 {
-		if msg := loadBootstrapMessage(opts.IdentityDir, opts.PeerID); msg != nil {
-			sysMessages = append(sysMessages, *msg)
-		}
-	}
+
 	result := &BuildResult{}
 	prunedHistory, prunedCount := pruneHistory(opts.History, opts.PruneToolMessages)
 	result.PrunedMessages = prunedCount
-	if len(prunedHistory) > 0 {
-		sysMessages = append(sysMessages, types.Message{Role: "system", Content: continuityInstruction})
+	includeContinuity := len(prunedHistory) > 0
+	includeBootstrap := false
+	bootstrapMsg := types.Message{}
+	if len(opts.History) == 0 {
+		if msg := loadBootstrapMessage(opts.IdentityDir, opts.PeerID); msg != nil {
+			bootstrapMsg = *msg
+			includeBootstrap = true
+		}
 	}
-	sysMessages = append([]types.Message{{Role: "system", Content: trustBoundaryInstruction}}, sysMessages...)
+	mandatorySys := append([]types.Message{{Role: "system", Content: trustBoundaryInstruction}}, sysMessages...)
+	var injectedMsg types.Message
+	includeInjectedMemory := false
 	if opts.MemoryStore != nil && len(turnMessages) > 0 {
 		var injected string
 		var hits int
@@ -231,16 +252,78 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		}
 
 		if injected != "" {
-			sysMessages = append(sysMessages, types.Message{Role: "system", Content: injected})
+			injectedMsg = types.Message{Role: "system", Content: injected}
+			includeInjectedMemory = true
 			result.MemoryHits = hits
 			result.InjectedMemory = injected
 		}
 	}
-	result.Request = &types.ChatRequest{
-		Model:    opts.Model,
-		Messages: buildContext(sysMessages, prunedHistory, turnMessages),
-		Stream:   opts.Stream,
+	historyForRequest := append([]types.Message(nil), prunedHistory...)
+	buildMessages := func() []types.Message {
+		sys := make([]types.Message, 0, len(mandatorySys)+3)
+		sys = append(sys, mandatorySys...)
+		if includeBootstrap {
+			sys = append(sys, bootstrapMsg)
+		}
+		if includeContinuity {
+			sys = append(sys, types.Message{Role: "system", Content: continuityInstruction})
+		}
+		if includeInjectedMemory {
+			sys = append(sys, injectedMsg)
+		}
+		return buildContext(sys, historyForRequest, turnMessages)
 	}
+	request := &types.ChatRequest{Model: opts.Model, Stream: opts.Stream}
+	request.Messages = buildMessages()
+	budget := opts.MaxPromptTokens - opts.ResponseReserveTokens - opts.ExtraTokenReserve
+	if opts.MaxPromptTokens > 0 && budget < 256 {
+		budget = 256
+	}
+	for opts.MaxPromptTokens > 0 {
+		tokens, bytes := EstimateRequestTokens(request)
+		if tokens <= budget {
+			result.EstimatedPromptTokens = tokens
+			result.EstimatedPromptBytes = bytes
+			break
+		}
+		switched := false
+		if includeInjectedMemory {
+			includeInjectedMemory = false
+			result.DroppedInjectedMemory = true
+			switched = true
+		} else if len(historyForRequest) > 0 {
+			if nextHistory, savedBytes, ok := summarizeOversizedHistory(historyForRequest); ok {
+				historyForRequest = nextHistory
+				result.SummarizedHistoryMessages++
+				result.HistoryBytesPruned += savedBytes
+				switched = true
+			} else {
+				result.HistoryBytesPruned += estimateMessagesBytes(historyForRequest[:1])
+				historyForRequest = historyForRequest[1:]
+				result.BudgetTrimmedMessages++
+				switched = true
+			}
+		} else if includeContinuity {
+			includeContinuity = false
+			result.DroppedContinuity = true
+			switched = true
+		} else if includeBootstrap {
+			includeBootstrap = false
+			result.DroppedBootstrap = true
+			switched = true
+		}
+		if !switched {
+			result.OverBudgetAfterTrimming = true
+			result.EstimatedPromptTokens = tokens
+			result.EstimatedPromptBytes = bytes
+			break
+		}
+		request.Messages = buildMessages()
+	}
+	if result.EstimatedPromptTokens == 0 && result.EstimatedPromptBytes == 0 {
+		result.EstimatedPromptTokens, result.EstimatedPromptBytes = EstimateRequestTokens(request)
+	}
+	result.Request = request
 	return result, nil
 }
 
@@ -307,6 +390,108 @@ func injectRecentMemory(ctx context.Context, store *memory.Store, peerID string,
 
 // buildContext assembles the full message slice that will be sent to the LLM:
 // system messages first, then stored non-system history, then the new turn messages.
+func EstimateRequestTokens(req *types.ChatRequest) (tokens int, bytes int) {
+	if req == nil {
+		return 0, 0
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		bytes = estimateMessagesBytes(req.Messages)
+		bytes += len(req.Model) + 64
+		for _, tool := range req.Tools {
+			bytes += estimateToolBytes(tool)
+		}
+	} else {
+		bytes = len(payload)
+	}
+	if bytes <= 0 {
+		return 0, 0
+	}
+	tokens = (bytes + 3) / 4
+	if tokens < 1 {
+		tokens = 1
+	}
+	return tokens, bytes
+}
+
+func estimateMessagesBytes(msgs []types.Message) int {
+	total := 0
+	for _, msg := range msgs {
+		total += len(msg.Role) + len(msg.Content) + len(msg.ToolCallID) + 16
+		for _, tc := range msg.ToolCalls {
+			total += len(tc.ID) + len(tc.Type) + len(tc.Function.Name) + len(tc.Function.Arguments) + 24
+		}
+		for _, part := range msg.Parts {
+			total += len(part.Type) + len(part.Text) + 8
+			if part.ImageURL != nil {
+				total += len(part.ImageURL.URL) + len(part.ImageURL.Detail) + 8
+			}
+		}
+	}
+	return total
+}
+
+func estimateToolBytes(tool types.Tool) int {
+	return len(tool.Type) + len(tool.Function.Name) + len(tool.Function.Description) + len(tool.Function.Parameters) + 24
+}
+
+const summarizedHistoryPrefix = "[Earlier message summarized"
+
+func summarizeOversizedHistory(history []types.Message) ([]types.Message, int, bool) {
+	for i, msg := range history {
+		if !messageEligibleForSummarization(msg) {
+			continue
+		}
+		oldBytes := estimateMessagesBytes([]types.Message{msg})
+		summary := summarizeHistoryMessage(msg)
+		newBytes := estimateMessagesBytes([]types.Message{summary})
+		if newBytes >= oldBytes {
+			continue
+		}
+		next := append([]types.Message(nil), history...)
+		next[i] = summary
+		return next, oldBytes - newBytes, true
+	}
+	return nil, 0, false
+}
+
+func messageEligibleForSummarization(msg types.Message) bool {
+	if msg.Role == "system" || len(msg.ToolCalls) > 0 || len(msg.Parts) > 0 {
+		return false
+	}
+	content := strings.TrimSpace(msg.Content)
+	if content == "" || strings.HasPrefix(content, summarizedHistoryPrefix) {
+		return false
+	}
+	return len(content) > 600
+}
+
+func summarizeHistoryMessage(msg types.Message) types.Message {
+	content := strings.TrimSpace(msg.Content)
+	head, tail := boundedHeadTail(content, 160, 120)
+	label := strings.TrimSpace(msg.Role)
+	if label == "" {
+		label = "message"
+	}
+	summary := fmt.Sprintf("%s from earlier %s turn; original_chars=%d]\nHead:\n%s", summarizedHistoryPrefix, label, len(content), head)
+	if tail != "" {
+		summary += "\n\nTail:\n" + tail
+	}
+	msg.Content = summary
+	return msg
+}
+
+func boundedHeadTail(s string, headLimit, tailLimit int) (head string, tail string) {
+	if len(s) <= headLimit {
+		return s, ""
+	}
+	head = s[:headLimit]
+	if len(s) <= headLimit+tailLimit {
+		return head, s[headLimit:]
+	}
+	return head, s[len(s)-tailLimit:]
+}
+
 func buildContext(sys, history, turns []types.Message) []types.Message {
 	out := make([]types.Message, 0, len(sys)+len(history)+len(turns))
 	out = append(out, sys...)

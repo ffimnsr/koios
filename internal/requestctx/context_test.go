@@ -162,6 +162,108 @@ func TestBuild_PrunesByToolInteractionBlock(t *testing.T) {
 	}
 }
 
+func TestBuild_SummarizesOversizedHistoryBeforeDropping(t *testing.T) {
+	history := []types.Message{{Role: "assistant", Content: strings.Repeat("large assistant context ", 120)}}
+	built, err := Build(context.Background(), BuildOptions{
+		Model:                 "m",
+		Messages:              []types.Message{{Role: "user", Content: "follow up"}},
+		History:               history,
+		MaxPromptTokens:       360,
+		ResponseReserveTokens: 40,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if built.SummarizedHistoryMessages == 0 {
+		t.Fatalf("expected oversized history to be summarized, got %#v", built)
+	}
+	if built.BudgetTrimmedMessages != 0 {
+		t.Fatalf("did not expect history drop before summarization, got %#v", built)
+	}
+	foundSummary := false
+	for _, msg := range built.Request.Messages {
+		if strings.HasPrefix(msg.Content, summarizedHistoryPrefix) {
+			foundSummary = true
+			break
+		}
+	}
+	if !foundSummary {
+		t.Fatalf("expected summarized history marker, got %#v", built.Request.Messages)
+	}
+}
+
+func TestBuild_TrimsHistoryAndDropsInjectedMemoryToFitBudget(t *testing.T) {
+	store, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	_, err = store.InsertChunkWithOptions(ctx, "alice", strings.Repeat("memory ", 80), memory.ChunkOptions{RetentionClass: memory.RetentionClassPinned})
+	if err != nil {
+		t.Fatalf("insert memory: %v", err)
+	}
+	history := []types.Message{
+		{Role: "user", Content: strings.Repeat("old user ", 40)},
+		{Role: "assistant", Content: strings.Repeat("old assistant ", 40)},
+	}
+	built, err := Build(ctx, BuildOptions{
+		Model:                 "m",
+		Messages:              []types.Message{{Role: "user", Content: "what changed"}},
+		History:               history,
+		MemoryStore:           store,
+		MemoryLCMWindow:       1,
+		MemoryPeerID:          "alice",
+		MaxPromptTokens:       300,
+		ResponseReserveTokens: 40,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if built.BudgetTrimmedMessages == 0 {
+		t.Fatalf("expected history trimming, got %#v", built)
+	}
+	if built.HistoryBytesPruned == 0 {
+		t.Fatalf("expected history bytes pruned, got %#v", built)
+	}
+	if !built.DroppedInjectedMemory {
+		t.Fatalf("expected injected memory to drop under tight budget, got %#v", built)
+	}
+	if built.EstimatedPromptTokens > 260 {
+		t.Fatalf("expected prompt tokens to fit budget, got %d", built.EstimatedPromptTokens)
+	}
+	for _, msg := range built.Request.Messages {
+		if strings.Contains(msg.Content, "memory memory") {
+			t.Fatalf("did not expect injected memory after trim, got %#v", built.Request.Messages)
+		}
+	}
+}
+
+func TestBuild_DropsSummarizedHistoryWhenBudgetStillTooTight(t *testing.T) {
+	history := []types.Message{{Role: "assistant", Content: strings.Repeat("large assistant context ", 120)}}
+	built, err := Build(context.Background(), BuildOptions{
+		Model:                 "m",
+		Messages:              []types.Message{{Role: "user", Content: "follow up"}},
+		History:               history,
+		MaxPromptTokens:       120,
+		ResponseReserveTokens: 40,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if built.SummarizedHistoryMessages == 0 {
+		t.Fatalf("expected summary attempt before drop, got %#v", built)
+	}
+	if built.BudgetTrimmedMessages == 0 {
+		t.Fatalf("expected eventual history drop under very tight budget, got %#v", built)
+	}
+	for _, msg := range built.Request.Messages {
+		if strings.HasPrefix(msg.Content, summarizedHistoryPrefix) {
+			t.Fatalf("did not expect summarized history to remain after final drop, got %#v", built.Request.Messages)
+		}
+	}
+}
+
 func TestBuild_InjectsOnlyAutoExposureMemory(t *testing.T) {
 	store, err := memory.New(filepath.Join(t.TempDir(), "memory.db"), nil)
 	if err != nil {

@@ -30,8 +30,10 @@ type stubProvider struct {
 }
 
 type stubToolExecutor struct {
-	execute func(ctx context.Context, peerID string, call agent.ToolCall) (any, error)
-	defs    []types.Tool
+	execute       func(ctx context.Context, peerID string, call agent.ToolCall) (any, error)
+	defs          []types.Tool
+	contextPrompt func(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) string
+	contextDefs   func(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) []types.Tool
 }
 
 type stubProviderResolver struct {
@@ -46,6 +48,20 @@ func (s stubToolExecutor) ToolPromptForRun(peerID, sessionKey, activeProfile str
 func (s stubToolExecutor) ToolDefinitionsForRun(peerID, sessionKey, activeProfile string) []types.Tool {
 	_, _, _ = peerID, sessionKey, activeProfile
 	return append([]types.Tool(nil), s.defs...)
+}
+
+func (s stubToolExecutor) ToolPromptForRunWithContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) string {
+	if s.contextPrompt != nil {
+		return s.contextPrompt(peerID, sessionKey, activeProfile, messages, maxDefinitions)
+	}
+	return s.ToolPromptForRun(peerID, sessionKey, activeProfile)
+}
+
+func (s stubToolExecutor) ToolDefinitionsForRunWithContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) []types.Tool {
+	if s.contextDefs != nil {
+		return s.contextDefs(peerID, sessionKey, activeProfile, messages, maxDefinitions)
+	}
+	return s.ToolDefinitionsForRun(peerID, sessionKey, activeProfile)
 }
 
 func (s stubToolExecutor) ExecuteTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
@@ -220,6 +236,107 @@ func TestRuntime_UsesResolvedProviderCapabilitiesForToolSupport(t *testing.T) {
 	}
 	if len(captured.Tools) != 1 || captured.Tools[0].Function.Name != "task.create" {
 		t.Fatalf("expected resolved provider capabilities to keep native tools, got %#v", captured.Tools)
+	}
+}
+
+func TestRuntime_UsesContextualToolSelectionLimits(t *testing.T) {
+	store := session.New(20)
+	var captured *types.ChatRequest
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			captured = req
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}, nil
+		},
+		caps: types.ProviderCapabilities{Name: "stub", SupportsNativeTools: true},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetContextBudget(32000, 4000, 2, 4000)
+	observedMaxDefs := 0
+	toolExec := stubToolExecutor{
+		execute: func(context.Context, string, agent.ToolCall) (any, error) { return nil, nil },
+		contextPrompt: func(_, _, _ string, messages []types.Message, maxDefinitions int) string {
+			observedMaxDefs = maxDefinitions
+			if len(messages) == 0 || messages[len(messages)-1].Content != "show my schedule" {
+				t.Fatalf("unexpected context messages: %#v", messages)
+			}
+			return "use limited tools"
+		},
+		contextDefs: func(_, _, _ string, _ []types.Message, maxDefinitions int) []types.Tool {
+			all := []types.Tool{
+				{Type: "function", Function: types.ToolFunction{Name: "tool.search", Parameters: mustRawJSON(t, `{"type":"object"}`)}},
+				{Type: "function", Function: types.ToolFunction{Name: "calendar.today", Parameters: mustRawJSON(t, `{"type":"object"}`)}},
+				{Type: "function", Function: types.ToolFunction{Name: "task.list", Parameters: mustRawJSON(t, `{"type":"object"}`)}},
+			}
+			return append([]types.Tool(nil), all[:maxDefinitions]...)
+		},
+	}
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:       "peer",
+		Scope:        agent.ScopeMain,
+		Messages:     []types.Message{{Role: "user", Content: "show my schedule"}},
+		ToolExecutor: toolExec,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if observedMaxDefs != 2 {
+		t.Fatalf("expected contextual maxDefinitions=2, got %d", observedMaxDefs)
+	}
+	if captured == nil {
+		t.Fatal("expected captured request")
+	}
+	if len(captured.Tools) != 2 {
+		t.Fatalf("expected two contextual tools, got %#v", captured.Tools)
+	}
+	if captured.Messages[1].Content != "use limited tools" {
+		t.Fatalf("expected contextual prompt in request, got %#v", captured.Messages)
+	}
+}
+
+func TestRuntime_TruncatesLargeToolResultsInActiveContext(t *testing.T) {
+	store := session.New(20)
+	var seenToolMsg string
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: `<tool_call>{"name":"workspace.read","arguments":{}}</tool_call>`}}}}, nil
+			}
+			for _, msg := range req.Messages {
+				if msg.Role == "tool" {
+					seenToolMsg = msg.Content
+				}
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetContextBudget(32000, 4000, 24, 120)
+	toolExec := stubToolExecutor{
+		execute: func(context.Context, string, agent.ToolCall) (any, error) {
+			return strings.Repeat("A", 2000), nil
+		},
+		defs: []types.Tool{{
+			Type:     "function",
+			Function: types.ToolFunction{Name: "workspace.read", Parameters: mustRawJSON(t, `{"type":"object"}`)},
+		}},
+	}
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:       "peer",
+		Scope:        agent.ScopeMain,
+		Messages:     []types.Message{{Role: "user", Content: "read file"}},
+		ToolExecutor: toolExec,
+		MaxSteps:     2,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(seenToolMsg, `"truncated":true`) {
+		t.Fatalf("expected truncated tool payload, got %q", seenToolMsg)
+	}
+	if len(seenToolMsg) > 300 {
+		t.Fatalf("expected compact tool payload, got %d chars", len(seenToolMsg))
 	}
 }
 

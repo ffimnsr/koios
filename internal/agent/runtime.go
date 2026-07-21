@@ -196,6 +196,11 @@ type ToolExecutor interface {
 	ExecuteTool(ctx context.Context, peerID string, call ToolCall) (any, error)
 }
 
+type contextualToolExecutor interface {
+	ToolPromptForRunWithContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) string
+	ToolDefinitionsForRunWithContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) []types.Tool
+}
+
 type toolRunContextKey struct{}
 
 type providerOverrideKey struct{}
@@ -240,24 +245,28 @@ type toolNameNormalizer interface {
 // Runtime executes agent turns against a provider while managing session
 // scoping, persistence, compaction, and retries.
 type Runtime struct {
-	store             *session.Store
-	prov              Provider
-	model             string
-	resolver          ProviderResolver
-	retry             RetryPolicy
-	defaultTimeout    time.Duration
-	globalKey         string
-	memStore          *memory.Store
-	taskStore         *tasks.Store
-	memTopK           int
-	memInject         bool
-	memLCMWindow      int
-	memNamespaces     []string
-	pruneToolMessages int
-	standingManager   *standing.Manager
-	skillManager      *skills.Manager
-	hooks             *ops.Manager
-	identityDir       string
+	store               *session.Store
+	prov                Provider
+	model               string
+	resolver            ProviderResolver
+	retry               RetryPolicy
+	defaultTimeout      time.Duration
+	globalKey           string
+	memStore            *memory.Store
+	taskStore           *tasks.Store
+	memTopK             int
+	memInject           bool
+	memLCMWindow        int
+	memNamespaces       []string
+	pruneToolMessages   int
+	standingManager     *standing.Manager
+	skillManager        *skills.Manager
+	hooks               *ops.Manager
+	identityDir         string
+	maxContextTokens    int
+	promptReserveTokens int
+	maxToolDefinitions  int
+	maxToolResultChars  int
 
 	steeringMu     sync.Mutex
 	steeringQueues map[string][]string // sessionKey → pending user messages
@@ -332,6 +341,27 @@ func (rt *Runtime) SetPruning(keepToolMessages int) {
 
 func (rt *Runtime) SetStandingOrders(manager *standing.Manager) {
 	rt.standingManager = manager
+}
+
+// SetContextBudget configures approximate local context trimming and native-tool
+// schema capping. Zero values disable the corresponding cap.
+func (rt *Runtime) SetContextBudget(maxContextTokens, promptReserveTokens, maxToolDefinitions, maxToolResultChars int) {
+	if maxContextTokens < 0 {
+		maxContextTokens = 0
+	}
+	if promptReserveTokens < 0 {
+		promptReserveTokens = 0
+	}
+	if maxToolDefinitions < 0 {
+		maxToolDefinitions = 0
+	}
+	if maxToolResultChars < 0 {
+		maxToolResultChars = 0
+	}
+	rt.maxContextTokens = maxContextTokens
+	rt.promptReserveTokens = promptReserveTokens
+	rt.maxToolDefinitions = maxToolDefinitions
+	rt.maxToolResultChars = maxToolResultChars
 }
 
 // SetHooks configures lifecycle hooks for runtime events.
@@ -456,12 +486,16 @@ func NewRuntime(store *session.Store, prov Provider, model string, timeout time.
 		timeout = 2 * time.Minute
 	}
 	return &Runtime{
-		store:          store,
-		prov:           prov,
-		model:          model,
-		retry:          retry,
-		defaultTimeout: timeout,
-		globalKey:      "__global__",
+		store:               store,
+		prov:                prov,
+		model:               model,
+		retry:               retry,
+		defaultTimeout:      timeout,
+		globalKey:           "__global__",
+		maxContextTokens:    32000,
+		promptReserveTokens: 4000,
+		maxToolDefinitions:  24,
+		maxToolResultChars:  4000,
 	}
 }
 
@@ -556,8 +590,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 
 		history := rt.store.Get(sessionKey).History()
 		stepMessages := append([]types.Message(nil), workingMessages...)
+		selectedTools := rt.toolDefinitionsForRun(reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile, stepMessages)
 		if reqCopy.ToolExecutor != nil {
-			if toolPrompt := strings.TrimSpace(reqCopy.ToolExecutor.ToolPromptForRun(reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile)); toolPrompt != "" {
+			if toolPrompt := strings.TrimSpace(rt.toolPromptForRun(reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile, stepMessages)); toolPrompt != "" {
 				stepMessages = append([]types.Message{{Role: "system", Content: toolPrompt}}, stepMessages...)
 			}
 		}
@@ -572,21 +607,33 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			return result, err
 		}
 		extraSystem = append(extraSystem, skillSystem...)
+		reserveTokens := rt.promptReserveTokens
+		if reqCopy.MaxTokens > 0 {
+			reserveTokens = reqCopy.MaxTokens
+		}
+		caps := providerCapabilitiesFor(rt.providerForContext(callCtx), reqCopy.Model)
+		toolReserveTokens := 0
+		if len(selectedTools) > 0 && (caps.SupportsNativeTools || caps.Name == "") {
+			toolReserveTokens, _ = requestctx.EstimateRequestTokens(&types.ChatRequest{Model: reqCopy.Model, Tools: selectedTools})
+		}
 		built, err := requestctx.Build(callCtx, requestctx.BuildOptions{
-			Model:             reqCopy.Model,
-			Messages:          stepMessages,
-			History:           history,
-			Stream:            reqCopy.Stream,
-			ExtraSystem:       extraSystem,
-			PruneToolMessages: rt.pruneToolMessages,
-			MemoryStore:       rt.memStore,
-			MemoryTopK:        rt.memTopK,
-			MemoryInject:      rt.memInject,
-			MemoryPeerID:      reqCopy.PeerID,
-			MemoryLCMWindow:   rt.memLCMWindow,
-			MemoryNamespaces:  rt.memNamespaces,
-			IdentityDir:       rt.identityDir,
-			PeerID:            reqCopy.PeerID,
+			Model:                 reqCopy.Model,
+			Messages:              stepMessages,
+			History:               history,
+			Stream:                reqCopy.Stream,
+			ExtraSystem:           extraSystem,
+			PruneToolMessages:     rt.pruneToolMessages,
+			MemoryStore:           rt.memStore,
+			MemoryTopK:            rt.memTopK,
+			MemoryInject:          rt.memInject,
+			MemoryPeerID:          reqCopy.PeerID,
+			MemoryLCMWindow:       rt.memLCMWindow,
+			MemoryNamespaces:      rt.memNamespaces,
+			MaxPromptTokens:       rt.maxContextTokens,
+			ResponseReserveTokens: reserveTokens,
+			ExtraTokenReserve:     toolReserveTokens,
+			IdentityDir:           rt.identityDir,
+			PeerID:                reqCopy.PeerID,
 		})
 		if err != nil {
 			rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Step: step, Error: err.Error()})
@@ -598,6 +645,22 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			Step:       step,
 			Count:      len(built.Request.Messages),
 		})
+		slog.Debug("agent context built",
+			"session", sessionKey,
+			"step", step,
+			"messages", len(built.Request.Messages),
+			"tools", len(selectedTools),
+			"prompt_tokens_est", built.EstimatedPromptTokens,
+			"prompt_bytes_est", built.EstimatedPromptBytes,
+			"tool_tokens_reserve", toolReserveTokens,
+			"history_budget_trimmed", built.BudgetTrimmedMessages,
+			"history_bytes_pruned", built.HistoryBytesPruned,
+			"tool_messages_pruned", built.PrunedMessages,
+			"dropped_memory", built.DroppedInjectedMemory,
+			"dropped_continuity", built.DroppedContinuity,
+			"dropped_bootstrap", built.DroppedBootstrap,
+			"over_budget", built.OverBudgetAfterTrimming,
+		)
 		if built.MemoryHits > 0 {
 			rt.emitEvent(result, reqCopy.EventSink, Event{
 				Kind:       EventMemory,
@@ -615,9 +678,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			})
 		}
 		if reqCopy.ToolExecutor != nil {
-			caps := providerCapabilitiesFor(rt.providerForContext(callCtx), built.Request.Model)
+			caps = providerCapabilitiesFor(rt.providerForContext(callCtx), built.Request.Model)
 			if caps.SupportsNativeTools || caps.Name == "" {
-				built.Request.Tools = reqCopy.ToolExecutor.ToolDefinitionsForRun(reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile)
+				built.Request.Tools = selectedTools
 			}
 			if len(built.Request.Tools) > 0 {
 				built.Request.ToolChoice = "auto"
@@ -736,7 +799,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 										Arguments: string(tc.Arguments),
 									},
 								}}},
-								types.Message{Role: "tool", ToolCallID: tc.ID, Content: formatToolResult(tc.Name, toolResult, execErr)},
+								types.Message{Role: "tool", ToolCallID: tc.ID, Content: rt.formatToolResult(tc.Name, toolResult, execErr)},
 							)
 							if execErr != nil {
 								lastErr = execErr
@@ -799,7 +862,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						}
 						workingMessages = append(workingMessages,
 							types.Message{Role: "assistant", Content: assistantText},
-							types.Message{Role: "tool", ToolCallID: call.ID, Content: formatToolResult(call.Name, toolResult, execErr)},
+							types.Message{Role: "tool", ToolCallID: call.ID, Content: rt.formatToolResult(call.Name, toolResult, execErr)},
 						)
 						if execErr != nil {
 							lastErr = execErr
@@ -1539,9 +1602,69 @@ func parseToolCall(text string) (*ToolCall, bool, error) {
 	return &call, true, nil
 }
 
-func formatToolResult(name string, result any, err error) string {
+func (rt *Runtime) toolPromptForRun(exec ToolExecutor, peerID, sessionKey, activeProfile string, messages []types.Message) string {
+	if exec == nil {
+		return ""
+	}
+	if contextual, ok := exec.(contextualToolExecutor); ok {
+		return contextual.ToolPromptForRunWithContext(peerID, sessionKey, activeProfile, messages, rt.maxToolDefinitions)
+	}
+	return exec.ToolPromptForRun(peerID, sessionKey, activeProfile)
+}
+
+func (rt *Runtime) toolDefinitionsForRun(exec ToolExecutor, peerID, sessionKey, activeProfile string, messages []types.Message) []types.Tool {
+	if exec == nil {
+		return nil
+	}
+	if contextual, ok := exec.(contextualToolExecutor); ok {
+		return contextual.ToolDefinitionsForRunWithContext(peerID, sessionKey, activeProfile, messages, rt.maxToolDefinitions)
+	}
+	defs := exec.ToolDefinitionsForRun(peerID, sessionKey, activeProfile)
+	if rt.maxToolDefinitions > 0 && len(defs) > rt.maxToolDefinitions {
+		defs = append([]types.Tool(nil), defs[:rt.maxToolDefinitions]...)
+	}
+	return defs
+}
+
+func (rt *Runtime) formatToolResult(name string, result any, err error) string {
 	encoded := formatToolResultBody(result, err)
-	return fmt.Sprintf("[tool_result %s]\n%s", name, encoded)
+	if rt == nil || rt.maxToolResultChars <= 0 || len(encoded) <= rt.maxToolResultChars {
+		return fmt.Sprintf("[tool_result %s]\n%s", name, encoded)
+	}
+	head, tail := truncateToolPreview(encoded, rt.maxToolResultChars)
+	summary := map[string]any{
+		"ok":             err == nil,
+		"truncated":      true,
+		"original_chars": len(encoded),
+		"preview_head":   head,
+		"preview_tail":   tail,
+	}
+	if err != nil {
+		summary["error"] = map[string]any{"message": redact.Error(err)}
+	}
+	preview, marshalErr := json.Marshal(summary)
+	if marshalErr != nil {
+		preview = []byte(fmt.Sprintf(`{"ok":false,"truncated":true,"original_chars":%d,"preview_head":%q,"preview_tail":%q}`, len(encoded), head, tail))
+	}
+	return fmt.Sprintf("[tool_result %s]\n%s", name, string(preview))
+}
+
+func truncateToolPreview(s string, maxChars int) (head string, tail string) {
+	if maxChars <= 0 || len(s) <= maxChars {
+		return s, ""
+	}
+	if maxChars < 64 {
+		maxChars = 64
+	}
+	headLen := maxChars / 2
+	tailLen := maxChars - headLen
+	if headLen > len(s) {
+		headLen = len(s)
+	}
+	if tailLen > len(s)-headLen {
+		tailLen = len(s) - headLen
+	}
+	return s[:headLen], s[len(s)-tailLen:]
 }
 
 func formatToolResultBody(result any, err error) string {

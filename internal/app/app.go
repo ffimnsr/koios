@@ -322,6 +322,7 @@ func RunGateway(build BuildInfo) error {
 		StatusCodes:    cfg.AgentRetryStatusCodes,
 	})
 	agentRuntime.SetHooks(hooks)
+	agentRuntime.SetContextBudget(cfg.LLMContextWindowTokens, cfg.LLMPromptReserveTokens, cfg.LLMMaxToolDefinitions, cfg.LLMMaxToolResultChars)
 	agentRuntime.EnableMemory(memStore, cfg.MemoryInject, cfg.MemoryTopK)
 	agentRuntime.SetMemoryLCM(cfg.MemoryLCMWindow, cfg.MemoryNamespaces)
 	skillMgr := skills.NewManager(cfg, workspaceDir)

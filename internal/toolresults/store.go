@@ -35,11 +35,14 @@ type Record struct {
 // Provenance carries source metadata embedded in every Record, identifying
 // the executor kind, model profile, and originating session or workflow.
 type Provenance struct {
-	ExecutorKind  string `json:"executor_kind,omitempty"`
-	ModelProfile  string `json:"model_profile,omitempty"`
-	ApprovalState string `json:"approval_state,omitempty"`
-	Redacted      bool   `json:"redacted,omitempty"`
-	CaptureReason string `json:"capture_reason,omitempty"`
+	ExecutorKind       string `json:"executor_kind,omitempty"`
+	ModelProfile       string `json:"model_profile,omitempty"`
+	ApprovalState      string `json:"approval_state,omitempty"`
+	Redacted           bool   `json:"redacted,omitempty"`
+	CaptureReason      string `json:"capture_reason,omitempty"`
+	FullResultArtifact string `json:"full_result_artifact,omitempty"`
+	ResultTruncated    bool   `json:"result_truncated,omitempty"`
+	ResultBytes        int    `json:"result_bytes,omitempty"`
 }
 
 // Input holds the mutable fields used when creating a tool result record.

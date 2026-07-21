@@ -69,7 +69,14 @@ func (h *Handler) ToolPrompt(peerID string) string {
 }
 
 func (h *Handler) ToolPromptForRun(peerID, sessionKey, activeProfile string) string {
-	defs := h.activeDefs(peerID, sessionKey, activeProfile)
+	return h.toolPromptForDefs(peerID, sessionKey, activeProfile, h.activeDefs(peerID, sessionKey, activeProfile))
+}
+
+func (h *Handler) ToolPromptForRunWithContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) string {
+	return h.toolPromptForDefs(peerID, sessionKey, activeProfile, h.activeDefsForContext(peerID, sessionKey, activeProfile, messages, maxDefinitions))
+}
+
+func (h *Handler) toolPromptForDefs(peerID, sessionKey, activeProfile string, defs []toolDef) string {
 	names := make([]string, len(defs))
 	for i, d := range defs {
 		names[i] = d.name
@@ -129,7 +136,14 @@ func (h *Handler) ToolDefinitions(peerID string) []types.Tool {
 }
 
 func (h *Handler) ToolDefinitionsForRun(peerID, sessionKey, activeProfile string) []types.Tool {
-	defs := h.activeDefs(peerID, sessionKey, activeProfile)
+	return toolDefsToTypes(h.activeDefs(peerID, sessionKey, activeProfile))
+}
+
+func (h *Handler) ToolDefinitionsForRunWithContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) []types.Tool {
+	return toolDefsToTypes(h.activeDefsForContext(peerID, sessionKey, activeProfile, messages, maxDefinitions))
+}
+
+func toolDefsToTypes(defs []toolDef) []types.Tool {
 	tools := make([]types.Tool, len(defs))
 	for i, d := range defs {
 		tools[i] = types.Tool{
@@ -142,6 +156,162 @@ func (h *Handler) ToolDefinitionsForRun(peerID, sessionKey, activeProfile string
 		}
 	}
 	return tools
+}
+
+func (h *Handler) activeDefsForContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) []toolDef {
+	defs := h.activeDefs(peerID, sessionKey, activeProfile)
+	if maxDefinitions <= 0 || len(defs) <= maxDefinitions {
+		return defs
+	}
+	return selectRelevantToolDefs(defs, messages, maxDefinitions)
+}
+
+func selectRelevantToolDefs(defs []toolDef, messages []types.Message, maxDefinitions int) []toolDef {
+	if maxDefinitions <= 0 || len(defs) <= maxDefinitions {
+		return append([]toolDef(nil), defs...)
+	}
+	keywords := extractToolContextKeywords(messages)
+	domainHints := toolDomainHints(keywords)
+	recentTools := recentToolNames(messages)
+	type scoredTool struct {
+		def   toolDef
+		score int
+	}
+	forcedNames := map[string]struct{}{
+		"tool.list":   {},
+		"tool.help":   {},
+		"tool.search": {},
+	}
+	ranked := make([]scoredTool, 0, len(defs))
+	for _, def := range defs {
+		nameLower := strings.ToLower(def.name)
+		descLower := strings.ToLower(def.description)
+		domain := toolDomain(def.name)
+		score := 0
+		if _, ok := forcedNames[def.name]; ok {
+			score += 1_000_000
+		}
+		if _, ok := recentTools[def.name]; ok {
+			score += 900_000
+		}
+		score += domainHints[domain]
+		for _, kw := range keywords {
+			if strings.Contains(nameLower, kw) {
+				score += 140
+			}
+			if strings.Contains(domain, kw) {
+				score += 100
+			}
+			if strings.Contains(descLower, kw) {
+				score += 30
+			}
+			for _, tag := range def.tags {
+				if strings.Contains(strings.ToLower(tag), kw) {
+					score += 45
+				}
+			}
+		}
+		if score == 0 {
+			continue
+		}
+		ranked = append(ranked, scoredTool{def: def, score: score})
+	}
+	if len(ranked) == 0 {
+		for _, def := range defs {
+			if _, ok := forcedNames[def.name]; ok {
+				ranked = append(ranked, scoredTool{def: def, score: 1_000_000})
+			}
+		}
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].score == ranked[j].score {
+			return ranked[i].def.name < ranked[j].def.name
+		}
+		return ranked[i].score > ranked[j].score
+	})
+	if len(ranked) > maxDefinitions {
+		ranked = ranked[:maxDefinitions]
+	}
+	selected := make([]toolDef, len(ranked))
+	for i, item := range ranked {
+		selected[i] = item.def
+	}
+	return selected
+}
+
+func extractToolContextKeywords(messages []types.Message) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for i := len(messages) - 1; i >= 0 && len(out) < 12; i-- {
+		msg := messages[i]
+		if msg.Role != "user" && msg.Role != "assistant" {
+			continue
+		}
+		for _, part := range strings.FieldsFunc(strings.ToLower(msg.Content), func(r rune) bool {
+			return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+		}) {
+			if len(part) < 3 {
+				continue
+			}
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			out = append(out, part)
+			if len(out) >= 12 {
+				break
+			}
+		}
+	}
+	return out
+}
+
+func toolDomainHints(keywords []string) map[string]int {
+	hints := make(map[string]int)
+	for _, kw := range keywords {
+		switch kw {
+		case "browser", "page", "click", "website", "web":
+			hints["browser"] += 120
+		case "file", "read", "write", "patch", "workspace", "repo", "git":
+			hints["workspace"] += 120
+			hints["git"] += 80
+		case "task", "todo", "deadline", "plan":
+			hints["task"] += 120
+			hints["plan"] += 80
+		case "calendar", "schedule", "event", "meeting", "agenda":
+			hints["calendar"] += 140
+		case "message", "send", "telegram", "chat", "inbox":
+			hints["message"] += 120
+			hints["inbox"] += 120
+			hints["channel"] += 80
+		case "history", "earlier", "previous", "remember", "memory":
+			hints["session"] += 120
+			hints["memory"] += 120
+		case "wallet", "balance", "portfolio", "asset", "token":
+			hints["wallet"] += 160
+			hints["portfolio"] += 140
+		case "model", "usage", "cost", "tokens":
+			hints["model"] += 120
+			hints["usage"] += 120
+		}
+	}
+	return hints
+}
+
+func recentToolNames(messages []types.Message) map[string]struct{} {
+	out := make(map[string]struct{})
+	start := len(messages) - 8
+	if start < 0 {
+		start = 0
+	}
+	for _, msg := range messages[start:] {
+		for _, tc := range msg.ToolCalls {
+			if strings.TrimSpace(tc.Function.Name) != "" {
+				out[tc.Function.Name] = struct{}{}
+			}
+		}
+	}
+	return out
 }
 
 func (h *Handler) resolveStandingProfileName(peerID, sessionKey, activeProfile string) string {

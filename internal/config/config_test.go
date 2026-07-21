@@ -13,6 +13,10 @@ func configBoolPtr(v bool) *bool { return &v }
 func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg := Default()
 	cfg.LLMIdleTimeout = 42 * time.Second
+	cfg.LLMContextWindowTokens = 65536
+	cfg.LLMPromptReserveTokens = 8192
+	cfg.LLMMaxToolDefinitions = 12
+	cfg.LLMMaxToolResultChars = 2048
 	cfg.AgentRetryStatusCodes = []int{429, 500, 503}
 	cfg.ToolsAllow = []string{"read", "write"}
 	cfg.ToolsDeny = []string{"exec"}
@@ -70,6 +74,16 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	encoded := EncodeTOML(cfg, false)
 	if !strings.Contains(encoded, "idle_timeout = \"42s\"") {
 		t.Fatalf("expected idle_timeout in encoded config, got:\n%s", encoded)
+	}
+	for _, expected := range []string{
+		"context_window_tokens = 65536",
+		"prompt_reserve_tokens = 8192",
+		"max_tool_definitions = 12",
+		"max_tool_result_chars = 2048",
+	} {
+		if !strings.Contains(encoded, expected) {
+			t.Fatalf("expected encoded config to contain %q, got:\n%s", expected, encoded)
+		}
 	}
 	if !strings.Contains(encoded, "retry_status_codes = [429, 500, 503]") {
 		t.Fatalf("expected retry_status_codes array in encoded config, got:\n%s", encoded)
@@ -129,6 +143,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	}
 	if loaded.LLMIdleTimeout != 42*time.Second {
 		t.Fatalf("unexpected llm.idle_timeout after round-trip: %s", loaded.LLMIdleTimeout)
+	}
+	if loaded.LLMContextWindowTokens != 65536 || loaded.LLMPromptReserveTokens != 8192 || loaded.LLMMaxToolDefinitions != 12 || loaded.LLMMaxToolResultChars != 2048 {
+		t.Fatalf("unexpected llm budgeting fields after round-trip: %#v", loaded)
 	}
 	if len(loaded.ToolsAllow) != 2 || loaded.ToolsAllow[0] != "read" || loaded.ToolsAllow[1] != "write" {
 		t.Fatalf("unexpected tools.allow after round-trip: %#v", loaded.ToolsAllow)

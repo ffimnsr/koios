@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/artifacts"
 	"github.com/ffimnsr/koios/internal/mcp"
 	"github.com/ffimnsr/koios/internal/toolresults"
 )
@@ -153,13 +154,16 @@ func (h *Handler) recordToolResult(
 		}
 	}
 
-	var resultJSON string
+	var (
+		resultJSON      string
+		fullResultJSON  string
+		fullResultBytes int
+	)
 	if result != nil {
 		if b, err := json.Marshal(result); err == nil {
-			resultJSON = string(b)
-			if len(resultJSON) > 8192 {
-				resultJSON = resultJSON[:8192]
-			}
+			fullResultJSON = string(b)
+			fullResultBytes = len(fullResultJSON)
+			resultJSON = fullResultJSON
 		}
 	}
 
@@ -171,6 +175,24 @@ func (h *Handler) recordToolResult(
 	if errMsg != "" {
 		summary = call.Name + ": " + errMsg
 	}
+	prov := toolresults.Provenance{
+		ExecutorKind:  executorKind,
+		ModelProfile:  toolCtx.ActiveProfile,
+		CaptureReason: "tool_execution",
+		ResultBytes:   fullResultBytes,
+	}
+	if fullResultJSON != "" && len(fullResultJSON) > 8192 {
+		if artifactID, err := h.persistFullToolResultArtifact(ctx, peerID, call, toolCtx, fullResultJSON, durationMS); err == nil && artifactID != "" {
+			prov.ResultTruncated = true
+			prov.FullResultArtifact = artifactID
+			resultJSON = fullResultJSON[:8192]
+			if errMsg != "" {
+				summary = call.Name + ": " + errMsg + " (full result artifact " + artifactID + ")"
+			} else {
+				summary = call.Name + ": full result stored in artifact " + artifactID
+			}
+		}
+	}
 
 	input := toolresults.Input{
 		SessionKey: toolCtx.SessionKey,
@@ -181,15 +203,43 @@ func (h *Handler) recordToolResult(
 		Summary:    summary,
 		IsError:    execErr != nil,
 		DurationMS: durationMS,
-		Provenance: toolresults.Provenance{
-			ExecutorKind:  executorKind,
-			ModelProfile:  toolCtx.ActiveProfile,
-			CaptureReason: "tool_execution",
-		},
+		Provenance: prov,
 	}
 
 	if _, err := h.toolResultStore.Create(ctx, peerID, input); err != nil {
 		// Non-fatal: provenance capture should not break tool execution.
 		_ = err
 	}
+}
+
+func (h *Handler) persistFullToolResultArtifact(ctx context.Context, peerID string, call agent.ToolCall, toolCtx agent.ToolRunContext, fullResultJSON string, durationMS int64) (string, error) {
+	if h == nil || h.artifactStore == nil || strings.TrimSpace(fullResultJSON) == "" {
+		return "", nil
+	}
+	title := fmt.Sprintf("Tool result %s", call.Name)
+	if call.ID != "" {
+		title = fmt.Sprintf("Tool result %s (%s)", call.Name, call.ID)
+	}
+	content, err := json.Marshal(map[string]any{
+		"tool_name":    call.Name,
+		"tool_call_id": call.ID,
+		"session_key":  toolCtx.SessionKey,
+		"args_json":    json.RawMessage(call.Arguments),
+		"result_json":  json.RawMessage(fullResultJSON),
+		"duration_ms":  durationMS,
+		"captured_at":  time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return "", err
+	}
+	artifact, err := h.artifactStore.Create(ctx, peerID, artifacts.Input{
+		Kind:    "tool_result",
+		Title:   title,
+		Content: string(content),
+		Labels:  []string{"tool_result", call.Name},
+	})
+	if err != nil {
+		return "", err
+	}
+	return artifact.ID, nil
 }
