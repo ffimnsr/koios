@@ -12,6 +12,20 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-07-21
+
+### Added
+
+- add skill based system (`1136e46`)
+- update chat tools to have search and list (`7db040e`)
+- update tasks for development tools (`c28df00`)
+
+
+### Fixed
+
+- update all lint errors (`a66bdff`)
+- update the static check call warning (`84f5a72`)
+
 ## [0.7.5] - 2026-07-20
 
 ### Added
@@ -285,7 +299,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/ffimnsr/koios/releases/tag/v0.7.6
 [0.7.5]: https://github.com/ffimnsr/koios/releases/tag/v0.7.5
 [0.7.4]: https://github.com/ffimnsr/koios/releases/tag/v0.7.4
 [0.7.3]: https://github.com/ffimnsr/koios/releases/tag/v0.7.3
