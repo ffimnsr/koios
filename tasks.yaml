@@ -63,3 +63,14 @@ tasks:
         | awk '$1 > 1000' \
         | sort -nr
     description: Check for files with more than 1000 LOC.
+  build-image:
+    commands:
+      - command: |
+          podman build \
+            --file Containerfile \
+            --build-arg VERSION="$(cat VERSION)" \
+            --build-arg GIT_HASH="$(git rev-parse --short HEAD)" \
+            --build-arg BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -t ghcr.io/ffimnsr/koios:latest \
+            .
+    description: Build image
