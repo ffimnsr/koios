@@ -38,6 +38,9 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
+
 	"github.com/ffimnsr/koios/internal/bookmarks"
 	"github.com/ffimnsr/koios/internal/briefing"
 	"github.com/ffimnsr/koios/internal/calendar"
@@ -361,6 +364,7 @@ func (h *Handler) slashUsage(wsc *wsConn, req *rpcRequest, arg string) bool {
 // ── /verbose and /trace (bool toggles) ───────────────────────────────────────
 
 func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string, get func(*session.SessionPolicy) bool, apply func(*session.SessionPolicy, bool)) bool {
+	titleCaser := cases.Title(language.Und)
 	var desired bool
 	switch arg {
 	case "on", "true", "1", "yes":
@@ -374,7 +378,7 @@ func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string
 		if get(&policy) {
 			state = "on"
 		}
-		slashReply(wsc, req, fmt.Sprintf("%s mode: %s", strings.Title(name), state)) //nolint:staticcheck
+		slashReply(wsc, req, fmt.Sprintf("%s mode: %s", titleCaser.String(name), state))
 		return true
 	default:
 		slashReply(wsc, req, fmt.Sprintf("Usage: /%s [on|off]", name))
@@ -390,7 +394,7 @@ func (h *Handler) slashBoolToggle(wsc *wsConn, req *rpcRequest, arg, name string
 	if !desired {
 		state = "off"
 	}
-	slashReply(wsc, req, fmt.Sprintf("%s mode: %s", strings.Title(name), state)) //nolint:staticcheck
+	slashReply(wsc, req, fmt.Sprintf("%s mode: %s", titleCaser.String(name), state))
 	return true
 }
 
