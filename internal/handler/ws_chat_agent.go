@@ -254,6 +254,19 @@ func (h *Handler) rpcBriefGenerate(ctx context.Context, wsc *wsConn, req *rpcReq
 	wsc.reply(req.ID, result)
 }
 
+func (h *Handler) rpcSessionPatch(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	if len(req.Params) == 0 {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "params are required")
+		return
+	}
+	result, err := h.executeSessionWorkspaceTool(ctx, wsc.peerID, agent.ToolCall{Name: "session.patch", Arguments: req.Params})
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
 func (h *Handler) rpcSessionHistory(_ context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
 		Limit      int    `json:"limit,omitempty"`

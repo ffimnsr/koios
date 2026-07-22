@@ -47,6 +47,8 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 		h.rpcSessionHistory(ctx, wsc, req)
 	case "session.reset":
 		h.rpcSessionReset(ctx, wsc, req)
+	case "session.patch":
+		h.rpcSessionPatch(ctx, wsc, req)
 	case "presence.get":
 		if h.presence == nil {
 			wsc.replyErr(req.ID, errCodeServer, "presence is not enabled")

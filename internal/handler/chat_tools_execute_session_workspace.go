@@ -430,6 +430,7 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			BrowserProfile      *string `json:"browser_profile"`
 			ProviderProfile     *string `json:"provider_profile"`
 			QueueMode           *string `json:"queue_mode"`
+			ThinkLevel          *string `json:"think_level"`
 			ReasoningVisibility *string `json:"reasoning_visibility"`
 			BlockStream         *bool   `json:"block_stream"`
 			StreamChunkChars    *int    `json:"stream_chunk_chars"`
@@ -438,7 +439,7 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		if err := json.Unmarshal(call.Arguments, &args); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
-		if args.ReplyBack == nil && args.UsageMode == nil && args.ModelOverride == nil && args.ActiveProfile == nil && args.BrowserProfile == nil && args.ProviderProfile == nil && args.QueueMode == nil && args.ReasoningVisibility == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
+		if args.ReplyBack == nil && args.UsageMode == nil && args.ModelOverride == nil && args.ActiveProfile == nil && args.BrowserProfile == nil && args.ProviderProfile == nil && args.QueueMode == nil && args.ThinkLevel == nil && args.ReasoningVisibility == nil && args.BlockStream == nil && args.StreamChunkChars == nil && args.StreamCoalesceMS == nil {
 			return nil, fmt.Errorf("at least one policy field is required")
 		}
 		targetSessionKey := strings.TrimSpace(args.SessionKey)
@@ -507,6 +508,17 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		if args.QueueMode != nil {
 			policy.QueueMode = agent.NormalizeQueueMode(*args.QueueMode)
 		}
+		if args.ThinkLevel != nil {
+			level := strings.ToLower(strings.TrimSpace(*args.ThinkLevel))
+			if level != "" && !validThinkLevels[level] {
+				return nil, fmt.Errorf("think_level must be one of: off, minimal, low, medium, high, xhigh")
+			}
+			if level == "" || level == "off" {
+				policy.ThinkLevel = ""
+			} else {
+				policy.ThinkLevel = level
+			}
+		}
 		if args.ReasoningVisibility != nil {
 			mode := reasoningVisibilityLabel(*args.ReasoningVisibility)
 			if mode == "off" && strings.TrimSpace(*args.ReasoningVisibility) != "" && !strings.EqualFold(strings.TrimSpace(*args.ReasoningVisibility), "off") {
@@ -565,6 +577,13 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 		}
 		if args.QueueMode != nil {
 			result["queue_mode"] = policy.QueueMode
+		}
+		if args.ThinkLevel != nil {
+			if policy.ThinkLevel == "" {
+				result["think_level"] = "off"
+			} else {
+				result["think_level"] = policy.ThinkLevel
+			}
 		}
 		if args.ReasoningVisibility != nil {
 			result["reasoning_visibility"] = reasoningVisibilityLabel(policy.ReasoningVisibility)
