@@ -370,7 +370,8 @@ func TestStore_IdlePruneOnMaintain(t *testing.T) {
 func TestStore_DailyResetOnGet(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
-	resetMinutes := ((now.Hour() + 23) % 24) * 60
+	cutover := now.Add(-30 * time.Minute)
+	resetMinutes := cutover.Hour()*60 + cutover.Minute()
 	st := session.NewWithOptions(session.Options{
 		MaxMessages:       10,
 		SessionDir:        dir,
@@ -379,7 +380,7 @@ func TestStore_DailyResetOnGet(t *testing.T) {
 	})
 	st.Append("daily-peer", types.Message{Role: "user", Content: "hello"})
 	path := filepath.Join(dir, "daily-peer.jsonl")
-	old := now.Add(-2 * time.Hour)
+	old := cutover.Add(-90 * time.Minute)
 	if err := os.Chtimes(path, old, old); err != nil {
 		t.Fatalf("Chtimes: %v", err)
 	}
