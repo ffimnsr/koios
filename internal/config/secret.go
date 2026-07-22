@@ -18,7 +18,11 @@ import (
 	"golang.org/x/crypto/scrypt"
 )
 
-const hiddenSecretPrefix = "koios-hide:v1:" // #nosec G101
+const (
+	hiddenSecretPrefixV1   = "koios-hide:v1:" // #nosec G101
+	hiddenSecretPrefixV2   = "koios-hide:v2:" // #nosec G101
+	hiddenSecretKeyIDLocal = "local"
+)
 
 const (
 	hiddenSecretSaltBytes  = 32
@@ -68,18 +72,15 @@ type hiddenSecretFingerprint struct {
 }
 
 func IsHiddenSecret(value string) bool {
-	return strings.HasPrefix(strings.TrimSpace(value), hiddenSecretPrefix)
+	trimmed := strings.TrimSpace(value)
+	return strings.HasPrefix(trimmed, hiddenSecretPrefixV1) || strings.HasPrefix(trimmed, hiddenSecretPrefixV2)
 }
 
 func HideSecret(plaintext string) (string, error) {
 	if plaintext == "" {
 		return "", errors.New("secret must not be empty")
 	}
-	fingerprint, err := currentHiddenSecretFingerprint()
-	if err != nil {
-		return "", err
-	}
-	masterKey, err := loadHiddenSecretMasterKey(fingerprint.keyID, true)
+	masterKey, err := loadHiddenSecretMasterKey(hiddenSecretKeyIDLocal, true)
 	if err != nil {
 		return "", err
 	}
@@ -91,7 +92,7 @@ func HideSecret(plaintext string) (string, error) {
 	if _, err := io.ReadFull(hiddenSecretRandReader, nonce); err != nil {
 		return "", fmt.Errorf("generate secret nonce: %w", err)
 	}
-	derivedKey, err := deriveHiddenSecretKey(masterKey, fingerprint.digest, salt)
+	derivedKey, err := deriveHiddenSecretKeyV2(masterKey, salt)
 	if err != nil {
 		return "", err
 	}
@@ -103,10 +104,10 @@ func HideSecret(plaintext string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("build gcm: %w", err)
 	}
-	aad := hiddenSecretAAD(fingerprint.keyID)
+	aad := hiddenSecretAAD(hiddenSecretPrefixV2, hiddenSecretKeyIDLocal)
 	ciphertext := gcm.Seal(nil, nonce, []byte(plaintext), aad)
-	return hiddenSecretPrefix + strings.Join([]string{
-		fingerprint.keyID,
+	return hiddenSecretPrefixV2 + strings.Join([]string{
+		hiddenSecretKeyIDLocal,
 		base64.RawURLEncoding.EncodeToString(salt),
 		base64.RawURLEncoding.EncodeToString(nonce),
 		base64.RawURLEncoding.EncodeToString(ciphertext),
@@ -118,7 +119,61 @@ func RevealSecret(value string) (string, error) {
 	if !IsHiddenSecret(trimmed) {
 		return value, nil
 	}
-	parts := strings.Split(strings.TrimPrefix(trimmed, hiddenSecretPrefix), ".")
+	switch {
+	case strings.HasPrefix(trimmed, hiddenSecretPrefixV2):
+		return revealSecretV2(trimmed)
+	case strings.HasPrefix(trimmed, hiddenSecretPrefixV1):
+		return revealSecretV1(trimmed)
+	default:
+		return "", errors.New("invalid hidden secret format")
+	}
+}
+
+func revealSecretV2(value string) (string, error) {
+	parts := strings.Split(strings.TrimPrefix(value, hiddenSecretPrefixV2), ".")
+	if len(parts) != 4 {
+		return "", errors.New("invalid hidden secret format")
+	}
+	masterKey, err := loadHiddenSecretMasterKey(parts[0], false)
+	if err != nil {
+		return "", err
+	}
+	salt, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", fmt.Errorf("decode secret salt: %w", err)
+	}
+	nonce, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", fmt.Errorf("decode secret nonce: %w", err)
+	}
+	if len(nonce) != hiddenSecretNonceBytes {
+		return "", errors.New("invalid hidden secret nonce length")
+	}
+	ciphertext, err := base64.RawURLEncoding.DecodeString(parts[3])
+	if err != nil {
+		return "", fmt.Errorf("decode secret ciphertext: %w", err)
+	}
+	derivedKey, err := deriveHiddenSecretKeyV2(masterKey, salt)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(derivedKey)
+	if err != nil {
+		return "", fmt.Errorf("build cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("build gcm: %w", err)
+	}
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, hiddenSecretAAD(hiddenSecretPrefixV2, parts[0]))
+	if err != nil {
+		return "", fmt.Errorf("decrypt hidden secret: %w", err)
+	}
+	return string(plaintext), nil
+}
+
+func revealSecretV1(value string) (string, error) {
+	parts := strings.Split(strings.TrimPrefix(value, hiddenSecretPrefixV1), ".")
 	if len(parts) != 4 {
 		return "", errors.New("invalid hidden secret format")
 	}
@@ -148,7 +203,7 @@ func RevealSecret(value string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode secret ciphertext: %w", err)
 	}
-	derivedKey, err := deriveHiddenSecretKey(masterKey, fingerprint.digest, salt)
+	derivedKey, err := deriveHiddenSecretKeyV1(masterKey, fingerprint.digest, salt)
 	if err != nil {
 		return "", err
 	}
@@ -160,7 +215,7 @@ func RevealSecret(value string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("build gcm: %w", err)
 	}
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, hiddenSecretAAD(fingerprint.keyID))
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, hiddenSecretAAD(hiddenSecretPrefixV1, fingerprint.keyID))
 	if err != nil {
 		return "", fmt.Errorf("decrypt hidden secret: %w", err)
 	}
@@ -272,15 +327,23 @@ func HiddenSecretFieldPathModelProfileAPIKey(name string) string {
 	return hiddenSecretPathModelProfileAPIKey(name)
 }
 
-func hiddenSecretAAD(keyID string) []byte {
-	return []byte(hiddenSecretPrefix + keyID)
+func hiddenSecretAAD(prefix, keyID string) []byte {
+	return []byte(prefix + keyID)
 }
 
-func deriveHiddenSecretKey(masterKey, fingerprintDigest, salt []byte) ([]byte, error) {
+func deriveHiddenSecretKeyV1(masterKey, fingerprintDigest, salt []byte) ([]byte, error) {
 	kdfSalt := make([]byte, 0, len(fingerprintDigest)+len(salt))
 	kdfSalt = append(kdfSalt, fingerprintDigest...)
 	kdfSalt = append(kdfSalt, salt...)
 	derivedKey, err := scrypt.Key(masterKey, kdfSalt, hiddenSecretScryptN, hiddenSecretScryptR, hiddenSecretScryptP, hiddenSecretKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("derive hidden secret key: %w", err)
+	}
+	return derivedKey, nil
+}
+
+func deriveHiddenSecretKeyV2(masterKey, salt []byte) ([]byte, error) {
+	derivedKey, err := scrypt.Key(masterKey, salt, hiddenSecretScryptN, hiddenSecretScryptR, hiddenSecretScryptP, hiddenSecretKeyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("derive hidden secret key: %w", err)
 	}

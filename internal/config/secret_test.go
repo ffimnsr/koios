@@ -2,6 +2,10 @@ package config
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -120,11 +124,32 @@ func TestLoadFromPathDecryptsAndPreservesHiddenSecrets(t *testing.T) {
 	}
 }
 
-func TestRevealSecretRejectsMismatchedFingerprint(t *testing.T) {
+func TestRevealSecretV2SurvivesHostnameChange(t *testing.T) {
 	configureHiddenSecretTestEnv(t)
 	hidden, err := HideSecret("test-key")
 	if err != nil {
 		t.Fatalf("HideSecret: %v", err)
+	}
+	if !strings.HasPrefix(hidden, hiddenSecretPrefixV2) {
+		t.Fatalf("expected v2 hidden secret, got %q", hidden)
+	}
+	oldHostname := hiddenSecretHostname
+	hiddenSecretHostname = func() (string, error) { return "other-host", nil }
+	t.Cleanup(func() { hiddenSecretHostname = oldHostname })
+	plaintext, err := RevealSecret(hidden)
+	if err != nil {
+		t.Fatalf("RevealSecret after hostname change: %v", err)
+	}
+	if plaintext != "test-key" {
+		t.Fatalf("plaintext = %q", plaintext)
+	}
+}
+
+func TestRevealSecretRejectsMismatchedLegacyFingerprint(t *testing.T) {
+	configureHiddenSecretTestEnv(t)
+	hidden, err := hideSecretV1ForTest("test-key")
+	if err != nil {
+		t.Fatalf("hideSecretV1ForTest: %v", err)
 	}
 	oldHostname := hiddenSecretHostname
 	hiddenSecretHostname = func() (string, error) { return "other-host", nil }
@@ -132,6 +157,44 @@ func TestRevealSecretRejectsMismatchedFingerprint(t *testing.T) {
 	if _, err := RevealSecret(hidden); err == nil || !strings.Contains(err.Error(), "different host/user fingerprint") {
 		t.Fatalf("expected fingerprint mismatch error, got %v", err)
 	}
+}
+
+func hideSecretV1ForTest(plaintext string) (string, error) {
+	fingerprint, err := currentHiddenSecretFingerprint()
+	if err != nil {
+		return "", err
+	}
+	masterKey, err := loadHiddenSecretMasterKey(fingerprint.keyID, true)
+	if err != nil {
+		return "", err
+	}
+	salt := make([]byte, hiddenSecretSaltBytes)
+	if _, err := io.ReadFull(hiddenSecretRandReader, salt); err != nil {
+		return "", err
+	}
+	nonce := make([]byte, hiddenSecretNonceBytes)
+	if _, err := io.ReadFull(hiddenSecretRandReader, nonce); err != nil {
+		return "", err
+	}
+	derivedKey, err := deriveHiddenSecretKeyV1(masterKey, fingerprint.digest, salt)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(derivedKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	ciphertext := gcm.Seal(nil, nonce, []byte(plaintext), hiddenSecretAAD(hiddenSecretPrefixV1, fingerprint.keyID))
+	return hiddenSecretPrefixV1 + strings.Join([]string{
+		fingerprint.keyID,
+		base64.RawURLEncoding.EncodeToString(salt),
+		base64.RawURLEncoding.EncodeToString(nonce),
+		base64.RawURLEncoding.EncodeToString(ciphertext),
+	}, "."), nil
 }
 
 func configureHiddenSecretTestEnv(t *testing.T) {

@@ -39,7 +39,7 @@ This creates `koios.config.toml` with sane defaults and without private keys.
 Key sections:
 - `[server]` listen address, request timeout, allowed origins
 - `[llm]` provider/model/base URL and optional `api_key`
-- `koios hide-secret` emits a machine-bound encrypted blob you can paste into secret-valued fields such as `api_key`
+- `koios hide-secret` emits encrypted blob for secret-valued fields such as `api_key`; new blobs stay readable across container or hostname changes when same Koios config directory is preserved
 - `[session]`, `[compaction]`, `[memory]` for context and storage behavior
 - `session.prune_keep_tool_messages` prunes older tool chatter from active request context without compacting the whole session
 - `session.retention`, `session.max_entries`, `session.idle_reset_after`, and `session.daily_reset_time` control session cleanup and auto-reset

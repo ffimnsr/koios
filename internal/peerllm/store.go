@@ -64,8 +64,8 @@ type Input struct {
 }
 
 // Store persists per-peer LLM provider profiles in a local SQLite database.
-// API keys are encrypted at rest using the same host-bound secret mechanism
-// as the gateway config file.
+// API keys are encrypted at rest using the same local Koios hidden-secret
+// mechanism as the gateway config file.
 type Store struct {
 	db *sql.DB
 }
@@ -93,7 +93,7 @@ func (s *Store) Close() error {
 }
 
 // Set creates or updates a provider profile for the given peer.
-// The API key is encrypted at rest using host-bound encryption.
+// The API key is encrypted at rest using the local Koios hidden-secret key.
 func (s *Store) Set(ctx context.Context, peerID string, input Input) (*ProviderProfile, error) {
 	name := strings.TrimSpace(input.Name)
 	if name == "" {

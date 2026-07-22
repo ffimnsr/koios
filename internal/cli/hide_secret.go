@@ -17,8 +17,8 @@ func newHideSecretCommand(ctx *commandContext) *cobra.Command {
 	var setField string
 	cmd := &cobra.Command{
 		Use:   "hide-secret [secret]",
-		Short: "Encrypt a config secret for this host and user",
-		Long:  "Encrypt a secret into a machine-bound blob that Koios can decrypt later from koios.config.toml. The blob is bound to the current host/user fingerprint and a local master key stored under the user config directory.\n\nWith --set <field>, the named config field is encrypted in-place. Supported fields: llm.<profile>.api_key, channels.telegram.bot_token, channels.telegram.webhook_secret, hooks.webhook_secret, hooks.webhook_token.",
+		Short: "Encrypt a config secret with local Koios key",
+		Long:  "Encrypt a secret into a hidden blob that Koios can decrypt later from koios.config.toml using a local master key stored under the user config directory. New blobs remain readable across container or hostname changes as long as the same Koios config directory is preserved. Legacy v1 blobs may still be bound to an older host/user fingerprint.\n\nWith --set <field>, the named config field is encrypted in-place. Supported fields: llm.<profile>.api_key, channels.telegram.bot_token, channels.telegram.webhook_secret, hooks.webhook_secret, hooks.webhook_token.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if setField != "" {
