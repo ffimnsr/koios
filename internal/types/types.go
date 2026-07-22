@@ -26,17 +26,32 @@ type ImageURLPart struct {
 // When Parts is non-empty the message carries multimodal content and Parts
 // takes precedence over Content during JSON marshaling.
 type Message struct {
-	Role       string        `json:"role"`
-	Content    string        `json:"content"`
-	Parts      []ContentPart `json:"-"` // multimodal content; overrides Content when non-empty
-	ToolCallID string        `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+	Role       string          `json:"role"`
+	Content    string          `json:"content"`
+	Parts      []ContentPart   `json:"-"` // multimodal content; overrides Content when non-empty
+	RawContent json.RawMessage `json:"-"` // preserves provider-specific multipart content verbatim when present
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
 }
 
 // MarshalJSON serialises a Message. When Parts is non-empty the content field
 // is emitted as a JSON array of content parts (multimodal format); otherwise
 // it is emitted as a plain string (standard format).
 func (m Message) MarshalJSON() ([]byte, error) {
+	if len(m.RawContent) > 0 {
+		type rawMessage struct {
+			Role       string          `json:"role"`
+			Content    json.RawMessage `json:"content"`
+			ToolCallID string          `json:"tool_call_id,omitempty"`
+			ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+		}
+		return json.Marshal(rawMessage{
+			Role:       m.Role,
+			Content:    m.RawContent,
+			ToolCallID: m.ToolCallID,
+			ToolCalls:  m.ToolCalls,
+		})
+	}
 	if len(m.Parts) > 0 {
 		type multipart struct {
 			Role       string        `json:"role"`
@@ -81,8 +96,10 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	m.ToolCallID = raw.ToolCallID
 	m.ToolCalls = raw.ToolCalls
 	if len(raw.Content) == 0 || string(raw.Content) == "null" {
+		m.RawContent = nil
 		return nil
 	}
+	m.RawContent = append(m.RawContent[:0], raw.Content...)
 	// Try string first.
 	var s string
 	if err := json.Unmarshal(raw.Content, &s); err == nil {
