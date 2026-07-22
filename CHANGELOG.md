@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.16] - 2026-07-23
+
+### Fixed
+
+- remove nvidia nim include reasoning (`2669f0f`)
+
 ## [0.7.15] - 2026-07-23
 
 ### Added
@@ -366,7 +372,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.15...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.16...HEAD
+[0.7.16]: https://github.com/ffimnsr/koios/releases/tag/v0.7.16
 [0.7.15]: https://github.com/ffimnsr/koios/releases/tag/v0.7.15
 [0.7.14]: https://github.com/ffimnsr/koios/releases/tag/v0.7.14
 [0.7.13]: https://github.com/ffimnsr/koios/releases/tag/v0.7.13
