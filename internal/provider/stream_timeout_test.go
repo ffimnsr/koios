@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -114,6 +115,104 @@ func TestOpenAICompleteStreamEmitsReasoningDeltaAndSummary(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].Kind != types.ReasoningEventDelta || events[1].Kind != types.ReasoningEventSummary {
 		t.Fatalf("unexpected reasoning events: %#v", events)
+	}
+}
+
+func TestMarshalOpenAIWireRequestGeminiSanitizesToolTranscriptWithoutRawContent(t *testing.T) {
+	messages := []types.Message{
+		{
+			Role:       "assistant",
+			Content:    "Checking balance.",
+			RawContent: json.RawMessage(`""`),
+			ToolCalls: []types.ToolCall{{
+				ID:   "call_123",
+				Type: "function",
+				Function: types.ToolCallFunctionRef{
+					Name:      "monaco.get_balance",
+					Arguments: `{"asset":"USDC"}`,
+				},
+			}},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_123",
+			Content:    `{"ok":true,"balance":"12.34"}`,
+		},
+		{
+			Role:    "assistant",
+			Content: "Fresh Gemini tool call",
+			RawContent: json.RawMessage(`[
+				{"type":"functionCall","id":"call_live","name":"monaco.get_balance","args":{"asset":"SOL"},"thought_signature":"sig_live"}
+			]`),
+			ToolCalls: []types.ToolCall{{
+				ID:   "call_live",
+				Type: "function",
+				Function: types.ToolCallFunctionRef{
+					Name:      "monaco.get_balance",
+					Arguments: `{"asset":"SOL"}`,
+				},
+			}},
+		},
+	}
+
+	body, err := marshalOpenAIWireRequest("gemini", &types.ChatRequest{Model: "gemini-2.5-flash", Messages: messages})
+	if err != nil {
+		t.Fatalf("marshalOpenAIWireRequest: %v", err)
+	}
+
+	var wire struct {
+		Messages []struct {
+			Role      string           `json:"role"`
+			Content   any              `json:"content"`
+			ToolCalls []types.ToolCall `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode wire request: %v", err)
+	}
+	if len(wire.Messages) != 2 {
+		t.Fatalf("wire message count = %d, want 2", len(wire.Messages))
+	}
+	if wire.Messages[0].Role != "assistant" {
+		t.Fatalf("first role = %q, want assistant", wire.Messages[0].Role)
+	}
+	if _, ok := wire.Messages[0].Content.(string); !ok {
+		t.Fatalf("expected sanitized Gemini replay content to become plain text, got %#v", wire.Messages[0].Content)
+	}
+	if len(wire.Messages[0].ToolCalls) != 0 {
+		t.Fatalf("expected sanitized Gemini replay to drop tool_calls, got %#v", wire.Messages[0].ToolCalls)
+	}
+	if !strings.Contains(wire.Messages[0].Content.(string), "previous tool call replay omitted") {
+		t.Fatalf("expected compatibility note in sanitized content, got %q", wire.Messages[0].Content.(string))
+	}
+	if !strings.Contains(wire.Messages[0].Content.(string), "tool result monaco.get_balance") {
+		t.Fatalf("expected tool result summary in sanitized content, got %q", wire.Messages[0].Content.(string))
+	}
+	contentParts, ok := wire.Messages[1].Content.([]any)
+	if !ok {
+		t.Fatalf("expected live Gemini tool call to keep raw multipart content, got %#v", wire.Messages[1].Content)
+	}
+	if len(contentParts) != 1 {
+		t.Fatalf("live Gemini content parts = %d, want 1", len(contentParts))
+	}
+	part, ok := contentParts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected Gemini content part object, got %#v", contentParts[0])
+	}
+	if part["thought_signature"] != "sig_live" {
+		t.Fatalf("expected live Gemini thought_signature to survive, got %#v", part["thought_signature"])
+	}
+}
+
+func TestGeminiToolReplayHasThoughtSignature(t *testing.T) {
+	if geminiToolReplayHasThoughtSignature(json.RawMessage(`""`)) {
+		t.Fatal("empty string raw content should not count as Gemini functionCall replay")
+	}
+	if geminiToolReplayHasThoughtSignature(json.RawMessage(`[{"type":"functionCall","id":"call_1","name":"peer.llm_provider.list","args":{},"thought_signature":""}]`)) {
+		t.Fatal("blank thought_signature should not count as valid Gemini replay")
+	}
+	if !geminiToolReplayHasThoughtSignature(json.RawMessage(`[{"type":"functionCall","id":"call_1","name":"peer.llm_provider.list","args":{},"thought_signature":"sig_1"}]`)) {
+		t.Fatal("expected Gemini functionCall replay with thought_signature to be preserved")
 	}
 }
 

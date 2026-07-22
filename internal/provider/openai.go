@@ -30,10 +30,10 @@ type openAIWireRequest struct {
 	ReasoningEffort  string          `json:"reasoning_effort,omitempty"`
 }
 
-func marshalOpenAIWireRequest(req *types.ChatRequest) ([]byte, error) {
+func marshalOpenAIWireRequest(providerName string, req *types.ChatRequest) ([]byte, error) {
 	return json.Marshal(openAIWireRequest{
 		Model:            req.Model,
-		Messages:         req.Messages,
+		Messages:         sanitizeOpenAIWireMessages(providerName, req.Messages),
 		Tools:            req.Tools,
 		ToolChoice:       req.ToolChoice,
 		Stream:           req.Stream,
@@ -46,6 +46,96 @@ func marshalOpenAIWireRequest(req *types.ChatRequest) ([]byte, error) {
 		User:             req.User,
 		ReasoningEffort:  req.ReasoningEffort,
 	})
+}
+
+func sanitizeOpenAIWireMessages(providerName string, messages []types.Message) []types.Message {
+	if providerName != "gemini" || len(messages) == 0 {
+		return messages
+	}
+	return sanitizeGeminiReplayMessages(messages)
+}
+
+func sanitizeGeminiReplayMessages(messages []types.Message) []types.Message {
+	out := make([]types.Message, 0, len(messages))
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 || geminiToolReplayHasThoughtSignature(msg.RawContent) {
+			out = append(out, msg)
+			continue
+		}
+
+		pending := make(map[string]string, len(msg.ToolCalls))
+		var summary strings.Builder
+		base := strings.TrimSpace(msg.Content)
+		if base != "" {
+			summary.WriteString(base)
+		}
+		for _, call := range msg.ToolCalls {
+			name := strings.TrimSpace(call.Function.Name)
+			if name == "" {
+				name = "tool"
+			}
+			pending[strings.TrimSpace(call.ID)] = name
+			if summary.Len() > 0 {
+				summary.WriteString("\n\n")
+			}
+			summary.WriteString("[previous tool call replay omitted for Gemini compatibility] ")
+			summary.WriteString(name)
+			args := strings.TrimSpace(call.Function.Arguments)
+			if args != "" {
+				summary.WriteString(" args=")
+				summary.WriteString(args)
+			}
+		}
+
+		for i+1 < len(messages) {
+			next := messages[i+1]
+			if next.Role != "tool" {
+				break
+			}
+			name, ok := pending[strings.TrimSpace(next.ToolCallID)]
+			if !ok {
+				break
+			}
+			if summary.Len() > 0 {
+				summary.WriteString("\n")
+			}
+			summary.WriteString("[tool result ")
+			summary.WriteString(name)
+			summary.WriteString("] ")
+			summary.WriteString(strings.TrimSpace(next.Content))
+			delete(pending, strings.TrimSpace(next.ToolCallID))
+			i++
+		}
+
+		out = append(out, types.Message{Role: "assistant", Content: strings.TrimSpace(summary.String())})
+	}
+	return out
+}
+
+func geminiToolReplayHasThoughtSignature(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte(`""`)) {
+		return false
+	}
+	var parts []map[string]any
+	if err := json.Unmarshal(trimmed, &parts); err != nil {
+		return false
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(stringFromAny(part["type"])) != "functionCall" {
+			continue
+		}
+		if strings.TrimSpace(stringFromAny(part["thought_signature"])) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func stringFromAny(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 func emitOpenAIReasoningSummary(ctx context.Context, providerName, text string) {
@@ -104,7 +194,7 @@ func (p *openAIProvider) Complete(ctx context.Context, req *types.ChatRequest) (
 	}
 	req.Stream = false
 
-	body, err := marshalOpenAIWireRequest(req)
+	body, err := marshalOpenAIWireRequest(p.hooks.name, req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -150,7 +240,7 @@ func (p *openAIProvider) CompleteStream(ctx context.Context, req *types.ChatRequ
 	}
 	req.Stream = true
 
-	body, err := marshalOpenAIWireRequest(req)
+	body, err := marshalOpenAIWireRequest(p.hooks.name, req)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
