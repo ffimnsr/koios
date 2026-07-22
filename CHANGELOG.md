@@ -12,6 +12,13 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-07-22
+
+### Added
+
+- update tool registry setup (`c65f6cd`)
+- fix all web fetch and web search tools (`fa6197a`)
+
 ## [0.7.10] - 2026-07-21
 
 ### Added
@@ -329,7 +336,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.10...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.11...HEAD
+[0.7.11]: https://github.com/ffimnsr/koios/releases/tag/v0.7.11
 [0.7.10]: https://github.com/ffimnsr/koios/releases/tag/v0.7.10
 [0.7.9]: https://github.com/ffimnsr/koios/releases/tag/v0.7.9
 [0.7.8]: https://github.com/ffimnsr/koios/releases/tag/v0.7.8
