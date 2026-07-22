@@ -12,6 +12,18 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-07-23
+
+### Fixed
+
+- update and fix type for gemini (`81663cc`)
+
+
+### Tests
+
+- update test on runtime for existing pruning (`933a4b3`)
+- update failing test (`94ba722`)
+
 ## [0.7.11] - 2026-07-22
 
 ### Added
@@ -336,7 +348,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.11...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.12...HEAD
+[0.7.12]: https://github.com/ffimnsr/koios/releases/tag/v0.7.12
 [0.7.11]: https://github.com/ffimnsr/koios/releases/tag/v0.7.11
 [0.7.10]: https://github.com/ffimnsr/koios/releases/tag/v0.7.10
 [0.7.9]: https://github.com/ffimnsr/koios/releases/tag/v0.7.9
