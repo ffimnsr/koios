@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-07-23
+
+### Added
+
+- update provider calls to include reasoning (`8876f6f`)
+
 ## [0.7.14] - 2026-07-23
 
 ### Fixed
@@ -360,7 +366,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.14...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.15...HEAD
+[0.7.15]: https://github.com/ffimnsr/koios/releases/tag/v0.7.15
 [0.7.14]: https://github.com/ffimnsr/koios/releases/tag/v0.7.14
 [0.7.13]: https://github.com/ffimnsr/koios/releases/tag/v0.7.13
 [0.7.12]: https://github.com/ffimnsr/koios/releases/tag/v0.7.12
