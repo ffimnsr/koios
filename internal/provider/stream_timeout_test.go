@@ -554,6 +554,9 @@ func TestMarshalOpenAIWireRequestNVIDIAIncludesChatTemplateKwargs(t *testing.T) 
 	if err := json.Unmarshal(body, &wire); err != nil {
 		t.Fatalf("decode wire request: %v", err)
 	}
+	if got := wire["include_reasoning"]; got != nil {
+		t.Fatalf("include_reasoning = %#v, want omitted for NVIDIA NIM", got)
+	}
 	kwargs, ok := wire["chat_template_kwargs"].(map[string]any)
 	if !ok {
 		t.Fatalf("chat_template_kwargs = %#v, want object", wire["chat_template_kwargs"])

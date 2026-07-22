@@ -281,7 +281,6 @@ func applyOpenAICompatibleReasoning(providerName string, req *types.ChatRequest,
 		}
 	case "nvidia":
 		enabled := reasoningEnabled(req)
-		wire.IncludeReasoning = &enabled
 		wire.ChatTemplateKwargs = chatTemplateThinkingKwargs(enabled)
 	case "litellm":
 		enabled := req.ReasoningVisibility != "off"
