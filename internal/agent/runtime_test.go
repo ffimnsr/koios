@@ -34,6 +34,7 @@ type stubToolExecutor struct {
 	defs          []types.Tool
 	contextPrompt func(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) string
 	contextDefs   func(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) []types.Tool
+	mutates       func(peerID, name string) bool
 }
 
 type stubProviderResolver struct {
@@ -66,6 +67,13 @@ func (s stubToolExecutor) ToolDefinitionsForRunWithContext(peerID, sessionKey, a
 
 func (s stubToolExecutor) ExecuteTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
 	return s.execute(ctx, peerID, call)
+}
+
+func (s stubToolExecutor) ToolMutatesState(peerID, name string) bool {
+	if s.mutates != nil {
+		return s.mutates(peerID, name)
+	}
+	return false
 }
 
 func (s stubProviderResolver) ResolveProvider(ctx context.Context, peerID, sessionKey, modelOverride string) (agent.Provider, string, error) {
@@ -708,6 +716,130 @@ func TestRuntime_BeforeLLMInterceptorCanRewriteRequest(t *testing.T) {
 	}
 }
 
+func TestRuntime_RepairsLegacyXMLToolHistoryForReplay(t *testing.T) {
+	store := session.New(20)
+	sessionKey := "peer::main"
+	store.Append(sessionKey,
+		types.Message{Role: "user", Content: "fetch it"},
+		types.Message{Role: "assistant", Content: `<tool_call>{"name":"web_fetch","arguments":{"url":"https://example.com"}}</tool_call>`},
+		types.Message{Role: "tool", ToolCallID: "legacy-call", Content: `[tool_result web_fetch]\n{"ok":true,"result":{"status":200}}`},
+	)
+	var captured *types.ChatRequest
+	prov := &stubProvider{complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+		captured = req
+		return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+	}}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "continue"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected captured request")
+	}
+	foundAssistant := false
+	foundTool := false
+	for i := range captured.Messages {
+		msg := captured.Messages[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) == 1 && msg.ToolCalls[0].Function.Name == "web_fetch" {
+			foundAssistant = true
+			if msg.ToolCalls[0].ID != "legacy-call" {
+				t.Fatalf("repaired tool call id = %q, want legacy-call", msg.ToolCalls[0].ID)
+			}
+			if i+1 >= len(captured.Messages) || captured.Messages[i+1].Role != "tool" || captured.Messages[i+1].ToolCallID != "legacy-call" {
+				t.Fatalf("expected repaired tool message immediately after assistant, got %#v", captured.Messages)
+			}
+			foundTool = true
+			break
+		}
+	}
+	if !foundAssistant || !foundTool {
+		t.Fatalf("expected repaired assistant/tool pair in replay, got %#v", captured.Messages)
+	}
+}
+
+func TestRuntime_RepairsMissingToolResultWithSyntheticError(t *testing.T) {
+	store := session.New(20)
+	sessionKey := "peer::main"
+	store.Append(sessionKey,
+		types.Message{Role: "user", Content: "write it"},
+		types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+			ID:       "call-1",
+			Type:     "function",
+			Function: types.ToolCallFunctionRef{Name: "workspace.write", Arguments: `{}`},
+		}}},
+	)
+	var captured *types.ChatRequest
+	prov := &stubProvider{complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+		captured = req
+		return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+	}}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "continue"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected captured request")
+	}
+	foundSynthetic := false
+	for i := 0; i < len(captured.Messages)-1; i++ {
+		if captured.Messages[i].Role == "assistant" && len(captured.Messages[i].ToolCalls) == 1 && captured.Messages[i].ToolCalls[0].ID == "call-1" {
+			toolMsg := captured.Messages[i+1]
+			if toolMsg.Role != "tool" || toolMsg.ToolCallID != "call-1" {
+				t.Fatalf("expected synthetic tool result after dangling call, got %#v", captured.Messages)
+			}
+			if !strings.Contains(toolMsg.Content, `"ok":false`) || !strings.Contains(toolMsg.Content, "synthetic repair inserted") {
+				t.Fatalf("expected synthetic error tool result, got %q", toolMsg.Content)
+			}
+			foundSynthetic = true
+			break
+		}
+	}
+	if !foundSynthetic {
+		t.Fatalf("expected synthetic repaired tool result, got %#v", captured.Messages)
+	}
+}
+
+func TestRuntime_DropsUnrecoverableOrphanToolResultFromReplay(t *testing.T) {
+	store := session.New(20)
+	sessionKey := "peer::main"
+	store.Append(sessionKey,
+		types.Message{Role: "user", Content: "hello"},
+		types.Message{Role: "tool", ToolCallID: "orphan-1", Content: `[tool_result mystery]\n{"ok":true}`},
+	)
+	var captured *types.ChatRequest
+	prov := &stubProvider{complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+		captured = req
+		return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+	}}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "continue"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected captured request")
+	}
+	for _, msg := range captured.Messages {
+		if msg.Role == "tool" && msg.ToolCallID == "orphan-1" {
+			t.Fatalf("expected orphan tool result to be dropped from replay, got %#v", captured.Messages)
+		}
+	}
+}
+
 func TestRuntime_XMLToolFallbackStoresToolResultAsToolRole(t *testing.T) {
 	store := session.New(20)
 	var seen []*types.ChatRequest
@@ -738,9 +870,22 @@ func TestRuntime_XMLToolFallbackStoresToolResultAsToolRole(t *testing.T) {
 	if len(seen) < 2 {
 		t.Fatalf("expected second request after tool call, got %d requests", len(seen))
 	}
+	assistant := seen[1].Messages[len(seen[1].Messages)-2]
 	last := seen[1].Messages[len(seen[1].Messages)-1]
+	if assistant.Role != "assistant" {
+		t.Fatalf("expected assistant tool-call message, got %#v", assistant)
+	}
+	if len(assistant.ToolCalls) != 1 {
+		t.Fatalf("expected one assistant tool call, got %#v", assistant.ToolCalls)
+	}
+	if assistant.ToolCalls[0].ID == "" {
+		t.Fatal("expected synthesized tool call id")
+	}
 	if last.Role != "tool" {
 		t.Fatalf("expected tool-role message for tool result, got %#v", last)
+	}
+	if last.ToolCallID != assistant.ToolCalls[0].ID {
+		t.Fatalf("expected tool result to reference assistant tool call id, got assistant=%q tool=%q", assistant.ToolCalls[0].ID, last.ToolCallID)
 	}
 	if !strings.Contains(last.Content, "[REDACTED]") {
 		t.Fatalf("expected redacted tool result, got %q", last.Content)
@@ -854,6 +999,222 @@ func TestRuntime_XMLToolExecutionUsesLiveRunContext(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Fatalf("expected 2 provider calls, got %d", callCount)
+	}
+}
+
+func TestRuntime_NativeToolExecutionNormalizesMissingArgsAndIDs(t *testing.T) {
+	store := session.New(20)
+	var seen []*types.ChatRequest
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			seen = append(seen, req)
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+					Type: "function",
+					Function: types.ToolCallFunctionRef{
+						Name: "time.now",
+					},
+				}}}}}}, nil
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		MaxSteps: 2,
+		Messages: []types.Message{{Role: "user", Content: "what time is it?"}},
+		ToolExecutor: stubToolExecutor{execute: func(ctx context.Context, _ string, call agent.ToolCall) (any, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if call.ID == "" {
+				t.Fatal("expected synthesized tool call id")
+			}
+			if string(call.Arguments) != `{}` {
+				t.Fatalf("tool arguments = %s, want {}", string(call.Arguments))
+			}
+			return map[string]string{"utc": "2026-04-29T00:00:00Z"}, nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", len(seen))
+	}
+	assistant := seen[1].Messages[len(seen[1].Messages)-2]
+	tool := seen[1].Messages[len(seen[1].Messages)-1]
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID == "" {
+		t.Fatalf("expected assistant tool call with synthesized id, got %#v", assistant)
+	}
+	if tool.ToolCallID != assistant.ToolCalls[0].ID {
+		t.Fatalf("tool result id = %q, want %q", tool.ToolCallID, assistant.ToolCalls[0].ID)
+	}
+	if !strings.Contains(tool.Content, `"ok":true`) {
+		t.Fatalf("expected successful tool result, got %q", tool.Content)
+	}
+}
+
+func TestRuntime_NativeToolHookFailureReturnsToolErrorToModel(t *testing.T) {
+	store := session.New(20)
+	var seen []*types.ChatRequest
+	callCount := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			seen = append(seen, req)
+			callCount++
+			if callCount == 1 {
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+					ID:   "call-1",
+					Type: "function",
+					Function: types.ToolCallFunctionRef{
+						Name:      "time.now",
+						Arguments: `{}`,
+					},
+				}}}}}}, nil
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	hooks := ops.NewManager(time.Second, true)
+	hooks.Register(ops.HookBeforeToolCall, 100, func(_ context.Context, ev ops.Event) error {
+		return errors.New("approval denied")
+	})
+	rt.SetHooks(hooks)
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		MaxSteps: 2,
+		Messages: []types.Message{{Role: "user", Content: "what time is it?"}},
+		ToolExecutor: stubToolExecutor{execute: func(context.Context, string, agent.ToolCall) (any, error) {
+			t.Fatal("tool should not execute when before-tool hook rejects it")
+			return nil, nil
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", len(seen))
+	}
+	assistant := seen[1].Messages[len(seen[1].Messages)-2]
+	tool := seen[1].Messages[len(seen[1].Messages)-1]
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call-1" {
+		t.Fatalf("expected assistant tool call to survive hook failure, got %#v", assistant)
+	}
+	if tool.ToolCallID != "call-1" {
+		t.Fatalf("tool result id = %q, want call-1", tool.ToolCallID)
+	}
+	if !strings.Contains(tool.Content, `"ok":false`) || !strings.Contains(tool.Content, "approval denied") {
+		t.Fatalf("expected tool error to flow back to model, got %q", tool.Content)
+	}
+	if len(tool.Content) == 0 {
+		t.Fatal("expected non-empty synthetic tool result")
+	}
+}
+
+func TestRuntime_PendingMutatingToolFailurePersistsUntilMatchingSuccess(t *testing.T) {
+	store := session.New(20)
+	callCount := 0
+	toolCalls := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			callCount++
+			switch callCount {
+			case 1, 2:
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+					ID:       "call-1",
+					Type:     "function",
+					Function: types.ToolCallFunctionRef{Name: "workspace.write", Arguments: `{}`},
+				}}}}}}, nil
+			default:
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+			}
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	res, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		MaxSteps: 3,
+		Messages: []types.Message{{Role: "user", Content: "update file"}},
+		ToolExecutor: stubToolExecutor{
+			mutates: func(_ string, name string) bool { return name == "workspace.write" },
+			execute: func(ctx context.Context, _ string, call agent.ToolCall) (any, error) {
+				toolCalls++
+				if toolCalls == 1 {
+					return nil, errors.New("disk full")
+				}
+				return map[string]any{"ok": true}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.PendingMutatingToolFailure != nil {
+		t.Fatalf("expected matching mutating success to clear pending failure, got %#v", res.PendingMutatingToolFailure)
+	}
+}
+
+func TestRuntime_PendingMutatingToolFailureSurvivesUnrelatedSuccess(t *testing.T) {
+	store := session.New(20)
+	callCount := 0
+	toolCalls := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			callCount++
+			switch callCount {
+			case 1:
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+					ID:       "call-1",
+					Type:     "function",
+					Function: types.ToolCallFunctionRef{Name: "workspace.write", Arguments: `{}`},
+				}}}}}}, nil
+			case 2:
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", ToolCalls: []types.ToolCall{{
+					ID:       "call-2",
+					Type:     "function",
+					Function: types.ToolCallFunctionRef{Name: "time.now", Arguments: `{}`},
+				}}}}}}, nil
+			default:
+				return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
+			}
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	res, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		MaxSteps: 3,
+		Messages: []types.Message{{Role: "user", Content: "update file then check time"}},
+		ToolExecutor: stubToolExecutor{
+			mutates: func(_ string, name string) bool { return name == "workspace.write" },
+			execute: func(ctx context.Context, _ string, call agent.ToolCall) (any, error) {
+				toolCalls++
+				if toolCalls == 1 {
+					return nil, errors.New("disk full")
+				}
+				return map[string]any{"utc": "2026-04-29T00:00:00Z"}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.PendingMutatingToolFailure == nil {
+		t.Fatal("expected unresolved mutating failure to survive unrelated success")
+	}
+	if res.PendingMutatingToolFailure.ToolName != "workspace.write" {
+		t.Fatalf("pending tool name = %q", res.PendingMutatingToolFailure.ToolName)
+	}
+	if !res.PendingMutatingToolFailure.SideEffectUnknown {
+		t.Fatalf("expected side effect unknown to stay true, got %#v", res.PendingMutatingToolFailure)
 	}
 }
 

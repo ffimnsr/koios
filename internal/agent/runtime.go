@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -128,15 +129,16 @@ type Event struct {
 
 // Result contains the outcome of a run.
 type Result struct {
-	SessionKey       string              `json:"session_key"`
-	Attempts         int                 `json:"attempts"`
-	AssistantText    string              `json:"assistant_text,omitempty"`
-	Response         *types.ChatResponse `json:"response,omitempty"`
-	Usage            types.Usage         `json:"usage,omitempty"`
-	Steps            int                 `json:"steps"`
-	Events           []Event             `json:"events,omitempty"`
-	SuppressedReply  bool                `json:"suppressed_reply,omitempty"`
-	SuppressionToken string              `json:"suppression_token,omitempty"`
+	SessionKey                 string                      `json:"session_key"`
+	Attempts                   int                         `json:"attempts"`
+	AssistantText              string                      `json:"assistant_text,omitempty"`
+	Response                   *types.ChatResponse         `json:"response,omitempty"`
+	Usage                      types.Usage                 `json:"usage,omitempty"`
+	Steps                      int                         `json:"steps"`
+	Events                     []Event                     `json:"events,omitempty"`
+	SuppressedReply            bool                        `json:"suppressed_reply,omitempty"`
+	SuppressionToken           string                      `json:"suppression_token,omitempty"`
+	PendingMutatingToolFailure *PendingMutatingToolFailure `json:"pending_mutating_tool_failure,omitempty"`
 }
 
 type memoryCandidateExtraction struct {
@@ -203,12 +205,42 @@ type ToolExecutor interface {
 	ExecuteTool(ctx context.Context, peerID string, call ToolCall) (any, error)
 }
 
+type ToolResultMetadata struct {
+	Outcome           string
+	ExecutionStarted  bool
+	FailureKind       string
+	SideEffectUnknown bool
+	RuntimeManaged    bool
+}
+
+type PendingMutatingToolFailure struct {
+	CallID            string `json:"call_id,omitempty"`
+	ToolName          string `json:"tool_name"`
+	FailureKind       string `json:"failure_kind,omitempty"`
+	SideEffectUnknown bool   `json:"side_effect_unknown,omitempty"`
+	ExecutionStarted  bool   `json:"execution_started,omitempty"`
+	FirstObservedStep int    `json:"first_observed_step,omitempty"`
+	LastUpdatedStep   int    `json:"last_updated_step,omitempty"`
+}
+
+// ToolResultRecorder persists a terminal tool outcome after runtime-owned
+// normalization, hook handling, and result formatting decisions have completed.
+type ToolResultRecorder interface {
+	RecordToolResult(ctx context.Context, peerID string, call ToolCall, result any, execErr error, durationMS int64, meta ToolResultMetadata)
+}
+
+type toolMutationInspector interface {
+	ToolMutatesState(peerID, name string) bool
+}
+
 type contextualToolExecutor interface {
 	ToolPromptForRunWithContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) string
 	ToolDefinitionsForRunWithContext(peerID, sessionKey, activeProfile string, messages []types.Message, maxDefinitions int) []types.Tool
 }
 
 type toolRunContextKey struct{}
+
+type runtimeManagedToolResultKey struct{}
 
 type providerOverrideKey struct{}
 
@@ -243,6 +275,15 @@ func ToolRunContextFromContext(ctx context.Context) (ToolRunContext, bool) {
 		return ToolRunContext{}, false
 	}
 	return info, true
+}
+
+func WithRuntimeManagedToolResult(ctx context.Context) context.Context {
+	return context.WithValue(ctx, runtimeManagedToolResultKey{}, true)
+}
+
+func RuntimeManagedToolResultFromContext(ctx context.Context) bool {
+	managed, _ := ctx.Value(runtimeManagedToolResultKey{}).(bool)
+	return managed
 }
 
 type toolNameNormalizer interface {
@@ -678,6 +719,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			emitStepFinish(false, "failed", err)
 			return result, err
 		}
+		built.Request.Messages, _ = rt.repairTranscriptMessages(built.Request.Messages)
 		rt.emitEvent(result, reqCopy.EventSink, Event{
 			Kind:       EventContext,
 			SessionKey: sessionKey,
@@ -809,56 +851,11 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				toolExecCtx := WithToolRunContext(callCtx, sessionKey, reqCopy.ActiveProfile)
 				if reqCopy.ToolExecutor != nil && resp != nil {
 					if toolCalls := nativeToolCalls(resp); len(toolCalls) > 0 {
-						toolLoopAborted := false
+						baseAssistantMsg, _ := assistantMessage(assistantText, resp)
 						for _, tc := range toolCalls {
-							tc.Name = normalizeToolName(reqCopy.ToolExecutor, reqCopy.PeerID, tc.Name)
-							if err := rt.emitHook(callCtx, ops.Event{
-								Name:       ops.HookBeforeToolCall,
-								PeerID:     reqCopy.PeerID,
-								SessionKey: sessionKey,
-								Data: map[string]any{
-									"tool": tc.Name,
-									"step": step,
-								},
-							}); err != nil {
-								lastErr = err
-								rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: err.Error()})
-								toolLoopAborted = true
-								break
-							}
-							argsSummary := summarizeToolJSON(tc.Arguments)
-							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: argsSummary})
-							toolStartedAt := time.Now().UTC()
-							toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(toolExecCtx, reqCopy.PeerID, tc)
-							ok := execErr == nil
-							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: tc.Name, ToolName: tc.Name, Summary: summarizeToolResult(toolResult, execErr), DurationMs: elapsedMilliseconds(toolStartedAt), OK: &ok})
-							if hookErr := rt.emitHook(callCtx, ops.Event{
-								Name:       ops.HookAfterToolCall,
-								PeerID:     reqCopy.PeerID,
-								SessionKey: sessionKey,
-								Data: map[string]any{
-									"tool":  tc.Name,
-									"step":  step,
-									"ok":    execErr == nil,
-									"error": errString(execErr),
-								},
-							}); hookErr != nil {
-								lastErr = hookErr
-								rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: hookErr.Error()})
-								toolLoopAborted = true
-								break
-							}
-							workingMessages = append(workingMessages,
-								types.Message{Role: "assistant", Content: assistantText, ToolCalls: []types.ToolCall{{
-									ID:   tc.ID,
-									Type: "function",
-									Function: types.ToolCallFunctionRef{
-										Name:      tc.Name,
-										Arguments: string(tc.Arguments),
-									},
-								}}},
-								types.Message{Role: "tool", ToolCallID: tc.ID, Content: rt.formatToolResult(tc.Name, toolResult, execErr)},
-							)
+							assistantToolMsg, toolResultMsg, execErr, meta := rt.executeToolCall(toolExecCtx, reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, step, assistantText, baseAssistantMsg, tc, reqCopy.EventSink, result)
+							workingMessages = append(workingMessages, assistantToolMsg, toolResultMsg)
+							updatePendingMutatingToolFailure(result, normalizeToolCall(reqCopy.ToolExecutor, reqCopy.PeerID, tc), meta, step)
 							if execErr != nil {
 								lastErr = execErr
 							}
@@ -871,9 +868,6 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 								break
 							}
 						}
-						if toolLoopAborted {
-							break
-						}
 						advanceStep = true
 						emitStepFinish(true, "tools_complete", nil)
 						break
@@ -885,45 +879,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						break
 					}
 					if ok {
-						call.Name = normalizeToolName(reqCopy.ToolExecutor, reqCopy.PeerID, call.Name)
-						if err := rt.emitHook(callCtx, ops.Event{
-							Name:       ops.HookBeforeToolCall,
-							PeerID:     reqCopy.PeerID,
-							SessionKey: sessionKey,
-							Data: map[string]any{
-								"tool": call.Name,
-								"step": step,
-							},
-						}); err != nil {
-							lastErr = err
-							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: err.Error()})
-							break
-						}
-						argsSummary := summarizeToolJSON(call.Arguments)
-						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: argsSummary})
-						toolStartedAt := time.Now().UTC()
-						toolResult, execErr := reqCopy.ToolExecutor.ExecuteTool(toolExecCtx, reqCopy.PeerID, *call)
-						ok := execErr == nil
-						rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolResult(toolResult, execErr), DurationMs: elapsedMilliseconds(toolStartedAt), OK: &ok})
-						if hookErr := rt.emitHook(callCtx, ops.Event{
-							Name:       ops.HookAfterToolCall,
-							PeerID:     reqCopy.PeerID,
-							SessionKey: sessionKey,
-							Data: map[string]any{
-								"tool":  call.Name,
-								"step":  step,
-								"ok":    execErr == nil,
-								"error": errString(execErr),
-							},
-						}); hookErr != nil {
-							lastErr = hookErr
-							rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunError, SessionKey: sessionKey, Attempt: attempt, Step: step, Error: hookErr.Error()})
-							break
-						}
-						workingMessages = append(workingMessages,
-							types.Message{Role: "assistant", Content: assistantText},
-							types.Message{Role: "tool", ToolCallID: call.ID, Content: rt.formatToolResult(call.Name, toolResult, execErr)},
-						)
+						assistantToolMsg, toolResultMsg, execErr, meta := rt.executeToolCall(toolExecCtx, reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, step, assistantText, types.Message{Role: "assistant", Content: assistantText}, *call, reqCopy.EventSink, result)
+						workingMessages = append(workingMessages, assistantToolMsg, toolResultMsg)
+						updatePendingMutatingToolFailure(result, normalizeToolCall(reqCopy.ToolExecutor, reqCopy.PeerID, *call), meta, step)
 						if execErr != nil {
 							lastErr = execErr
 						}
@@ -1144,6 +1102,107 @@ func assistantMessage(assistantText string, resp *types.ChatResponse) (types.Mes
 		return types.Message{}, false
 	}
 	return types.Message{Role: "assistant", Content: assistantText}, true
+}
+
+func stripToolCallEnvelope(text string) string {
+	start := strings.Index(text, toolCallStartTag)
+	if start < 0 {
+		return strings.TrimSpace(text)
+	}
+	end := strings.Index(text[start:], toolCallEndTag)
+	if end < 0 {
+		return strings.TrimSpace(text)
+	}
+	end += start + len(toolCallEndTag)
+	return strings.TrimSpace(text[:start] + text[end:])
+}
+
+func (rt *Runtime) repairTranscriptMessages(messages []types.Message) ([]types.Message, int) {
+	if len(messages) == 0 {
+		return nil, 0
+	}
+	out := make([]types.Message, 0, len(messages))
+	repairs := 0
+	var pending []ToolCall
+	flushPending := func() {
+		if len(pending) == 0 {
+			return
+		}
+		for _, call := range pending {
+			out = append(out, types.Message{Role: "tool", ToolCallID: call.ID, Content: rt.formatToolResult(call.Name, nil, fmt.Errorf("tool execution did not complete; synthetic repair inserted during transcript normalization"))})
+			repairs++
+		}
+		pending = nil
+	}
+	for _, msg := range messages {
+		switch msg.Role {
+		case "assistant":
+			flushPending()
+			if len(msg.ToolCalls) == 0 {
+				if call, ok, err := parseToolCall(msg.Content); err == nil && ok {
+					normalized := normalizeToolCall(nil, "", *call)
+					msg.ToolCalls = []types.ToolCall{toolCallMessage(normalized)}
+					msg.Content = stripToolCallEnvelope(msg.Content)
+					repairs++
+				}
+			}
+			out = append(out, msg)
+			if len(msg.ToolCalls) > 0 {
+				pending = pending[:0]
+				for _, tc := range msg.ToolCalls {
+					pending = append(pending, normalizeToolCall(nil, "", ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: json.RawMessage(tc.Function.Arguments)}))
+				}
+			}
+		case "tool":
+			if strings.TrimSpace(msg.ToolCallID) == "" {
+				repairs++
+				continue
+			}
+			matched := false
+			for i, call := range pending {
+				if call.ID != msg.ToolCallID {
+					continue
+				}
+				out = append(out, msg)
+				pending = append(pending[:i], pending[i+1:]...)
+				matched = true
+				break
+			}
+			if matched {
+				continue
+			}
+			if len(out) > 0 {
+				prev := out[len(out)-1]
+				if prev.Role == "assistant" && len(prev.ToolCalls) == 1 && len(pending) == 1 {
+					prev.ToolCalls[0].ID = msg.ToolCallID
+					out[len(out)-1] = prev
+					pending[0].ID = msg.ToolCallID
+					out = append(out, msg)
+					pending = nil
+					repairs++
+					continue
+				}
+				if prev.Role == "assistant" && len(prev.ToolCalls) == 0 {
+					if call, ok, err := parseToolCall(prev.Content); err == nil && ok {
+						normalized := normalizeToolCall(nil, "", *call)
+						normalized.ID = msg.ToolCallID
+						prev.ToolCalls = []types.ToolCall{toolCallMessage(normalized)}
+						prev.Content = stripToolCallEnvelope(prev.Content)
+						out[len(out)-1] = prev
+						out = append(out, msg)
+						repairs++
+						continue
+					}
+				}
+			}
+			repairs++
+		default:
+			flushPending()
+			out = append(out, msg)
+		}
+	}
+	flushPending()
+	return out, repairs
 }
 
 func (rt *Runtime) persistTurn(ctx context.Context, peerID, sessionKey, model string, transcript, workingMessages []types.Message, assistantText string, suppressed bool) {
@@ -1783,10 +1842,11 @@ func truncateToolPreview(s string, maxChars int) (head string, tail string) {
 
 func formatToolResultBody(result any, err error) string {
 	body := map[string]any{"ok": err == nil}
+	if result != nil {
+		body["result"] = redact.Value(result)
+	}
 	if err != nil {
 		body["error"] = map[string]any{"message": redact.Error(err)}
-	} else {
-		body["result"] = redact.Value(result)
 	}
 	encoded, marshalErr := json.Marshal(body)
 	if marshalErr != nil {
@@ -1825,6 +1885,135 @@ func normalizeToolName(exec ToolExecutor, peerID, name string) string {
 	return norm.NormalizeToolName(peerID, name)
 }
 
+func normalizeToolCall(exec ToolExecutor, peerID string, call ToolCall) ToolCall {
+	call.Name = strings.TrimSpace(normalizeToolName(exec, peerID, call.Name))
+	call.ID = strings.TrimSpace(call.ID)
+	if call.ID == "" {
+		call.ID = "tool_" + uuid.NewString()
+	}
+	if len(bytes.TrimSpace(call.Arguments)) == 0 || bytes.Equal(bytes.TrimSpace(call.Arguments), []byte("null")) {
+		call.Arguments = json.RawMessage(`{}`)
+	}
+	return call
+}
+
+func toolCallMessage(call ToolCall) types.ToolCall {
+	return types.ToolCall{
+		ID:   call.ID,
+		Type: "function",
+		Function: types.ToolCallFunctionRef{
+			Name:      call.Name,
+			Arguments: string(call.Arguments),
+		},
+	}
+}
+
+func toolAssistantMessage(base types.Message, assistantText string, call ToolCall) types.Message {
+	msg := base
+	if msg.Role == "" {
+		msg.Role = "assistant"
+	}
+	if msg.Content == "" {
+		msg.Content = assistantText
+	}
+	msg.ToolCalls = []types.ToolCall{toolCallMessage(call)}
+	return msg
+}
+
+func toolMutatesState(exec ToolExecutor, peerID, name string) bool {
+	if inspector, ok := exec.(toolMutationInspector); ok {
+		return inspector.ToolMutatesState(peerID, name)
+	}
+	return toolLikelyMutating(name)
+}
+
+func toolLikelyMutating(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	mutatingFragments := []string{
+		"create", "update", "delete", "remove", "write", "edit", "patch", "apply", "commit",
+		"send", "insert", "set", "start", "stop", "cancel", "approve", "reject", "archive",
+		"clear", "save", "schedule", "link", "move", "rename", "upload", "open",
+	}
+	for _, fragment := range mutatingFragments {
+		if strings.Contains(name, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func (rt *Runtime) executeToolCall(ctx context.Context, exec ToolExecutor, peerID, sessionKey string, step int, assistantText string, baseAssistant types.Message, call ToolCall, eventSink func(Event), result *Result) (types.Message, types.Message, error, ToolResultMetadata) {
+	call = normalizeToolCall(exec, peerID, call)
+	assistantMsg := toolAssistantMessage(baseAssistant, assistantText, call)
+	mutatesState := toolMutatesState(exec, peerID, call.Name)
+	rt.emitEvent(result, eventSink, Event{Kind: EventToolCall, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolJSON(call.Arguments)})
+	startedAt := time.Now().UTC()
+	recorder, persistTerminal := exec.(ToolResultRecorder)
+	execCtx := ctx
+	if persistTerminal {
+		execCtx = WithRuntimeManagedToolResult(execCtx)
+	}
+	meta := ToolResultMetadata{RuntimeManaged: persistTerminal}
+	var toolResult any
+	var execErr error
+	if err := rt.emitHook(execCtx, ops.Event{
+		Name:       ops.HookBeforeToolCall,
+		PeerID:     peerID,
+		SessionKey: sessionKey,
+		Data: map[string]any{
+			"tool": call.Name,
+			"step": step,
+		},
+	}); err != nil {
+		meta.Outcome = "failure"
+		meta.FailureKind = "hook_before"
+		execErr = fmt.Errorf("tool %s blocked before execution: %w", call.Name, err)
+	} else {
+		meta.ExecutionStarted = true
+		toolResult, execErr = exec.ExecuteTool(execCtx, peerID, call)
+		if execErr != nil {
+			meta.Outcome = "failure"
+			meta.FailureKind = "tool_execution"
+			meta.SideEffectUnknown = mutatesState
+		}
+		hookErr := rt.emitHook(execCtx, ops.Event{
+			Name:       ops.HookAfterToolCall,
+			PeerID:     peerID,
+			SessionKey: sessionKey,
+			Data: map[string]any{
+				"tool":  call.Name,
+				"step":  step,
+				"ok":    execErr == nil,
+				"error": errString(execErr),
+			},
+		})
+		if hookErr != nil {
+			meta.Outcome = "failure"
+			meta.FailureKind = "hook_after"
+			meta.SideEffectUnknown = meta.ExecutionStarted && mutatesState
+			if execErr != nil {
+				execErr = errors.Join(execErr, fmt.Errorf("tool %s post-processing failed: %w", call.Name, hookErr))
+			} else {
+				execErr = fmt.Errorf("tool %s post-processing failed: %w", call.Name, hookErr)
+			}
+		}
+	}
+	if execErr == nil {
+		meta.Outcome = "success"
+		meta.SideEffectUnknown = false
+	}
+	durationMS := elapsedMilliseconds(startedAt)
+	if persistTerminal {
+		recorder.RecordToolResult(execCtx, peerID, call, toolResult, execErr, durationMS, meta)
+	}
+	ok := execErr == nil
+	rt.emitEvent(result, eventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolResult(toolResult, execErr), DurationMs: durationMS, OK: &ok})
+	return assistantMsg, types.Message{Role: "tool", ToolCallID: call.ID, Content: rt.formatToolResult(call.Name, toolResult, execErr)}, execErr, meta
+}
+
 func providerCapabilitiesFor(prov Provider, model string) types.ProviderCapabilities {
 	if caps, ok := prov.(providerCapabilities); ok {
 		return caps.Capabilities(model)
@@ -1857,6 +2046,39 @@ func cloneResponse(resp *types.ChatResponse) *types.ChatResponse {
 		cp.Choices = append([]types.ChatChoice(nil), resp.Choices...)
 	}
 	return &cp
+}
+
+func updatePendingMutatingToolFailure(result *Result, call ToolCall, meta ToolResultMetadata, step int) {
+	if result == nil {
+		return
+	}
+	if meta.ExecutionStarted && meta.SideEffectUnknown && strings.TrimSpace(meta.Outcome) == "failure" {
+		if result.PendingMutatingToolFailure == nil {
+			result.PendingMutatingToolFailure = &PendingMutatingToolFailure{
+				CallID:            call.ID,
+				ToolName:          call.Name,
+				FailureKind:       meta.FailureKind,
+				SideEffectUnknown: meta.SideEffectUnknown,
+				ExecutionStarted:  meta.ExecutionStarted,
+				FirstObservedStep: step,
+				LastUpdatedStep:   step,
+			}
+			return
+		}
+		result.PendingMutatingToolFailure.CallID = call.ID
+		result.PendingMutatingToolFailure.ToolName = call.Name
+		result.PendingMutatingToolFailure.FailureKind = meta.FailureKind
+		result.PendingMutatingToolFailure.SideEffectUnknown = meta.SideEffectUnknown
+		result.PendingMutatingToolFailure.ExecutionStarted = meta.ExecutionStarted
+		if result.PendingMutatingToolFailure.FirstObservedStep == 0 {
+			result.PendingMutatingToolFailure.FirstObservedStep = step
+		}
+		result.PendingMutatingToolFailure.LastUpdatedStep = step
+		return
+	}
+	if result.PendingMutatingToolFailure != nil && strings.TrimSpace(meta.Outcome) == "success" && result.PendingMutatingToolFailure.ToolName == call.Name {
+		result.PendingMutatingToolFailure = nil
+	}
 }
 
 func summarizeToolJSON(raw json.RawMessage) string {

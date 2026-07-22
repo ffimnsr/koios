@@ -22,12 +22,14 @@ type builtInToolRegistry struct {
 var builtInTools = newBuiltInToolRegistry()
 
 func newBuiltInToolRegistry() *builtInToolRegistry {
-	defsByName := make(map[string]toolDef, len(toolDefs))
-	for _, def := range toolDefs {
-		defsByName[def.name] = def
+	defs := append([]toolDef(nil), toolDefs...)
+	defsByName := make(map[string]toolDef, len(defs))
+	for i := range defs {
+		defs[i].mutatesState = defs[i].mutatesState || inferToolMutation(defs[i].name)
+		defsByName[defs[i].name] = defs[i]
 	}
 	return &builtInToolRegistry{
-		defs:       append([]toolDef(nil), toolDefs...),
+		defs:       defs,
 		defsByName: defsByName,
 		aliases: map[string]string{
 			"shell":        "exec",
@@ -163,6 +165,17 @@ func (r *builtInToolRegistry) VisibleCanonicalName(name string) string {
 	return name
 }
 
+func (r *builtInToolRegistry) MutatesState(name string) bool {
+	if r == nil {
+		return inferToolMutation(name)
+	}
+	canonical := r.CanonicalAlias(name)
+	if def, ok := r.defsByName[canonical]; ok {
+		return def.mutatesState
+	}
+	return inferToolMutation(canonical)
+}
+
 func (r *builtInToolRegistry) AliasesFor(name string) []string {
 	canonical := r.CanonicalAlias(name)
 	aliases := make([]string, 0)
@@ -208,4 +221,22 @@ func (r *builtInToolRegistry) Suggest(names []string, name string) []string {
 	}
 	sort.Strings(matches)
 	return matches
+}
+
+func inferToolMutation(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	mutatingFragments := []string{
+		"create", "update", "delete", "remove", "write", "edit", "patch", "apply", "commit",
+		"send", "insert", "set", "start", "stop", "cancel", "approve", "reject", "archive",
+		"clear", "save", "schedule", "link", "move", "rename", "upload", "open",
+	}
+	for _, fragment := range mutatingFragments {
+		if strings.Contains(name, fragment) {
+			return true
+		}
+	}
+	return false
 }

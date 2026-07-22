@@ -43,6 +43,12 @@ type Provenance struct {
 	FullResultArtifact string `json:"full_result_artifact,omitempty"`
 	ResultTruncated    bool   `json:"result_truncated,omitempty"`
 	ResultBytes        int    `json:"result_bytes,omitempty"`
+	Outcome            string `json:"outcome,omitempty"`
+	FailureKind        string `json:"failure_kind,omitempty"`
+	ExecutionState     string `json:"execution_state,omitempty"`
+	ExecutionStarted   bool   `json:"execution_started,omitempty"`
+	SideEffectUnknown  bool   `json:"side_effect_unknown,omitempty"`
+	RuntimeManaged     bool   `json:"runtime_managed,omitempty"`
 }
 
 // Input holds the mutable fields used when creating a tool result record.

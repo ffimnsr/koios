@@ -36,13 +36,14 @@ type pluginToolHandler func(context.Context, pluginToolContext) (any, error)
 
 // pluginTool describes one plugin-provided tool.
 type pluginTool struct {
-	PluginID    string
-	Name        string
-	Description string
-	Parameters  json.RawMessage
-	ArgHint     string
-	Available   func(*Handler) bool
-	Execute     pluginToolHandler
+	PluginID     string
+	Name         string
+	Description  string
+	Parameters   json.RawMessage
+	ArgHint      string
+	MutatesState bool
+	Available    func(*Handler) bool
+	Execute      pluginToolHandler
 }
 
 type pluginHookRegistration struct {
@@ -93,6 +94,9 @@ func (r *pluginRegistrar) RegisterTool(tool pluginTool) error {
 		tool.ArgHint = `{}`
 	}
 	tool.PluginID = r.descriptor.ID
+	if !tool.MutatesState {
+		tool.MutatesState = inferToolMutation(tool.Name)
+	}
 	for _, existing := range r.tools {
 		if existing.Name == tool.Name {
 			return fmt.Errorf("plugin %q registers duplicate tool %q", r.descriptor.ID, tool.Name)

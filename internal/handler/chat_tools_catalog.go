@@ -23,10 +23,11 @@ func (h *Handler) activeDefs(peerID, sessionKey, activeProfile string) []toolDef
 				continue
 			}
 			active = append(active, toolDef{
-				name:        tool.Name,
-				description: tool.Description,
-				parameters:  tool.Parameters,
-				argHint:     tool.ArgHint,
+				name:         tool.Name,
+				description:  tool.Description,
+				parameters:   tool.Parameters,
+				mutatesState: tool.MutatesState,
+				argHint:      tool.ArgHint,
 			})
 		}
 	}
@@ -48,10 +49,11 @@ func (h *Handler) activeDefs(peerID, sessionKey, activeProfile string) []toolDef
 				continue
 			}
 			active = append(active, toolDef{
-				name:        mt.FullName,
-				description: mt.Description,
-				parameters:  schema,
-				argHint:     `{}`,
+				name:         mt.FullName,
+				description:  mt.Description,
+				parameters:   schema,
+				mutatesState: inferToolMutation(mt.FullName),
+				argHint:      `{}`,
 			})
 		}
 	}

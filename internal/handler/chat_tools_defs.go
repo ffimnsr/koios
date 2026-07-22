@@ -12,9 +12,10 @@ func mustJSONSchema(v any) json.RawMessage {
 
 // toolDef describes one built-in server-side tool.
 type toolDef struct {
-	name        string
-	description string
-	parameters  json.RawMessage
+	name         string
+	description  string
+	parameters   json.RawMessage
+	mutatesState bool
 	// argHint is the compact argument example shown in ToolPrompt.
 	argHint string
 	// tags are optional discovery-oriented keywords used by tool.search and

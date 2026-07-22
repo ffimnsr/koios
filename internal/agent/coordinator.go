@@ -105,6 +105,10 @@ func cloneResult(result *Result) *Result {
 		resp := *result.Response
 		cp.Response = &resp
 	}
+	if result.PendingMutatingToolFailure != nil {
+		pending := *result.PendingMutatingToolFailure
+		cp.PendingMutatingToolFailure = &pending
+	}
 	return &cp
 }
 

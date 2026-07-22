@@ -33,8 +33,15 @@ func TestStoreCreateAndGet(t *testing.T) {
 		IsError:    false,
 		DurationMS: 42,
 		Provenance: toolresults.Provenance{
-			ExecutorKind: "builtin",
-			ModelProfile: "default",
+			ExecutorKind:      "builtin",
+			ModelProfile:      "default",
+			Outcome:           "failure",
+			FailureKind:       "hook_before",
+			ExecutionState:    "not_started",
+			ExecutionStarted:  false,
+			ApprovalState:     "denied",
+			SideEffectUnknown: false,
+			RuntimeManaged:    true,
 		},
 	})
 	if err != nil {
@@ -59,6 +66,27 @@ func TestStoreCreateAndGet(t *testing.T) {
 	}
 	if got.Provenance.ExecutorKind != "builtin" {
 		t.Fatalf("provenance.executor_kind = %q", got.Provenance.ExecutorKind)
+	}
+	if got.Provenance.Outcome != "failure" {
+		t.Fatalf("provenance.outcome = %q", got.Provenance.Outcome)
+	}
+	if got.Provenance.FailureKind != "hook_before" {
+		t.Fatalf("provenance.failure_kind = %q", got.Provenance.FailureKind)
+	}
+	if got.Provenance.ExecutionState != "not_started" {
+		t.Fatalf("provenance.execution_state = %q", got.Provenance.ExecutionState)
+	}
+	if got.Provenance.ExecutionStarted {
+		t.Fatalf("provenance.execution_started = %#v", got.Provenance)
+	}
+	if got.Provenance.ApprovalState != "denied" {
+		t.Fatalf("provenance.approval_state = %q", got.Provenance.ApprovalState)
+	}
+	if got.Provenance.SideEffectUnknown {
+		t.Fatalf("provenance.side_effect_unknown = %#v", got.Provenance)
+	}
+	if !got.Provenance.RuntimeManaged {
+		t.Fatalf("provenance.runtime_managed = %#v", got.Provenance)
 	}
 }
 

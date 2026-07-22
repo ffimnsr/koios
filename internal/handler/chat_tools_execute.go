@@ -27,7 +27,9 @@ func (h *Handler) ExecuteTool(ctx context.Context, peerID string, call agent.Too
 	result, execErr := h.dispatchTool(ctx, peerID, call)
 	durationMS := time.Since(start).Milliseconds()
 
-	h.recordToolResult(ctx, peerID, call, toolCtx, result, execErr, durationMS)
+	if !agent.RuntimeManagedToolResultFromContext(ctx) {
+		h.recordToolResult(ctx, peerID, call, toolCtx, result, execErr, durationMS, agent.ToolResultMetadata{})
+	}
 
 	return result, execErr
 }
@@ -114,6 +116,25 @@ func injectMCPPeerID(toolName, peerID string, rawArgs json.RawMessage) json.RawM
 	return encoded
 }
 
+func (h *Handler) ToolMutatesState(peerID, name string) bool {
+	canonical := builtInTools.CanonicalAlias(strings.TrimSpace(name))
+	if builtInTools.Has(canonical) {
+		return builtInTools.MutatesState(canonical)
+	}
+	if h.pluginRegistry != nil {
+		if tool, ok := h.pluginRegistry.Tool(canonical); ok {
+			return tool.MutatesState
+		}
+	}
+	if strings.HasPrefix(canonical, "browser.") {
+		return inferToolMutation(canonical)
+	}
+	if _, _, ok := mcp.ParseToolName(canonical); ok {
+		return inferToolMutation(canonical)
+	}
+	return inferToolMutation(canonical)
+}
+
 func (h *Handler) suggestTools(peerID, name string) []string {
 	if name == "" {
 		return nil
@@ -129,6 +150,11 @@ func (h *Handler) suggestTools(peerID, name string) []string {
 
 // recordToolResult persists a provenance record for a completed tool execution.
 // Errors during persistence are logged but do not affect the tool result.
+func (h *Handler) RecordToolResult(ctx context.Context, peerID string, call agent.ToolCall, result any, execErr error, durationMS int64, meta agent.ToolResultMetadata) {
+	toolCtx, _ := agent.ToolRunContextFromContext(ctx)
+	h.recordToolResult(ctx, peerID, call, toolCtx, result, execErr, durationMS, meta)
+}
+
 func (h *Handler) recordToolResult(
 	ctx context.Context,
 	peerID string,
@@ -137,6 +163,7 @@ func (h *Handler) recordToolResult(
 	result any,
 	execErr error,
 	durationMS int64,
+	meta agent.ToolResultMetadata,
 ) {
 	if h.toolResultStore == nil {
 		return
@@ -175,12 +202,20 @@ func (h *Handler) recordToolResult(
 	if errMsg != "" {
 		summary = call.Name + ": " + errMsg
 	}
+	meta = normalizeToolResultMetadata(call, execErr, meta)
 	prov := toolresults.Provenance{
-		ExecutorKind:  executorKind,
-		ModelProfile:  toolCtx.ActiveProfile,
-		CaptureReason: "tool_execution",
-		ResultBytes:   fullResultBytes,
+		ExecutorKind:      executorKind,
+		ModelProfile:      toolCtx.ActiveProfile,
+		CaptureReason:     "tool_execution",
+		ResultBytes:       fullResultBytes,
+		Outcome:           strings.TrimSpace(meta.Outcome),
+		FailureKind:       strings.TrimSpace(meta.FailureKind),
+		ExecutionStarted:  meta.ExecutionStarted,
+		SideEffectUnknown: meta.SideEffectUnknown,
+		RuntimeManaged:    meta.RuntimeManaged,
 	}
+	prov.ExecutionState = classifyToolExecutionState(meta)
+	prov.ApprovalState = classifyToolApprovalState(meta)
 	if fullResultJSON != "" && len(fullResultJSON) > 8192 {
 		if artifactID, err := h.persistFullToolResultArtifact(ctx, peerID, call, toolCtx, fullResultJSON, durationMS); err == nil && artifactID != "" {
 			prov.ResultTruncated = true
@@ -209,6 +244,93 @@ func (h *Handler) recordToolResult(
 	if _, err := h.toolResultStore.Create(ctx, peerID, input); err != nil {
 		// Non-fatal: provenance capture should not break tool execution.
 		_ = err
+	}
+}
+
+func normalizeToolResultMetadata(call agent.ToolCall, execErr error, meta agent.ToolResultMetadata) agent.ToolResultMetadata {
+	if strings.TrimSpace(meta.Outcome) == "" {
+		if execErr == nil {
+			meta.Outcome = "success"
+		} else {
+			meta.Outcome = "failure"
+		}
+	}
+	if strings.TrimSpace(meta.FailureKind) == "" && execErr != nil {
+		meta.FailureKind = classifyGenericToolFailure(execErr)
+	}
+	if !meta.ExecutionStarted && execErr != nil {
+		switch meta.FailureKind {
+		case "hook_before", "policy_denied", "approval_denied", "validation", "unknown_tool", "unavailable", "ownership":
+			meta.ExecutionStarted = false
+		default:
+			meta.ExecutionStarted = true
+		}
+	}
+	if execErr == nil {
+		meta.SideEffectUnknown = false
+	} else if !meta.SideEffectUnknown && meta.ExecutionStarted && toolResultLikelyMutating(call.Name) {
+		meta.SideEffectUnknown = true
+	}
+	return meta
+}
+
+func classifyGenericToolFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, "not allowed"):
+		return "policy_denied"
+	case strings.Contains(msg, "approval denied") || strings.Contains(msg, "rejected"):
+		return "approval_denied"
+	case strings.Contains(msg, "invalid arguments") || strings.Contains(msg, "json parsing failed") || strings.Contains(msg, "json parse error"):
+		return "validation"
+	case strings.Contains(msg, "unknown tool"):
+		return "unknown_tool"
+	case strings.Contains(msg, "not available"):
+		return "unavailable"
+	case strings.Contains(msg, "owned by"):
+		return "ownership"
+	default:
+		return "tool_execution"
+	}
+}
+
+func toolResultLikelyMutating(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return false
+	}
+	mutatingFragments := []string{
+		"create", "update", "delete", "remove", "write", "edit", "patch", "apply", "commit",
+		"send", "insert", "set", "start", "stop", "cancel", "approve", "reject", "archive",
+		"clear", "save", "schedule", "link", "move", "rename", "upload", "open",
+	}
+	for _, fragment := range mutatingFragments {
+		if strings.Contains(name, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyToolExecutionState(meta agent.ToolResultMetadata) string {
+	if meta.ExecutionStarted {
+		return "started"
+	}
+	if strings.TrimSpace(meta.FailureKind) != "" {
+		return "not_started"
+	}
+	return ""
+}
+
+func classifyToolApprovalState(meta agent.ToolResultMetadata) string {
+	switch strings.TrimSpace(meta.FailureKind) {
+	case "hook_before", "approval_denied", "policy_denied":
+		return "denied"
+	default:
+		return ""
 	}
 }
 

@@ -277,10 +277,11 @@ func (h *Handler) browserAliasDefs(sessionKey string) []toolDef {
 			schema = mustJSONSchema(map[string]any{"type": "object", "properties": map[string]any{}})
 		}
 		defs = append(defs, toolDef{
-			name:        alias,
-			description: tool.Description,
-			parameters:  schema,
-			argHint:     `{}`,
+			name:         alias,
+			description:  tool.Description,
+			parameters:   schema,
+			mutatesState: inferToolMutation(alias),
+			argHint:      `{}`,
 		})
 	}
 	return defs
