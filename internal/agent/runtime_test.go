@@ -730,6 +730,7 @@ func TestRuntime_RepairsLegacyXMLToolHistoryForReplay(t *testing.T) {
 		return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
 	}}
 	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetPruning(10)
 	_, err := rt.Run(context.Background(), agent.RunRequest{
 		PeerID:   "peer",
 		Scope:    agent.ScopeMain,
@@ -779,6 +780,7 @@ func TestRuntime_RepairsMissingToolResultWithSyntheticError(t *testing.T) {
 		return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
 	}}
 	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetPruning(10)
 	_, err := rt.Run(context.Background(), agent.RunRequest{
 		PeerID:   "peer",
 		Scope:    agent.ScopeMain,
@@ -822,6 +824,7 @@ func TestRuntime_DropsUnrecoverableOrphanToolResultFromReplay(t *testing.T) {
 		return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "done"}}}}, nil
 	}}
 	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetPruning(10)
 	_, err := rt.Run(context.Background(), agent.RunRequest{
 		PeerID:   "peer",
 		Scope:    agent.ScopeMain,
