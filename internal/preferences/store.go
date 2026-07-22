@@ -153,6 +153,25 @@ func (s *Store) Get(ctx context.Context, peerID, key, scope string) (*Preference
 }
 
 // List returns all preferences for peerID, optionally filtered by scope, ordered by key.
+func (s *Store) Delete(ctx context.Context, peerID, key, scope string) error {
+	peerID = strings.TrimSpace(peerID)
+	key = strings.TrimSpace(key)
+	scope = strings.TrimSpace(scope)
+	if key == "" {
+		return fmt.Errorf("key is required")
+	}
+	if scope == "" {
+		scope = "global"
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM preferences WHERE peer_id = ? AND key = ? AND scope = ?`,
+		peerID, key, scope); err != nil {
+		return fmt.Errorf("preference delete: %w", err)
+	}
+	return nil
+}
+
+// List returns all preferences for peerID, optionally filtered by scope, ordered by key.
 func (s *Store) List(ctx context.Context, peerID, scope string, limit int) ([]Preference, error) {
 	if limit <= 0 {
 		limit = 50

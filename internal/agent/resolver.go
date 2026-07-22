@@ -64,6 +64,7 @@ func NewPeerAwareResolver(
 func (r *PeerAwareResolver) ResolveProvider(ctx context.Context, peerID, sessionKey, modelOverride string) (Provider, string, error) {
 	// 1. Check session policy for explicit provider_profile override.
 	profileName := r.resolveSessionProfile(sessionKey)
+	fromSession := profileName != ""
 	if profileName == "" {
 		// 2. Fall back to peer default provider profile from preferences.
 		profileName = r.resolvePeerDefault(ctx, peerID)
@@ -84,7 +85,7 @@ func (r *PeerAwareResolver) ResolveProvider(ctx context.Context, peerID, session
 		}
 		return r.globalProv, r.globalModel, nil
 	}
-	return r.resolveNamedProfile(ctx, peerID, profileName, modelOverride)
+	return r.resolveNamedProfile(ctx, peerID, sessionKey, profileName, modelOverride, fromSession)
 }
 
 // resolveSessionProfile checks the session policy for a provider_profile override.
@@ -109,7 +110,7 @@ func (r *PeerAwareResolver) resolvePeerDefault(ctx context.Context, peerID strin
 }
 
 // resolveNamedProfile returns a cached or freshly built provider for the named profile.
-func (r *PeerAwareResolver) resolveNamedProfile(ctx context.Context, peerID, profileName, modelOverride string) (Provider, string, error) {
+func (r *PeerAwareResolver) resolveNamedProfile(ctx context.Context, peerID, sessionKey, profileName, modelOverride string, fromSession bool) (Provider, string, error) {
 	cacheKey := peerID + "::" + profileName
 
 	r.mu.RLock()
@@ -128,6 +129,7 @@ func (r *PeerAwareResolver) resolveNamedProfile(ctx context.Context, peerID, pro
 	// Fetch profile from store and build provider.
 	profile, err := r.peerStore.Get(ctx, peerID, profileName)
 	if err != nil {
+		r.clearMissingProfileReference(ctx, peerID, sessionKey, profileName, fromSession)
 		slog.Warn("resolver: profile not found, falling back to global",
 			"peer", peerID, "profile", profileName, "err", err)
 		if modelOverride != "" {
@@ -178,6 +180,34 @@ func (r *PeerAwareResolver) resolveNamedProfile(ctx context.Context, peerID, pro
 }
 
 // InvalidateCache clears the cache for a specific peer+profile key.
+func (r *PeerAwareResolver) clearMissingProfileReference(ctx context.Context, peerID, sessionKey, profileName string, fromSession bool) {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return
+	}
+	if fromSession {
+		if r.sessionStore == nil || strings.TrimSpace(sessionKey) == "" {
+			return
+		}
+		if err := r.sessionStore.PatchPolicy(sessionKey, func(policy *session.SessionPolicy) {
+			if strings.TrimSpace(policy.ProviderProfile) == profileName {
+				policy.ProviderProfile = ""
+			}
+		}); err != nil {
+			slog.Warn("resolver: failed to clear stale session provider profile",
+				"peer", peerID, "session_key", sessionKey, "profile", profileName, "err", err)
+		}
+		return
+	}
+	if r.prefStore == nil || strings.TrimSpace(peerID) == "" {
+		return
+	}
+	if err := r.prefStore.Delete(ctx, peerID, "peer.llm.default_provider_profile", "global"); err != nil {
+		slog.Warn("resolver: failed to clear stale peer default provider profile",
+			"peer", peerID, "profile", profileName, "err", err)
+	}
+}
+
 func (r *PeerAwareResolver) InvalidateCache(peerID, profileName string) {
 	cacheKey := peerID + "::" + profileName
 	r.mu.Lock()

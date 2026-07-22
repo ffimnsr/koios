@@ -915,6 +915,36 @@ func (st *Store) Policy(sessionKey string) SessionPolicy {
 	return st.policies[sessionKey]
 }
 
+func (st *Store) ClearProviderProfileReferences(peerID, profileName string) (int, error) {
+	peerID = strings.TrimSpace(peerID)
+	profileName = strings.TrimSpace(profileName)
+	if peerID == "" || profileName == "" {
+		return 0, nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	cleared := 0
+	for sessionKey, policy := range st.policies {
+		if sessionKey != peerID && !strings.HasPrefix(sessionKey, peerID+"::") {
+			continue
+		}
+		if policy.ProviderProfile != profileName {
+			continue
+		}
+		policy.ProviderProfile = ""
+		if isZeroPolicy(policy) {
+			delete(st.policies, sessionKey)
+		} else {
+			st.policies[sessionKey] = policy
+		}
+		cleared++
+	}
+	if cleared == 0 {
+		return 0, nil
+	}
+	return cleared, st.savePoliciesLocked()
+}
+
 func (st *Store) SessionKeys(peerID string) []string {
 	records := st.sessionRecords(time.Now())
 	keys := make([]string, 0, len(records))

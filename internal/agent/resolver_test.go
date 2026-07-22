@@ -214,6 +214,74 @@ func TestPeerAwareResolverDisabledProfile(t *testing.T) {
 	}
 }
 
+func TestPeerAwareResolverClearsStalePeerDefaultProfile(t *testing.T) {
+	global := &simpleProvider{}
+	dir := t.TempDir()
+	prefStore, err := preferences.New(filepath.Join(dir, "pref.db"))
+	if err != nil {
+		t.Fatalf("preferences.New: %v", err)
+	}
+	defer prefStore.Close()
+	peerStore, err := peerllm.New(filepath.Join(dir, "peer_llm.db"))
+	if err != nil {
+		t.Fatalf("peerllm.New: %v", err)
+	}
+	defer peerStore.Close()
+	if _, err := prefStore.Set(context.Background(), "alice", preferences.Input{
+		Key:   "peer.llm.default_provider_profile",
+		Value: "missing-profile",
+	}); err != nil {
+		t.Fatalf("prefStore.Set: %v", err)
+	}
+	resolver := NewPeerAwareResolver(global, "gpt-4", 0, 0, peerStore, prefStore, session.New(10))
+
+	prov, model, err := resolver.ResolveProvider(context.Background(), "alice", "", "")
+	if err != nil {
+		t.Fatalf("ResolveProvider: %v", err)
+	}
+	if prov != global {
+		t.Fatal("expected global provider fallback")
+	}
+	if model != "gpt-4" {
+		t.Fatalf("model = %q, want gpt-4", model)
+	}
+	if _, err := prefStore.Get(context.Background(), "alice", "peer.llm.default_provider_profile", "global"); err == nil {
+		t.Fatal("expected stale peer default provider profile to be cleared")
+	}
+}
+
+func TestPeerAwareResolverClearsStaleSessionProfile(t *testing.T) {
+	global := &simpleProvider{}
+	store := session.New(10)
+	if err := store.SetPolicy("alice::chat", session.SessionPolicy{ProviderProfile: "missing-profile", ThinkLevel: "medium"}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	peerStore, err := peerllm.New(filepath.Join(t.TempDir(), "peer_llm.db"))
+	if err != nil {
+		t.Fatalf("peerllm.New: %v", err)
+	}
+	defer peerStore.Close()
+	resolver := NewPeerAwareResolver(global, "gpt-4", 0, 0, peerStore, nil, store)
+
+	prov, model, err := resolver.ResolveProvider(context.Background(), "alice", "alice::chat", "")
+	if err != nil {
+		t.Fatalf("ResolveProvider: %v", err)
+	}
+	if prov != global {
+		t.Fatal("expected global provider fallback")
+	}
+	if model != "gpt-4" {
+		t.Fatalf("model = %q, want gpt-4", model)
+	}
+	policy := store.Policy("alice::chat")
+	if policy.ProviderProfile != "" {
+		t.Fatalf("provider profile = %q, want empty", policy.ProviderProfile)
+	}
+	if policy.ThinkLevel != "medium" {
+		t.Fatalf("think level = %q, want medium", policy.ThinkLevel)
+	}
+}
+
 func TestPeerAwareResolverMissingProfileFallsBack(t *testing.T) {
 	global := &simpleProvider{}
 	store := session.New(10)

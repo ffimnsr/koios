@@ -217,6 +217,69 @@ func TestOpenAICompleteFallsBackToChatCompletionsWithoutReasoningOrTools(t *test
 	}
 }
 
+func TestGeminiCompleteStripsInlineThoughtXML(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chat_gemini_1","object":"chat.completion","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":"<thought>private plan</thought>Hello there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer server.Close()
+
+	p := &openAIProvider{
+		client:      server.Client(),
+		apiKey:      "test-key",
+		baseURL:     server.URL,
+		model:       "gemini-2.5-flash",
+		idleTimeout: time.Second,
+		hooks:       openAICompatibleHooks("gemini"),
+	}
+
+	var events []types.ReasoningEvent
+	ctx := types.WithReasoningSink(context.Background(), func(ev types.ReasoningEvent) {
+		events = append(events, ev)
+	})
+	resp, err := p.Complete(ctx, &types.ChatRequest{ReasoningVisibility: "full"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Choices[0].Message.Content != "Hello there" {
+		t.Fatalf("message content = %q, want Hello there", resp.Choices[0].Message.Content)
+	}
+	if len(resp.Reasoning) != 1 || resp.Reasoning[0].Text != "private plan" {
+		t.Fatalf("unexpected reasoning blocks: %#v", resp.Reasoning)
+	}
+	if len(events) != 1 || events[0].Text != "private plan" {
+		t.Fatalf("unexpected reasoning events: %#v", events)
+	}
+}
+
+func TestGeminiCompleteStripsBracketThoughtAndReplayMarkers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"chat_gemini_2","object":"chat.completion","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":"[thought] secret chain </thought> [previous tool call replay omitted for Gemini compatibility] tool args={\"symbol\":\"ETH/USDC\"} [tool result default_api:mcp__monaco__get_trading_pair_by_symbol] {\"ok\":true} [thought] done chain </thought>Successfully bought 0.001 ETH."},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer server.Close()
+
+	p := &openAIProvider{
+		client:      server.Client(),
+		apiKey:      "test-key",
+		baseURL:     server.URL,
+		model:       "gemini-2.5-flash",
+		idleTimeout: time.Second,
+		hooks:       openAICompatibleHooks("gemini"),
+	}
+
+	resp, err := p.Complete(context.Background(), &types.ChatRequest{ReasoningVisibility: "full"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Choices[0].Message.Content != "Successfully bought 0.001 ETH." {
+		t.Fatalf("message content = %q, want final user-facing answer only", resp.Choices[0].Message.Content)
+	}
+	if len(resp.Reasoning) != 2 || resp.Reasoning[0].Text != "secret chain" || resp.Reasoning[1].Text != "done chain" {
+		t.Fatalf("unexpected reasoning blocks: %#v", resp.Reasoning)
+	}
+}
+
 func TestOpenAICompleteStreamEmitsReasoningDeltaAndSummary(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -250,6 +313,93 @@ func TestOpenAICompleteStreamEmitsReasoningDeltaAndSummary(t *testing.T) {
 		t.Fatalf("text = %q, want hello", text)
 	}
 	if len(events) != 2 || events[0].Kind != types.ReasoningEventDelta || events[1].Kind != types.ReasoningEventSummary {
+		t.Fatalf("unexpected reasoning events: %#v", events)
+	}
+}
+
+func TestGeminiCompleteStreamStripsInlineThoughtXML(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"<thought>private stream plan</thought>Hello\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	p := &openAIProvider{
+		client:      server.Client(),
+		apiKey:      "test-key",
+		baseURL:     server.URL,
+		model:       "gemini-2.5-flash",
+		idleTimeout: time.Second,
+		hooks:       openAICompatibleHooks("gemini"),
+	}
+
+	var events []types.ReasoningEvent
+	ctx := types.WithReasoningSink(context.Background(), func(ev types.ReasoningEvent) {
+		events = append(events, ev)
+	})
+	rec := httptest.NewRecorder()
+	text, err := p.CompleteStream(ctx, &types.ChatRequest{ReasoningVisibility: "full"}, rec)
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	if text != "Hello" {
+		t.Fatalf("text = %q, want Hello", text)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<thought>") {
+		t.Fatalf("expected forwarded SSE to strip thought XML, got %q", body)
+	}
+	if !strings.Contains(body, "Hello") {
+		t.Fatalf("expected forwarded SSE to keep visible text, got %q", body)
+	}
+	if len(events) != 2 || events[0].Text != "private stream plan" || events[1].Text != "private stream plan" {
+		t.Fatalf("unexpected reasoning events: %#v", events)
+	}
+}
+
+func TestGeminiCompleteStreamStripsSplitInlineThoughtXML(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"<thou\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ght>private stream plan</thought>Hello\"}}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	p := &openAIProvider{
+		client:      server.Client(),
+		apiKey:      "test-key",
+		baseURL:     server.URL,
+		model:       "gemini-2.5-flash",
+		idleTimeout: time.Second,
+		hooks:       openAICompatibleHooks("gemini"),
+	}
+
+	var events []types.ReasoningEvent
+	ctx := types.WithReasoningSink(context.Background(), func(ev types.ReasoningEvent) {
+		events = append(events, ev)
+	})
+	rec := httptest.NewRecorder()
+	text, err := p.CompleteStream(ctx, &types.ChatRequest{ReasoningVisibility: "full"}, rec)
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	if text != "Hello" {
+		t.Fatalf("text = %q, want Hello", text)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<thought>") || strings.Contains(body, "<thou") || strings.Contains(body, "private stream plan") {
+		t.Fatalf("expected split thought XML to stay hidden from forwarded SSE, got %q", body)
+	}
+	if !strings.Contains(body, "Hello") {
+		t.Fatalf("expected forwarded SSE to keep visible text, got %q", body)
+	}
+	if len(events) != 2 || events[0].Text != "private stream plan" || events[1].Text != "private stream plan" {
 		t.Fatalf("unexpected reasoning events: %#v", events)
 	}
 }
@@ -417,8 +567,8 @@ func TestMarshalOpenAIWireRequestGeminiSanitizesToolTranscriptWithoutRawContent(
 	if len(wire.Messages) != 2 {
 		t.Fatalf("wire message count = %d, want 2", len(wire.Messages))
 	}
-	if wire.Messages[0].Role != "assistant" {
-		t.Fatalf("first role = %q, want assistant", wire.Messages[0].Role)
+	if wire.Messages[0].Role != "user" {
+		t.Fatalf("first role = %q, want user", wire.Messages[0].Role)
 	}
 	if _, ok := wire.Messages[0].Content.(string); !ok {
 		t.Fatalf("expected sanitized Gemini replay content to become plain text, got %#v", wire.Messages[0].Content)
@@ -445,6 +595,60 @@ func TestMarshalOpenAIWireRequestGeminiSanitizesToolTranscriptWithoutRawContent(
 	}
 	if part["thought_signature"] != "sig_live" {
 		t.Fatalf("expected live Gemini thought_signature to survive, got %#v", part["thought_signature"])
+	}
+}
+
+func TestMarshalOpenAIWireRequestGeminiTurnsTerminalToolReplayIntoUserMessage(t *testing.T) {
+	messages := []types.Message{
+		{
+			Role:    "assistant",
+			Content: "Need wallet data.",
+			ToolCalls: []types.ToolCall{{
+				ID:   "call_terminal",
+				Type: "function",
+				Function: types.ToolCallFunctionRef{
+					Name:      "monaco.get_balance",
+					Arguments: `{"asset":"ETH"}`,
+				},
+			}},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_terminal",
+			Content:    `{"balance":"1.0"}`,
+		},
+	}
+
+	body, err := marshalOpenAIWireRequest("gemini", &types.ChatRequest{Model: "gemini-2.5-flash", Messages: messages})
+	if err != nil {
+		t.Fatalf("marshalOpenAIWireRequest: %v", err)
+	}
+
+	var wire struct {
+		Messages []struct {
+			Role      string           `json:"role"`
+			Content   any              `json:"content"`
+			ToolCalls []types.ToolCall `json:"tool_calls,omitempty"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode wire request: %v", err)
+	}
+	if len(wire.Messages) != 1 {
+		t.Fatalf("wire message count = %d, want 1", len(wire.Messages))
+	}
+	if wire.Messages[0].Role != "user" {
+		t.Fatalf("terminal replay role = %q, want user", wire.Messages[0].Role)
+	}
+	content, ok := wire.Messages[0].Content.(string)
+	if !ok {
+		t.Fatalf("expected terminal replay content string, got %#v", wire.Messages[0].Content)
+	}
+	if !strings.Contains(content, "tool result monaco.get_balance") {
+		t.Fatalf("expected tool result summary in terminal replay content, got %q", content)
+	}
+	if len(wire.Messages[0].ToolCalls) != 0 {
+		t.Fatalf("expected terminal replay to drop tool_calls, got %#v", wire.Messages[0].ToolCalls)
 	}
 }
 

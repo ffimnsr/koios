@@ -425,6 +425,7 @@ func sanitizeGeminiReplayMessages(messages []types.Message) []types.Message {
 			}
 		}
 
+		hadToolResults := false
 		for i+1 < len(messages) {
 			next := messages[i+1]
 			if next.Role != "tool" {
@@ -442,10 +443,15 @@ func sanitizeGeminiReplayMessages(messages []types.Message) []types.Message {
 			summary.WriteString("] ")
 			summary.WriteString(strings.TrimSpace(next.Content))
 			delete(pending, strings.TrimSpace(next.ToolCallID))
+			hadToolResults = true
 			i++
 		}
 
-		out = append(out, types.Message{Role: "assistant", Content: strings.TrimSpace(summary.String())})
+		role := "assistant"
+		if hadToolResults && (i+1 >= len(messages) || messages[i+1].Role != "user") {
+			role = "user"
+		}
+		out = append(out, types.Message{Role: role, Content: strings.TrimSpace(summary.String())})
 	}
 	return out
 }
@@ -527,10 +533,15 @@ func extractOpenAIResponsesChatResponse(body []byte, providerName string) (*type
 				texts = []string{strings.TrimSpace(item.Text)}
 			}
 			if len(texts) > 0 {
+				joined := strings.Join(texts, "\n")
+				joined, reasoning = appendInlineThoughtBlocks(providerName, joined, reasoning)
+				if strings.TrimSpace(joined) == "" {
+					continue
+				}
 				if message.Content != "" {
 					message.Content += "\n"
 				}
-				message.Content += strings.Join(texts, "\n")
+				message.Content += joined
 			}
 		case "function_call":
 			message.ToolCalls = append(message.ToolCalls, types.ToolCall{
@@ -672,6 +683,306 @@ func collectOpenAIReasoningTexts(reasoningContent, thinking, reasoning string, d
 	return texts
 }
 
+func splitInlineThoughtXML(text string) (string, []string) {
+	clean, thoughts := splitThoughtTaggedSections(text, "<thought>", "</thought>")
+	clean, more := splitThoughtTaggedSections(clean, "[thought]", "</thought>")
+	if len(more) > 0 {
+		thoughts = append(thoughts, more...)
+	}
+	return clean, thoughts
+}
+
+type inlineThoughtStreamSanitizer struct {
+	pending   string
+	inThought bool
+	openTag   string
+	openTags  []string
+	closeTags map[string]string
+}
+
+func newInlineThoughtStreamSanitizer() *inlineThoughtStreamSanitizer {
+	return &inlineThoughtStreamSanitizer{
+		openTags: []string{"<thought>", "[thought]"},
+		closeTags: map[string]string{
+			"<thought>": "</thought>",
+			"[thought]": "</thought>",
+		},
+	}
+}
+
+func (s *inlineThoughtStreamSanitizer) Consume(text string) (string, []string) {
+	if s == nil || text == "" {
+		return text, nil
+	}
+	s.pending += text
+	var (
+		visible  strings.Builder
+		thoughts []string
+	)
+	for {
+		if s.inThought {
+			closeTag := s.closeTags[s.openTag]
+			idx := strings.Index(strings.ToLower(s.pending), strings.ToLower(closeTag))
+			if idx < 0 {
+				break
+			}
+			if thought := strings.TrimSpace(s.pending[:idx]); thought != "" {
+				thoughts = append(thoughts, thought)
+			}
+			s.pending = s.pending[idx+len(closeTag):]
+			s.inThought = false
+			s.openTag = ""
+			continue
+		}
+		start, tag := firstInlineThoughtOpenTag(s.pending, s.openTags)
+		if start < 0 {
+			keep := longestInlineThoughtPrefixSuffix(s.pending, s.openTags)
+			emitEnd := len(s.pending) - keep
+			if emitEnd > 0 {
+				visible.WriteString(s.pending[:emitEnd])
+				s.pending = s.pending[emitEnd:]
+			}
+			break
+		}
+		visible.WriteString(s.pending[:start])
+		s.pending = s.pending[start+len(tag):]
+		s.inThought = true
+		s.openTag = tag
+	}
+	return visible.String(), thoughts
+}
+
+func (s *inlineThoughtStreamSanitizer) Flush() (string, []string) {
+	if s == nil {
+		return "", nil
+	}
+	if s.inThought {
+		text := s.openTag + s.pending
+		s.pending = ""
+		s.inThought = false
+		s.openTag = ""
+		return text, nil
+	}
+	text := s.pending
+	s.pending = ""
+	return text, nil
+}
+
+func firstInlineThoughtOpenTag(text string, tags []string) (int, string) {
+	lower := strings.ToLower(text)
+	best := -1
+	bestTag := ""
+	for _, tag := range tags {
+		idx := strings.Index(lower, strings.ToLower(tag))
+		if idx < 0 {
+			continue
+		}
+		if best < 0 || idx < best {
+			best = idx
+			bestTag = tag
+		}
+	}
+	return best, bestTag
+}
+
+func longestInlineThoughtPrefixSuffix(text string, tags []string) int {
+	best := 0
+	for _, tag := range tags {
+		max := len(tag) - 1
+		if max > len(text) {
+			max = len(text)
+		}
+		for n := max; n > best; n-- {
+			if strings.EqualFold(text[len(text)-n:], tag[:n]) {
+				best = n
+				break
+			}
+		}
+	}
+	return best
+}
+
+func splitThoughtTaggedSections(text, openTag, closeTag string) (string, []string) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", nil
+	}
+	lower := strings.ToLower(trimmed)
+	openLower := strings.ToLower(openTag)
+	closeLower := strings.ToLower(closeTag)
+	var (
+		visible strings.Builder
+		blocks  []string
+		cursor  int
+	)
+	for {
+		start := strings.Index(lower[cursor:], openLower)
+		if start < 0 {
+			visible.WriteString(trimmed[cursor:])
+			break
+		}
+		start += cursor
+		visible.WriteString(trimmed[cursor:start])
+		innerStart := start + len(openTag)
+		end := strings.Index(lower[innerStart:], closeLower)
+		if end < 0 {
+			visible.WriteString(trimmed[start:])
+			break
+		}
+		end += innerStart
+		if thought := strings.TrimSpace(trimmed[innerStart:end]); thought != "" {
+			blocks = append(blocks, thought)
+		}
+		cursor = end + len(closeTag)
+	}
+	clean := strings.TrimSpace(visible.String())
+	if len(blocks) == 0 {
+		return trimmed, nil
+	}
+	return clean, blocks
+}
+
+func appendInlineThoughtBlocks(providerName, content string, reasoning []types.ReasoningBlock) (string, []types.ReasoningBlock) {
+	clean, thoughts := splitInlineThoughtXML(content)
+	clean = stripGeminiReplayMarkers(providerName, clean)
+	if len(thoughts) == 0 {
+		return clean, reasoning
+	}
+	if reasoning == nil {
+		reasoning = make([]types.ReasoningBlock, 0, len(thoughts))
+	}
+	for _, thought := range thoughts {
+		reasoning = append(reasoning, types.ReasoningBlock{Provider: providerName, Type: "summary", Text: thought})
+	}
+	return clean, reasoning
+}
+
+func stripGeminiReplayMarkers(providerName, content string) string {
+	trimmed := strings.TrimSpace(content)
+	if providerName != "gemini" || trimmed == "" {
+		return trimmed
+	}
+	markers := []string{
+		"[previous tool call replay omitted for Gemini compatibility]",
+		"[tool result ",
+		"[tool_result ",
+	}
+	text := trimmed
+	for {
+		start, marker := firstGeminiReplayMarker(text, markers)
+		if start < 0 {
+			return strings.TrimSpace(text)
+		}
+		end := geminiReplayMarkerEnd(text, start, marker)
+		text = strings.TrimSpace(text[:start] + " " + text[end:])
+	}
+}
+
+func geminiReplayMarkerEnd(text string, start int, marker string) int {
+	after := start + len(marker)
+	if after > len(text) {
+		return len(text)
+	}
+	if marker == "[previous tool call replay omitted for Gemini compatibility]" {
+		if next := strings.Index(text[after:], "["); next >= 0 {
+			return after + next
+		}
+		return len(text)
+	}
+	close := strings.Index(text[after:], "]")
+	if close < 0 {
+		return len(text)
+	}
+	payloadStart := after + close + 1
+	payloadStart += skipGeminiSpace(text[payloadStart:])
+	if payloadStart < len(text) {
+		switch text[payloadStart] {
+		case '{', '[':
+			if end, ok := scanBalancedGeminiJSON(text, payloadStart); ok {
+				return end
+			}
+		}
+	}
+	if next := strings.Index(text[payloadStart:], "["); next >= 0 {
+		return payloadStart + next
+	}
+	return len(text)
+}
+
+func skipGeminiSpace(text string) int {
+	for i, r := range text {
+		if r != ' ' && r != '\n' && r != '\r' && r != '\t' {
+			return i
+		}
+	}
+	return len(text)
+}
+
+func scanBalancedGeminiJSON(text string, start int) (int, bool) {
+	if start >= len(text) {
+		return len(text), false
+	}
+	var stack []byte
+	inString := false
+	escaped := false
+	for i := start; i < len(text); i++ {
+		ch := text[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{', '[':
+			stack = append(stack, ch)
+		case '}':
+			if len(stack) == 0 || stack[len(stack)-1] != '{' {
+				return i, false
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return i + 1, true
+			}
+		case ']':
+			if len(stack) == 0 || stack[len(stack)-1] != '[' {
+				return i, false
+			}
+			stack = stack[:len(stack)-1]
+			if len(stack) == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return len(text), len(stack) == 0
+}
+
+func firstGeminiReplayMarker(text string, markers []string) (int, string) {
+	best := -1
+	bestMarker := ""
+	for _, marker := range markers {
+		idx := strings.Index(text, marker)
+		if idx < 0 {
+			continue
+		}
+		if best < 0 || idx < best {
+			best = idx
+			bestMarker = marker
+		}
+	}
+	return best, bestMarker
+}
+
 type openAIProvider struct {
 	client      *http.Client
 	apiKey      string
@@ -729,6 +1040,9 @@ func (p *openAIProvider) completeChatCompletions(ctx context.Context, req *types
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	chatResp.Reasoning = extractOpenAIReasoning(responseBody, p.hooks.name)
+	if len(chatResp.Choices) > 0 {
+		chatResp.Choices[0].Message.Content, chatResp.Reasoning = appendInlineThoughtBlocks(p.hooks.name, chatResp.Choices[0].Message.Content, chatResp.Reasoning)
+	}
 	if req.ReasoningVisibility != "off" {
 		for _, block := range chatResp.Reasoning {
 			emitOpenAIReasoningSummary(ctx, p.hooks.name, block.Text)
@@ -824,6 +1138,10 @@ func (p *openAIProvider) completeChatCompletionsStream(ctx context.Context, req 
 		sb              strings.Builder
 		reasoningBuffer strings.Builder
 	)
+	var inlineThoughts *inlineThoughtStreamSanitizer
+	if p.hooks.name == "gemini" {
+		inlineThoughts = newInlineThoughtStreamSanitizer()
+	}
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		touch()
@@ -833,6 +1151,43 @@ func (p *openAIProvider) completeChatCompletionsStream(ctx context.Context, req 
 		}
 		payload := strings.TrimPrefix(line, "data: ")
 		if payload == "[DONE]" {
+			if inlineThoughts != nil {
+				content, thoughtBlocks := inlineThoughts.Flush()
+				if content != "" || len(thoughtBlocks) > 0 {
+					sb.WriteString(content)
+					for _, thought := range thoughtBlocks {
+						reasoningBuffer.WriteString(thought)
+						if req.ReasoningVisibility == "full" {
+							types.EmitReasoningEvent(streamCtx, types.ReasoningEvent{
+								Kind:     types.ReasoningEventDelta,
+								Provider: p.hooks.name,
+								Text:     thought,
+							})
+						}
+					}
+					if content != "" {
+						flushChunk := struct {
+							Choices []struct {
+								Delta struct {
+									Content string `json:"content,omitempty"`
+								} `json:"delta"`
+							} `json:"choices"`
+						}{}
+						flushChunk.Choices = append(flushChunk.Choices, struct {
+							Delta struct {
+								Content string `json:"content,omitempty"`
+							} `json:"delta"`
+						}{})
+						flushChunk.Choices[0].Delta.Content = content
+						if extra, err := json.Marshal(flushChunk); err == nil {
+							fmt.Fprintf(w, "data: %s\n\n", extra)
+							if flusher != nil {
+								flusher.Flush()
+							}
+						}
+					}
+				}
+			}
 			fmt.Fprintf(w, "data: [DONE]\n\n")
 			if flusher != nil {
 				flusher.Flush()
@@ -853,9 +1208,26 @@ func (p *openAIProvider) completeChatCompletionsStream(ctx context.Context, req 
 			} `json:"choices"`
 		}
 		if err := json.Unmarshal([]byte(payload), &chunk); err == nil {
-			for _, ch := range chunk.Choices {
-				sb.WriteString(ch.Delta.Content)
-				for _, reasoningText := range collectOpenAIReasoningTexts(ch.Delta.ReasoningContent, ch.Delta.Thinking, ch.Delta.Reasoning, ch.Delta.ReasoningDetails) {
+			for i := range chunk.Choices {
+				content := chunk.Choices[i].Delta.Content
+				var thoughtBlocks []string
+				if inlineThoughts != nil {
+					content, thoughtBlocks = inlineThoughts.Consume(content)
+				} else {
+					content, thoughtBlocks = splitInlineThoughtXML(content)
+				}
+				sb.WriteString(content)
+				for _, thought := range thoughtBlocks {
+					reasoningBuffer.WriteString(thought)
+					if req.ReasoningVisibility == "full" {
+						types.EmitReasoningEvent(streamCtx, types.ReasoningEvent{
+							Kind:     types.ReasoningEventDelta,
+							Provider: p.hooks.name,
+							Text:     thought,
+						})
+					}
+				}
+				for _, reasoningText := range collectOpenAIReasoningTexts(chunk.Choices[i].Delta.ReasoningContent, chunk.Choices[i].Delta.Thinking, chunk.Choices[i].Delta.Reasoning, chunk.Choices[i].Delta.ReasoningDetails) {
 					reasoningBuffer.WriteString(reasoningText)
 					if req.ReasoningVisibility == "full" {
 						types.EmitReasoningEvent(streamCtx, types.ReasoningEvent{
@@ -865,6 +1237,10 @@ func (p *openAIProvider) completeChatCompletionsStream(ctx context.Context, req 
 						})
 					}
 				}
+				chunk.Choices[i].Delta.Content = content
+			}
+			if sanitized, err := json.Marshal(chunk); err == nil {
+				payload = string(sanitized)
 			}
 		}
 

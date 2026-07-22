@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -138,6 +139,24 @@ func (h *Handler) rpcPeerLLMDelete(ctx context.Context, wsc *wsConn, req *rpcReq
 	if err := h.peerLLMStore.Delete(ctx, wsc.peerID, p.Name); err != nil {
 		wsc.replyErr(req.ID, errCodeServer, err.Error())
 		return
+	}
+	if h.preferenceStore != nil {
+		pref, err := h.preferenceStore.Get(ctx, wsc.peerID, "peer.llm.default_provider_profile", "global")
+		if err == nil && strings.TrimSpace(pref.Value) == strings.TrimSpace(p.Name) {
+			if err := h.preferenceStore.Delete(ctx, wsc.peerID, "peer.llm.default_provider_profile", "global"); err != nil {
+				slog.Warn("peer.llm_provider.delete: failed to clear deleted default profile preference",
+					"peer", wsc.peerID, "profile", p.Name, "err", err)
+			}
+		}
+	}
+	if h.store != nil {
+		if cleared, err := h.store.ClearProviderProfileReferences(wsc.peerID, p.Name); err != nil {
+			slog.Warn("peer.llm_provider.delete: failed to clear session provider profile references",
+				"peer", wsc.peerID, "profile", p.Name, "err", err)
+		} else if cleared > 0 {
+			slog.Info("peer.llm_provider.delete: cleared stale session provider profile references",
+				"peer", wsc.peerID, "profile", p.Name, "count", cleared)
+		}
 	}
 	// Invalidate provider cache so stale connections are not reused.
 	if h.agentRuntime != nil {

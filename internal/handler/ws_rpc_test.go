@@ -16,6 +16,8 @@ import (
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/handler"
 	"github.com/ffimnsr/koios/internal/memory"
+	"github.com/ffimnsr/koios/internal/peerllm"
+	"github.com/ffimnsr/koios/internal/preferences"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/skills"
@@ -230,6 +232,70 @@ func TestWS_CalendarAgendaLifecycle(t *testing.T) {
 	}
 	if len(result.Agenda.Events) != 1 || result.Agenda.Events[0].Summary != "Design review" {
 		t.Fatalf("unexpected agenda events: %#v", result.Agenda.Events)
+	}
+}
+
+func TestWS_PeerLLMDeleteClearsDefaultAndSessionReferences(t *testing.T) {
+	store := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: t.TempDir()})
+	prefStore, err := preferences.New(filepath.Join(t.TempDir(), "pref.db"))
+	if err != nil {
+		t.Fatalf("preferences.New: %v", err)
+	}
+	defer prefStore.Close()
+	peerStore, err := peerllm.New(filepath.Join(t.TempDir(), "peerllm.db"))
+	if err != nil {
+		t.Fatalf("peerllm.New: %v", err)
+	}
+	defer peerStore.Close()
+	if _, err := peerStore.Set(context.Background(), "alice", peerllm.Input{
+		Name:         "My Own Model",
+		Provider:     "ollama",
+		DefaultModel: "llama3.2",
+	}); err != nil {
+		t.Fatalf("peerStore.Set: %v", err)
+	}
+	if _, err := prefStore.Set(context.Background(), "alice", preferences.Input{
+		Key:   "peer.llm.default_provider_profile",
+		Value: "My Own Model",
+	}); err != nil {
+		t.Fatalf("prefStore.Set: %v", err)
+	}
+	if err := store.SetPolicy("alice::chat", session.SessionPolicy{ProviderProfile: "My Own Model", ThinkLevel: "medium"}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:           "test-model",
+		Timeout:         5 * time.Second,
+		PreferenceStore: prefStore,
+		PeerLLMStore:    peerStore,
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "delete-1", "peer.llm_provider.delete", map[string]any{"name": "My Own Model"})
+	msg := readUntilID(t, conn, "delete-1")
+	if msg.Error != nil {
+		t.Fatalf("peer.llm_provider.delete error: %+v", msg.Error)
+	}
+	if _, err := prefStore.Get(context.Background(), "alice", "peer.llm.default_provider_profile", "global"); err == nil {
+		t.Fatal("expected deleted default provider preference to be cleared")
+	}
+	policy := store.Policy("alice::chat")
+	if policy.ProviderProfile != "" {
+		t.Fatalf("provider profile = %q, want empty", policy.ProviderProfile)
+	}
+	if policy.ThinkLevel != "medium" {
+		t.Fatalf("think level = %q, want medium", policy.ThinkLevel)
+	}
+	profiles, err := peerStore.List(context.Background(), "alice")
+	if err != nil {
+		t.Fatalf("peerStore.List: %v", err)
+	}
+	if len(profiles) != 0 {
+		t.Fatalf("profiles remaining = %d, want 0", len(profiles))
 	}
 }
 

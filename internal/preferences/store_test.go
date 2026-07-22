@@ -133,6 +133,20 @@ func TestPreferenceList(t *testing.T) {
 	}
 }
 
+func TestPreferenceDelete(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.Set(ctx, "peer1", preferences.Input{Key: "theme", Value: "dark"}); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := s.Delete(ctx, "peer1", "theme", ""); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := s.Get(ctx, "peer1", "theme", ""); err == nil {
+		t.Fatal("expected deleted preference lookup to fail")
+	}
+}
+
 func TestPreferenceValidation(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

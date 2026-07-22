@@ -75,6 +75,49 @@ func TestStore_Reset(t *testing.T) {
 	}
 }
 
+func TestStore_ClearProviderProfileReferences(t *testing.T) {
+	dir := t.TempDir()
+	st := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: dir})
+	if err := st.SetPolicy("alice", session.SessionPolicy{ProviderProfile: "work"}); err != nil {
+		t.Fatalf("SetPolicy alice: %v", err)
+	}
+	if err := st.SetPolicy("alice::chat", session.SessionPolicy{ProviderProfile: "work", ThinkLevel: "medium"}); err != nil {
+		t.Fatalf("SetPolicy alice::chat: %v", err)
+	}
+	if err := st.SetPolicy("bob", session.SessionPolicy{ProviderProfile: "work"}); err != nil {
+		t.Fatalf("SetPolicy bob: %v", err)
+	}
+
+	cleared, err := st.ClearProviderProfileReferences("alice", "work")
+	if err != nil {
+		t.Fatalf("ClearProviderProfileReferences: %v", err)
+	}
+	if cleared != 2 {
+		t.Fatalf("cleared = %d, want 2", cleared)
+	}
+	if got := st.Policy("alice").ProviderProfile; got != "" {
+		t.Fatalf("alice provider profile = %q, want empty", got)
+	}
+	aliceChat := st.Policy("alice::chat")
+	if aliceChat.ProviderProfile != "" {
+		t.Fatalf("alice::chat provider profile = %q, want empty", aliceChat.ProviderProfile)
+	}
+	if aliceChat.ThinkLevel != "medium" {
+		t.Fatalf("alice::chat think level = %q, want medium", aliceChat.ThinkLevel)
+	}
+	if got := st.Policy("bob").ProviderProfile; got != "work" {
+		t.Fatalf("bob provider profile = %q, want work", got)
+	}
+
+	reloaded := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: dir})
+	if got := reloaded.Policy("alice").ProviderProfile; got != "" {
+		t.Fatalf("reloaded alice provider profile = %q, want empty", got)
+	}
+	if got := reloaded.Policy("alice::chat").ProviderProfile; got != "" {
+		t.Fatalf("reloaded alice::chat provider profile = %q, want empty", got)
+	}
+}
+
 func TestStore_ResetUnknownPeer(t *testing.T) {
 	st := session.New(10)
 	// Should not panic for a peer that has never been seen.
