@@ -101,6 +101,101 @@ const (
 	DefaultConfigFile = "koios.config.toml"
 )
 
+var supportedLLMProviders = []string{
+	"anthropic",
+	"gemini",
+	"litellm",
+	"nvidia",
+	"ollama",
+	"openai",
+	"openrouter",
+	"vllm",
+}
+
+var localLLMProviders = map[string]struct{}{
+	"litellm": {},
+	"ollama":  {},
+	"vllm":    {},
+}
+
+var supportedWebSearchProviders = []string{
+	"brave",
+	"exa",
+	"tavily",
+}
+
+// SupportedLLMProviders returns the canonical set of runtime-supported LLM providers.
+func SupportedLLMProviders() []string {
+	providers := make([]string, len(supportedLLMProviders))
+	copy(providers, supportedLLMProviders)
+	return providers
+}
+
+// IsSupportedLLMProvider reports whether name is a runtime-supported provider.
+func IsSupportedLLMProvider(name string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(name))
+	for _, provider := range supportedLLMProviders {
+		if provider == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportedLLMProvidersHint returns the supported providers as human-readable text.
+func SupportedLLMProvidersHint() string {
+	return strings.Join(supportedLLMProviders, ", ")
+}
+
+// IsLocalLLMProvider reports whether the provider typically runs locally and can omit an API key.
+func IsLocalLLMProvider(name string) bool {
+	_, ok := localLLMProviders[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
+
+// SupportedWebSearchProviders returns the canonical set of runtime-supported web search providers.
+func SupportedWebSearchProviders() []string {
+	providers := make([]string, len(supportedWebSearchProviders))
+	copy(providers, supportedWebSearchProviders)
+	return providers
+}
+
+// IsSupportedWebSearchProvider reports whether name is a runtime-supported web search provider.
+func IsSupportedWebSearchProvider(name string) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(name))
+	for _, provider := range supportedWebSearchProviders {
+		if provider == trimmed {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportedWebSearchProvidersHint returns the supported web search providers as human-readable text.
+func SupportedWebSearchProvidersHint() string {
+	return strings.Join(supportedWebSearchProviders, ", ")
+}
+
+type WebSearchProviderConfig struct {
+	APIKey         string `toml:"api_key"`
+	BaseURL        string `toml:"base_url"`
+	DefaultTimeout string `toml:"default_timeout"`
+}
+
+type RuntimeWebSearchProviderConfig struct {
+	APIKey         string
+	BaseURL        string
+	DefaultTimeout time.Duration
+}
+
+type BrowserRunConfig struct {
+	Enabled        bool
+	AccountID      string
+	APIToken       string
+	BaseURL        string
+	DefaultTimeout time.Duration
+}
+
 // ModelProfile describes a named LLM model endpoint that can be referenced
 // as a per-session override or a fallback chain entry.
 type ModelProfile struct {
@@ -362,6 +457,12 @@ type Config struct {
 	ProcessStopTimeout            time.Duration
 	ProcessLogTailBytes           int
 	ProcessMaxProcessesPerPeer    int
+	WebSearchEnabled              bool
+	WebSearchProviders            []string
+	WebSearchBrave                RuntimeWebSearchProviderConfig
+	WebSearchExa                  RuntimeWebSearchProviderConfig
+	WebSearchTavily               RuntimeWebSearchProviderConfig
+	BrowserRun                    BrowserRunConfig
 	SkillDirs                     []string
 	SkillOverrides                map[string]SkillOverride
 	ExtensionDirs                 []string
@@ -572,6 +673,20 @@ type fileConfig struct {
 			LogTailBytes        *int   `toml:"log_tail_bytes"`
 			MaxProcessesPerPeer *int   `toml:"max_processes_per_peer"`
 		} `toml:"process"`
+		WebSearch struct {
+			Enabled   *bool                   `toml:"enabled"`
+			Providers []string                `toml:"providers"`
+			Brave     WebSearchProviderConfig `toml:"brave"`
+			Exa       WebSearchProviderConfig `toml:"exa"`
+			Tavily    WebSearchProviderConfig `toml:"tavily"`
+		} `toml:"web_search"`
+		BrowserRun struct {
+			Enabled        *bool  `toml:"enabled"`
+			AccountID      string `toml:"account_id"`
+			APIToken       string `toml:"api_token"`
+			BaseURL        string `toml:"base_url"`
+			DefaultTimeout string `toml:"default_timeout"`
+		} `toml:"browser_run"`
 	} `toml:"tools"`
 	Workspace struct {
 		Root     string `toml:"root"`
@@ -674,11 +789,30 @@ func Default() *Config {
 		ProcessStopTimeout:            5 * time.Second,
 		ProcessLogTailBytes:           64 * 1024,
 		ProcessMaxProcessesPerPeer:    8,
-		SkillDirs:                     nil,
-		SkillOverrides:                nil,
-		ExtensionDirs:                 nil,
-		ExtensionAllow:                nil,
-		ExtensionDeny:                 nil,
+		WebSearchEnabled:              false,
+		WebSearchProviders:            []string{"brave"},
+		WebSearchBrave: RuntimeWebSearchProviderConfig{
+			BaseURL:        "https://api.search.brave.com/res/v1/web/search",
+			DefaultTimeout: 15 * time.Second,
+		},
+		WebSearchExa: RuntimeWebSearchProviderConfig{
+			BaseURL:        "https://api.exa.ai/search",
+			DefaultTimeout: 15 * time.Second,
+		},
+		WebSearchTavily: RuntimeWebSearchProviderConfig{
+			BaseURL:        "https://api.tavily.com/search",
+			DefaultTimeout: 15 * time.Second,
+		},
+		BrowserRun: BrowserRunConfig{
+			Enabled:        false,
+			BaseURL:        "https://api.cloudflare.com/client/v4",
+			DefaultTimeout: 30 * time.Second,
+		},
+		SkillDirs:      nil,
+		SkillOverrides: nil,
+		ExtensionDirs:  nil,
+		ExtensionAllow: nil,
+		ExtensionDeny:  nil,
 		Telegram: TelegramChannelConfig{
 			Enabled:         false,
 			Mode:            "polling",
@@ -776,6 +910,8 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 	// Build [[mcp.servers]] sections if any are configured.
 	mcpSection := encodeMCPSection(cfg)
 	browserSection := encodeBrowserSection(cfg)
+	webSearchSection := encodeWebSearchSection(cfg, includeAPIKey)
+	browserRunSection := encodeBrowserRunSection(cfg, includeAPIKey)
 	hooksSection := encodeHooksSection(cfg)
 	channelsSection := encodeChannelsSection(cfg)
 	skillOverridesSection := encodeSkillOverridesSection(cfg)
@@ -831,6 +967,8 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		strconv.Quote(cfg.ProcessStopTimeout.String()),
 		cfg.ProcessLogTailBytes,
 		cfg.ProcessMaxProcessesPerPeer,
+		webSearchSection,
+		browserRunSection,
 		inlineQuotedStringSlice(cfg.ExtensionDirs),
 		inlineQuotedStringSlice(cfg.ExtensionAllow),
 		inlineQuotedStringSlice(cfg.ExtensionDeny),
@@ -860,6 +998,61 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		}(),
 		cfg.MonitorMaxRestarts,
 	)
+}
+
+func encodeWebSearchSection(cfg *Config, includeAPIKey bool) string {
+	if cfg == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[tools.web_search]\n")
+	fmt.Fprintf(&b, "enabled = %t\n", cfg.WebSearchEnabled)
+	fmt.Fprintf(&b, "providers = [%s]\n\n", inlineQuotedStringSlice(cfg.WebSearchProviders))
+	encodeWebSearchProviderSection := func(name string, provider RuntimeWebSearchProviderConfig) {
+		b.WriteString("[tools.web_search." + name + "]\n")
+		if provider.APIKey != "" || includeAPIKey {
+			fmt.Fprintf(&b, "api_key = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathWebSearchAPIKey(name), provider.APIKey))
+		}
+		fmt.Fprintf(&b, "base_url = %s\n", strconv.Quote(strings.TrimSpace(provider.BaseURL)))
+		fmt.Fprintf(&b, "default_timeout = %s\n\n", strconv.Quote(provider.DefaultTimeout.String()))
+	}
+	encodeWebSearchProviderSection("brave", cfg.WebSearchBrave)
+	encodeWebSearchProviderSection("exa", cfg.WebSearchExa)
+	encodeWebSearchProviderSection("tavily", cfg.WebSearchTavily)
+	return b.String()
+}
+
+func encodeBrowserRunSection(cfg *Config, includeAPIKey bool) string {
+	if cfg == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[tools.browser_run]\n")
+	fmt.Fprintf(&b, "enabled = %t\n", cfg.BrowserRun.Enabled)
+	fmt.Fprintf(&b, "account_id = %s\n", strconv.Quote(strings.TrimSpace(cfg.BrowserRun.AccountID)))
+	if cfg.BrowserRun.APIToken != "" || includeAPIKey {
+		fmt.Fprintf(&b, "api_token = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathBrowserRunAPIToken, cfg.BrowserRun.APIToken))
+	}
+	fmt.Fprintf(&b, "base_url = %s\n", strconv.Quote(strings.TrimSpace(cfg.BrowserRun.BaseURL)))
+	fmt.Fprintf(&b, "default_timeout = %s\n\n", strconv.Quote(cfg.BrowserRun.DefaultTimeout.String()))
+	return b.String()
+}
+
+func applyWebSearchProviderFileConfig(dst *RuntimeWebSearchProviderConfig, src WebSearchProviderConfig) {
+	if dst == nil {
+		return
+	}
+	if src.APIKey != "" {
+		dst.APIKey = src.APIKey
+	}
+	if src.BaseURL != "" {
+		dst.BaseURL = strings.TrimSpace(src.BaseURL)
+	}
+	if src.DefaultTimeout != "" {
+		if d, err := time.ParseDuration(src.DefaultTimeout); err == nil {
+			dst.DefaultTimeout = d
+		}
+	}
 }
 
 func encodeSkillOverridesSection(cfg *Config) string {
@@ -1520,6 +1713,41 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	if src.Tools.Process.MaxProcessesPerPeer != nil && *src.Tools.Process.MaxProcessesPerPeer > 0 {
 		dst.ProcessMaxProcessesPerPeer = *src.Tools.Process.MaxProcessesPerPeer
 	}
+	if src.Tools.WebSearch.Enabled != nil {
+		dst.WebSearchEnabled = *src.Tools.WebSearch.Enabled
+	}
+	if len(src.Tools.WebSearch.Providers) > 0 {
+		providers := make([]string, 0, len(src.Tools.WebSearch.Providers))
+		for _, provider := range src.Tools.WebSearch.Providers {
+			trimmed := strings.ToLower(strings.TrimSpace(provider))
+			if trimmed != "" {
+				providers = append(providers, trimmed)
+			}
+		}
+		if len(providers) > 0 {
+			dst.WebSearchProviders = providers
+		}
+	}
+	applyWebSearchProviderFileConfig(&dst.WebSearchBrave, src.Tools.WebSearch.Brave)
+	applyWebSearchProviderFileConfig(&dst.WebSearchExa, src.Tools.WebSearch.Exa)
+	applyWebSearchProviderFileConfig(&dst.WebSearchTavily, src.Tools.WebSearch.Tavily)
+	if src.Tools.BrowserRun.Enabled != nil {
+		dst.BrowserRun.Enabled = *src.Tools.BrowserRun.Enabled
+	}
+	if src.Tools.BrowserRun.AccountID != "" {
+		dst.BrowserRun.AccountID = strings.TrimSpace(src.Tools.BrowserRun.AccountID)
+	}
+	if src.Tools.BrowserRun.APIToken != "" {
+		dst.BrowserRun.APIToken = src.Tools.BrowserRun.APIToken
+	}
+	if src.Tools.BrowserRun.BaseURL != "" {
+		dst.BrowserRun.BaseURL = strings.TrimSpace(src.Tools.BrowserRun.BaseURL)
+	}
+	if src.Tools.BrowserRun.DefaultTimeout != "" {
+		if d, err := time.ParseDuration(src.Tools.BrowserRun.DefaultTimeout); err == nil {
+			dst.BrowserRun.DefaultTimeout = d
+		}
+	}
 	if src.Workspace.Root != "" {
 		dst.WorkspaceRoot = src.Workspace.Root
 	}
@@ -1955,6 +2183,9 @@ func validate(cfg *Config) error {
 		if strings.TrimSpace(profile.Provider) == "" {
 			return fmt.Errorf("llm.profiles[%d].provider must not be empty", i)
 		}
+		if !IsSupportedLLMProvider(profile.Provider) {
+			return fmt.Errorf("unsupported llm.profiles[%d].provider %q: must be one of %s", i, profile.Provider, SupportedLLMProvidersHint())
+		}
 		if strings.TrimSpace(profile.Model) == "" {
 			return fmt.Errorf("llm.profiles[%d].model must not be empty", i)
 		}
@@ -1986,10 +2217,8 @@ func validate(cfg *Config) error {
 	if cfg.LLMMaxToolResultChars < 0 {
 		return fmt.Errorf("llm.max_tool_result_chars must be >= 0")
 	}
-	switch cfg.Provider {
-	case "openai", "anthropic", "openrouter", "nvidia":
-	default:
-		return fmt.Errorf("unsupported llm.provider %q: must be openai, anthropic, openrouter, or nvidia", cfg.Provider)
+	if !IsSupportedLLMProvider(cfg.Provider) {
+		return fmt.Errorf("unsupported llm.provider %q: must be one of %s", cfg.Provider, SupportedLLMProvidersHint())
 	}
 	if cfg.MaxSessionMessages < 1 {
 		return fmt.Errorf("session.max_messages must be >= 1")
@@ -2098,6 +2327,65 @@ func validate(cfg *Config) error {
 	}
 	if cfg.ProcessMaxProcessesPerPeer < 1 {
 		return fmt.Errorf("tools.process.max_processes_per_peer must be >= 1")
+	}
+	if len(cfg.WebSearchProviders) == 0 {
+		return fmt.Errorf("tools.web_search.providers must not be empty")
+	}
+	seenWebSearchProviders := make(map[string]struct{}, len(cfg.WebSearchProviders))
+	for i, provider := range cfg.WebSearchProviders {
+		if strings.TrimSpace(provider) == "" {
+			return fmt.Errorf("tools.web_search.providers[%d] must not be empty", i)
+		}
+		if !IsSupportedWebSearchProvider(provider) {
+			return fmt.Errorf("unsupported tools.web_search.providers[%d] %q: must be one of %s", i, provider, SupportedWebSearchProvidersHint())
+		}
+		if _, exists := seenWebSearchProviders[provider]; exists {
+			return fmt.Errorf("tools.web_search.providers[%d] duplicates provider %q", i, provider)
+		}
+		seenWebSearchProviders[provider] = struct{}{}
+	}
+	for _, provider := range []struct {
+		name string
+		cfg  RuntimeWebSearchProviderConfig
+	}{
+		{name: "brave", cfg: cfg.WebSearchBrave},
+		{name: "exa", cfg: cfg.WebSearchExa},
+		{name: "tavily", cfg: cfg.WebSearchTavily},
+	} {
+		if provider.cfg.DefaultTimeout <= 0 {
+			return fmt.Errorf("tools.web_search.%s.default_timeout must be > 0", provider.name)
+		}
+		if strings.TrimSpace(provider.cfg.BaseURL) == "" {
+			return fmt.Errorf("tools.web_search.%s.base_url must not be empty", provider.name)
+		}
+		parsedURL, err := url.ParseRequestURI(provider.cfg.BaseURL)
+		if err != nil {
+			return fmt.Errorf("tools.web_search.%s.base_url must be a valid absolute URL: %w", provider.name, err)
+		}
+		if parsedURL.Scheme == "" || parsedURL.Host == "" {
+			return fmt.Errorf("tools.web_search.%s.base_url must be a valid absolute URL", provider.name)
+		}
+	}
+	if cfg.BrowserRun.DefaultTimeout <= 0 {
+		return fmt.Errorf("tools.browser_run.default_timeout must be > 0")
+	}
+	if strings.TrimSpace(cfg.BrowserRun.BaseURL) == "" {
+		return fmt.Errorf("tools.browser_run.base_url must not be empty")
+	}
+	parsedBrowserRunURL, err := url.ParseRequestURI(cfg.BrowserRun.BaseURL)
+	if err != nil {
+		return fmt.Errorf("tools.browser_run.base_url must be a valid absolute URL: %w", err)
+	}
+	if parsedBrowserRunURL.Scheme == "" || parsedBrowserRunURL.Host == "" {
+		return fmt.Errorf("tools.browser_run.base_url must be a valid absolute URL")
+	}
+	if cfg.BrowserRun.Enabled {
+		if strings.TrimSpace(cfg.BrowserRun.AccountID) == "" {
+			return fmt.Errorf("tools.browser_run.account_id must not be empty when enabled")
+		}
+		if strings.TrimSpace(cfg.BrowserRun.APIToken) == "" {
+			return fmt.Errorf("tools.browser_run.api_token must not be empty when enabled")
+		}
 	}
 	for i, dir := range cfg.ExtensionDirs {
 		if strings.TrimSpace(dir) == "" {

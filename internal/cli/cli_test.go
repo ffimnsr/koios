@@ -477,6 +477,20 @@ func TestCompletionSuggestsEnumFlags(t *testing.T) {
 			t.Fatalf("expected agenda scope %q in %v", expected, agendaScopes)
 		}
 	}
+
+	providerFlags := completionSuggestions(t, dir, "model", "set", "--provider", "")
+	for _, expected := range config.SupportedLLMProviders() {
+		if !containsString(providerFlags, expected) {
+			t.Fatalf("expected provider completion %q in %v", expected, providerFlags)
+		}
+	}
+
+	peerProviderFlags := completionSuggestions(t, dir, "peer-llm", "set", "--provider", "")
+	for _, expected := range config.SupportedLLMProviders() {
+		if !containsString(peerProviderFlags, expected) {
+			t.Fatalf("expected peer provider completion %q in %v", expected, peerProviderFlags)
+		}
+	}
 }
 
 func TestCompletionSuggestsCronAndWorkflowIDs(t *testing.T) {

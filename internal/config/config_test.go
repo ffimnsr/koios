@@ -43,6 +43,30 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg.ExecCustomAllowPatterns = []string{"git status"}
 	cfg.ExecIsolationEnabled = true
 	cfg.ExecIsolationPaths = []ExecIsolationPath{{Source: "/tmp/src", Target: "/mnt/src", Mode: "ro"}}
+	cfg.WebSearchEnabled = true
+	cfg.WebSearchProviders = []string{"brave", "exa", "tavily"}
+	cfg.WebSearchBrave = RuntimeWebSearchProviderConfig{
+		APIKey:         "brave-secret",
+		BaseURL:        "https://api.search.brave.com/res/v1/web/search",
+		DefaultTimeout: 20 * time.Second,
+	}
+	cfg.WebSearchExa = RuntimeWebSearchProviderConfig{
+		APIKey:         "exa-secret",
+		BaseURL:        "https://api.exa.ai/search",
+		DefaultTimeout: 21 * time.Second,
+	}
+	cfg.WebSearchTavily = RuntimeWebSearchProviderConfig{
+		APIKey:         "tavily-secret",
+		BaseURL:        "https://api.tavily.com/search",
+		DefaultTimeout: 22 * time.Second,
+	}
+	cfg.BrowserRun = BrowserRunConfig{
+		Enabled:        true,
+		AccountID:      "account-123",
+		APIToken:       "cf-secret",
+		BaseURL:        "https://api.cloudflare.com/client/v4",
+		DefaultTimeout: 35 * time.Second,
+	}
 	cfg.Telegram = TelegramChannelConfig{
 		Enabled:          true,
 		BotToken:         "123:token",
@@ -127,6 +151,27 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 		`custom_deny_patterns = ["rm -rf"]`,
 		`custom_allow_patterns = ["git status"]`,
 		`expose_paths = [{ source = "/tmp/src", target = "/mnt/src", mode = "ro" }]`,
+		`[tools.web_search]`,
+		`enabled = true`,
+		`providers = ["brave", "exa", "tavily"]`,
+		`[tools.web_search.brave]`,
+		`api_key = "brave-secret"`,
+		`base_url = "https://api.search.brave.com/res/v1/web/search"`,
+		`default_timeout = "20s"`,
+		`[tools.web_search.exa]`,
+		`api_key = "exa-secret"`,
+		`base_url = "https://api.exa.ai/search"`,
+		`default_timeout = "21s"`,
+		`[tools.web_search.tavily]`,
+		`api_key = "tavily-secret"`,
+		`base_url = "https://api.tavily.com/search"`,
+		`default_timeout = "22s"`,
+		`[tools.browser_run]`,
+		`enabled = true`,
+		`account_id = "account-123"`,
+		`api_token = "cf-secret"`,
+		`base_url = "https://api.cloudflare.com/client/v4"`,
+		`default_timeout = "35s"`,
 	} {
 		if !strings.Contains(encoded, expected) {
 			t.Fatalf("expected encoded config to contain %q, got:\n%s", expected, encoded)
@@ -194,6 +239,21 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	if len(loaded.ExecIsolationPaths) != 1 || loaded.ExecIsolationPaths[0].Source != "/tmp/src" || loaded.ExecIsolationPaths[0].Target != "/mnt/src" || loaded.ExecIsolationPaths[0].Mode != "ro" {
 		t.Fatalf("unexpected isolation paths after round-trip: %#v", loaded.ExecIsolationPaths)
 	}
+	if !loaded.WebSearchEnabled || len(loaded.WebSearchProviders) != 3 || loaded.WebSearchProviders[0] != "brave" || loaded.WebSearchProviders[1] != "exa" || loaded.WebSearchProviders[2] != "tavily" {
+		t.Fatalf("unexpected web search providers after round-trip: enabled=%v providers=%#v", loaded.WebSearchEnabled, loaded.WebSearchProviders)
+	}
+	if loaded.WebSearchBrave.APIKey != "brave-secret" || loaded.WebSearchBrave.BaseURL != "https://api.search.brave.com/res/v1/web/search" || loaded.WebSearchBrave.DefaultTimeout != 20*time.Second {
+		t.Fatalf("unexpected brave web search config after round-trip: %#v", loaded.WebSearchBrave)
+	}
+	if loaded.WebSearchExa.APIKey != "exa-secret" || loaded.WebSearchExa.BaseURL != "https://api.exa.ai/search" || loaded.WebSearchExa.DefaultTimeout != 21*time.Second {
+		t.Fatalf("unexpected exa web search config after round-trip: %#v", loaded.WebSearchExa)
+	}
+	if loaded.WebSearchTavily.APIKey != "tavily-secret" || loaded.WebSearchTavily.BaseURL != "https://api.tavily.com/search" || loaded.WebSearchTavily.DefaultTimeout != 22*time.Second {
+		t.Fatalf("unexpected tavily web search config after round-trip: %#v", loaded.WebSearchTavily)
+	}
+	if !loaded.BrowserRun.Enabled || loaded.BrowserRun.AccountID != "account-123" || loaded.BrowserRun.APIToken != "cf-secret" || loaded.BrowserRun.BaseURL != "https://api.cloudflare.com/client/v4" || loaded.BrowserRun.DefaultTimeout != 35*time.Second {
+		t.Fatalf("unexpected browser run config after round-trip: %#v", loaded.BrowserRun)
+	}
 	if !loaded.Telegram.Enabled || loaded.Telegram.BotToken != "123:token" || loaded.Telegram.Mode != "webhook" {
 		t.Fatalf("unexpected telegram config after round-trip: %#v", loaded.Telegram)
 	}
@@ -217,6 +277,55 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	}
 	if loaded.Telegram.PollTimeout != 45*time.Second {
 		t.Fatalf("unexpected telegram flags after round-trip: %#v", loaded.Telegram)
+	}
+}
+
+func TestValidateAcceptsAllSupportedLLMProviders(t *testing.T) {
+	for _, provider := range SupportedLLMProviders() {
+		cfg := Default()
+		cfg.Provider = provider
+		cfg.ModelProfiles = []ModelProfile{{Name: "default", Provider: provider, Model: "test-model"}}
+		if err := validate(cfg); err != nil {
+			t.Fatalf("validate(%q): %v", provider, err)
+		}
+	}
+}
+
+func TestValidateRejectsUnsupportedProfileProvider(t *testing.T) {
+	cfg := Default()
+	cfg.ModelProfiles = []ModelProfile{{Name: "default", Provider: "unknown", Model: "test-model"}}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "llm.profiles[0].provider") {
+		t.Fatalf("expected profile provider validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsUnsupportedWebSearchProvider(t *testing.T) {
+	cfg := Default()
+	cfg.WebSearchProviders = []string{"duckduckgo"}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tools.web_search.providers") {
+		t.Fatalf("expected web search provider validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsDuplicateWebSearchProvider(t *testing.T) {
+	cfg := Default()
+	cfg.WebSearchProviders = []string{"brave", "brave"}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "duplicates provider") {
+		t.Fatalf("expected duplicate web search provider validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsEnabledBrowserRunWithoutCredentials(t *testing.T) {
+	cfg := Default()
+	cfg.BrowserRun.Enabled = true
+	cfg.BrowserRun.AccountID = ""
+	cfg.BrowserRun.APIToken = ""
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tools.browser_run.account_id") {
+		t.Fatalf("expected browser run validation error, got %v", err)
 	}
 }
 

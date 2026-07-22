@@ -56,6 +56,32 @@ func TestLoadFromPathDecryptsAndPreservesHiddenSecrets(t *testing.T) {
 		"model = \"gpt-4o\"",
 		"api_key = \"" + hidden + "\"",
 		"",
+		"[tools.web_search]",
+		"enabled = true",
+		"providers = [\"brave\", \"exa\", \"tavily\"]",
+		"",
+		"[tools.web_search.brave]",
+		"api_key = \"" + hidden + "\"",
+		"base_url = \"https://api.search.brave.com/res/v1/web/search\"",
+		"default_timeout = \"15s\"",
+		"",
+		"[tools.web_search.exa]",
+		"api_key = \"" + hidden + "\"",
+		"base_url = \"https://api.exa.ai/search\"",
+		"default_timeout = \"15s\"",
+		"",
+		"[tools.web_search.tavily]",
+		"api_key = \"" + hidden + "\"",
+		"base_url = \"https://api.tavily.com/search\"",
+		"default_timeout = \"15s\"",
+		"",
+		"[tools.browser_run]",
+		"enabled = true",
+		"account_id = \"account-123\"",
+		"api_token = \"" + hidden + "\"",
+		"base_url = \"https://api.cloudflare.com/client/v4\"",
+		"default_timeout = \"30s\"",
+		"",
 		"[workspace]",
 		"root = \"./workspace\"",
 		"",
@@ -70,12 +96,27 @@ func TestLoadFromPathDecryptsAndPreservesHiddenSecrets(t *testing.T) {
 	if cfg.APIKey != "api-hidden" {
 		t.Fatalf("cfg.APIKey = %q", cfg.APIKey)
 	}
+	if cfg.WebSearchBrave.APIKey != "api-hidden" {
+		t.Fatalf("cfg.WebSearchBrave.APIKey = %q", cfg.WebSearchBrave.APIKey)
+	}
+	if cfg.WebSearchExa.APIKey != "api-hidden" {
+		t.Fatalf("cfg.WebSearchExa.APIKey = %q", cfg.WebSearchExa.APIKey)
+	}
+	if cfg.WebSearchTavily.APIKey != "api-hidden" {
+		t.Fatalf("cfg.WebSearchTavily.APIKey = %q", cfg.WebSearchTavily.APIKey)
+	}
+	if cfg.BrowserRun.APIToken != "api-hidden" {
+		t.Fatalf("cfg.BrowserRun.APIToken = %q", cfg.BrowserRun.APIToken)
+	}
 	reEncoded := EncodeTOML(cfg, false)
 	if !strings.Contains(reEncoded, hidden) {
 		t.Fatalf("expected re-encoded config to preserve hidden secret\n%s", reEncoded)
 	}
 	if strings.Contains(reEncoded, `api_key = "api-hidden"`) {
 		t.Fatalf("expected re-encoded config to avoid plaintext secret\n%s", reEncoded)
+	}
+	if count := strings.Count(reEncoded, hidden); count < 5 {
+		t.Fatalf("expected all hidden secrets to be preserved, got count=%d\n%s", count, reEncoded)
 	}
 }
 

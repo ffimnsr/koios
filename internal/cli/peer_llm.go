@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ffimnsr/koios/internal/config"
 )
 
 func newPeerLLMCommand(ctx *commandContext) *cobra.Command {
@@ -81,7 +83,7 @@ func newPeerLLMSetCommand(ctx *commandContext, jsonOut *bool) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&peer, "peer", "", "peer ID")
 	cmd.Flags().StringVar(&name, "name", "", "profile name (stable alias)")
-	cmd.Flags().StringVar(&providerName, "provider", "", "provider: openai | anthropic | openrouter | gemini | nvidia | ollama | vllm | litellm")
+	cmd.Flags().StringVar(&providerName, "provider", "", "provider: "+config.SupportedLLMProvidersHint())
 	cmd.Flags().StringVar(&apiKey, "api-key", "", "API key (omit for local providers)")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "base URL override")
 	cmd.Flags().StringVar(&defaultModel, "default-model", "", "default model ID")

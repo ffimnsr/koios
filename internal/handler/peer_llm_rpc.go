@@ -256,12 +256,7 @@ func (h *Handler) testProviderConnectivity(ctx context.Context, profile *peerllm
 }
 
 func isLocalProvider(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "ollama", "vllm", "litellm":
-		return true
-	default:
-		return false
-	}
+	return config.IsLocalLLMProvider(name)
 }
 
 // —── peer.llm_provider.activate ──────────────────────────────────────────────

@@ -255,6 +255,12 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 			return nil, fmt.Errorf("invalid arguments: %w", err)
 		}
 		return h.runWebFetchTool(ctx, args)
+	case "web_browser_run":
+		var args webBrowserRunParams
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return h.runWebBrowserRunTool(ctx, args)
 	case "cron.list":
 		if h.jobStore == nil || h.sched == nil {
 			return nil, fmt.Errorf("cron is not enabled")

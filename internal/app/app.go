@@ -569,6 +569,45 @@ func RunGateway(build BuildInfo) error {
 			LogTailBytes:        cfg.ProcessLogTailBytes,
 			MaxProcessesPerPeer: cfg.ProcessMaxProcessesPerPeer,
 		},
+		WebSearchConfig: func() handler.WebSearchConfig {
+			providers := make([]handler.WebSearchProviderConfig, 0, len(cfg.WebSearchProviders))
+			for _, name := range cfg.WebSearchProviders {
+				switch strings.ToLower(strings.TrimSpace(name)) {
+				case "brave":
+					providers = append(providers, handler.WebSearchProviderConfig{
+						Name:           "brave",
+						APIKey:         cfg.WebSearchBrave.APIKey,
+						BaseURL:        cfg.WebSearchBrave.BaseURL,
+						DefaultTimeout: cfg.WebSearchBrave.DefaultTimeout,
+					})
+				case "exa":
+					providers = append(providers, handler.WebSearchProviderConfig{
+						Name:           "exa",
+						APIKey:         cfg.WebSearchExa.APIKey,
+						BaseURL:        cfg.WebSearchExa.BaseURL,
+						DefaultTimeout: cfg.WebSearchExa.DefaultTimeout,
+					})
+				case "tavily":
+					providers = append(providers, handler.WebSearchProviderConfig{
+						Name:           "tavily",
+						APIKey:         cfg.WebSearchTavily.APIKey,
+						BaseURL:        cfg.WebSearchTavily.BaseURL,
+						DefaultTimeout: cfg.WebSearchTavily.DefaultTimeout,
+					})
+				}
+			}
+			return handler.WebSearchConfig{
+				Enabled:   cfg.WebSearchEnabled,
+				Providers: providers,
+			}
+		}(),
+		BrowserRunConfig: handler.BrowserRunConfig{
+			Enabled:        cfg.BrowserRun.Enabled,
+			AccountID:      cfg.BrowserRun.AccountID,
+			APIToken:       cfg.BrowserRun.APIToken,
+			BaseURL:        cfg.BrowserRun.BaseURL,
+			DefaultTimeout: cfg.BrowserRun.DefaultTimeout,
+		},
 		WorkspaceStore:      wsStore,
 		ChannelManager:      channelMgr,
 		ChannelBindingStore: channels.NewBindingStore(cfg.ChannelBindingsPath()),

@@ -517,9 +517,7 @@ func repairDoctorConfig(state *repoState) ([]string, error) {
 	if strings.TrimSpace(cfg.Model) == "" {
 		fixString(&cfg.Model, "llm.model", defaultCfg.Model)
 	}
-	switch cfg.Provider {
-	case "openai", "anthropic", "openrouter", "nvidia":
-	default:
+	if !config.IsSupportedLLMProvider(cfg.Provider) {
 		fixString(&cfg.Provider, "llm.provider", defaultCfg.Provider)
 	}
 	if cfg.RequestTimeout <= 0 {

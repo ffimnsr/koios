@@ -165,10 +165,8 @@ func (s *repoState) validate() []doctorFinding {
 	if s.Model == "" {
 		findings = append(findings, doctorFinding{Level: "error", Key: "llm.model", Message: "llm.model is required", Path: s.ConfigPath})
 	}
-	switch s.Provider {
-	case "openai", "anthropic", "openrouter", "nvidia":
-	default:
-		findings = append(findings, doctorFinding{Level: "error", Key: "llm.provider", Message: fmt.Sprintf("unsupported provider %q", s.Provider), Path: s.ConfigPath, Hint: "use openai, anthropic, openrouter, or nvidia"})
+	if !config.IsSupportedLLMProvider(s.Provider) {
+		findings = append(findings, doctorFinding{Level: "error", Key: "llm.provider", Message: fmt.Sprintf("unsupported provider %q", s.Provider), Path: s.ConfigPath, Hint: "use one of " + config.SupportedLLMProvidersHint()})
 	}
 	if s.APIKey == "" {
 		findings = append(findings, doctorFinding{Level: "warn", Key: "llm.api_key", Message: "llm.api_key is empty", Path: s.ConfigPath, Hint: "set llm.api_key or a profile-specific api_key before using remote providers"})

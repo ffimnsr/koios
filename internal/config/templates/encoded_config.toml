@@ -74,6 +74,7 @@ stop_timeout = %s
 log_tail_bytes = %d
 max_processes_per_peer = %d
 
+%s%s
 [extensions]
 dirs = [%s]
 allow = [%s]

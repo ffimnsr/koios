@@ -266,6 +266,8 @@ type Handler struct {
 	execConfig              ExecConfig
 	codeExecutionConfig     CodeExecutionConfig
 	backgroundProcessConfig BackgroundProcessConfig
+	webSearchConfig         WebSearchConfig
+	browserRunConfig        BrowserRunConfig
 	approvals               *approvalStore
 	allowedOrigins          []string // empty = allow all
 	hooks                   *ops.Manager
@@ -289,6 +291,12 @@ type Handler struct {
 	// fetchClient is the HTTP client used by the web_fetch tool.  When nil,
 	// a client backed by ssrfSafeTransport() is used.  Override in tests only.
 	fetchClient *http.Client
+	// webSearchClient is the HTTP client used by the web_search tool. When nil,
+	// a timeout-scoped default client is used. Override in tests only.
+	webSearchClient *http.Client
+	// browserRunClient is the HTTP client used by the web_browser_run tool. When nil,
+	// a timeout-scoped default client is used. Override in tests only.
+	browserRunClient *http.Client
 
 	// ownerPeerIDs, when non-empty, restricts owner-only commands (e.g. /restart)
 	// to the listed peer IDs.
@@ -358,6 +366,8 @@ type HandlerOptions struct {
 	ExecConfig              ExecConfig
 	CodeExecutionConfig     CodeExecutionConfig
 	BackgroundProcessConfig BackgroundProcessConfig
+	WebSearchConfig         WebSearchConfig
+	BrowserRunConfig        BrowserRunConfig
 	Hooks                   *ops.Manager
 	Presence                *presence.Manager
 	MessageBus              *eventbus.Bus
@@ -410,6 +420,8 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 	execCfg := normalizeExecConfig(opts.ExecConfig)
 	codeExecCfg := normalizeCodeExecutionConfig(opts.CodeExecutionConfig)
 	processCfg := normalizeBackgroundProcessConfig(opts.BackgroundProcessConfig)
+	webSearchCfg := normalizeWebSearchConfig(opts.WebSearchConfig)
+	browserRunCfg := normalizeBrowserRunConfig(opts.BrowserRunConfig)
 	pluginRegistry := mustDefaultPluginRegistry()
 	pluginRegistry.InstallHooks(opts.Hooks)
 	h := &Handler{
@@ -452,6 +464,8 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		execConfig:              execCfg,
 		codeExecutionConfig:     codeExecCfg,
 		backgroundProcessConfig: processCfg,
+		webSearchConfig:         webSearchCfg,
+		browserRunConfig:        browserRunCfg,
 		allowedOrigins:          opts.AllowedOrigins,
 		hooks:                   opts.Hooks,
 		presence:                opts.Presence,

@@ -661,6 +661,8 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 		h.rpcWebSearch(ctx, wsc, req)
 	case "web_fetch":
 		h.rpcWebFetch(ctx, wsc, req)
+	case "web_browser_run":
+		h.rpcWebBrowserRun(ctx, wsc, req)
 
 	// ── Cron ──────────────────────────────────────────────────────────────
 	case "cron.list":
@@ -976,6 +978,9 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 	}
 	if caps["web"] {
 		methods = append(methods, "web_search", "web_fetch")
+		if h.browserRunConfig.Enabled {
+			methods = append(methods, "web_browser_run")
+		}
 	}
 	if caps["cron"] {
 		methods = append(methods,

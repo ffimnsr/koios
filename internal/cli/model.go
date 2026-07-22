@@ -196,7 +196,7 @@ func newModelSetCommand(ctx *commandContext) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&provider, "provider", "", "provider to use with the new model")
+	cmd.Flags().StringVar(&provider, "provider", "", "provider to use with the new model: "+config.SupportedLLMProvidersHint())
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "base URL for the provider")
 	return cmd
 }

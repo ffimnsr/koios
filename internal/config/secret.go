@@ -34,6 +34,7 @@ const (
 	hiddenSecretPathTelegramWebhookSecret = "channels.telegram.webhook_secret" // #nosec G101
 	hiddenSecretPathHooksWebhookSecret    = "hooks.webhook_secret"             // #nosec G101
 	hiddenSecretPathHooksWebhookToken     = "hooks.webhook_token"              // #nosec G101
+	hiddenSecretPathBrowserRunAPIToken    = "tools.browser_run.api_token"      // #nosec G101
 )
 
 // Exported field-path constants for use by CLI commands.
@@ -42,6 +43,7 @@ const (
 	HiddenSecretPathTelegramWebhookSecret = hiddenSecretPathTelegramWebhookSecret
 	HiddenSecretPathHooksWebhookSecret    = hiddenSecretPathHooksWebhookSecret
 	HiddenSecretPathHooksWebhookToken     = hiddenSecretPathHooksWebhookToken
+	HiddenSecretPathBrowserRunAPIToken    = hiddenSecretPathBrowserRunAPIToken
 )
 
 // SetHiddenSecret updates the internal hidden-secrets cache so that the next
@@ -198,6 +200,28 @@ func decodeHiddenSecrets(dst *Config, src *fileConfig) error {
 		telegram.WebhookSecret = plaintext
 		dst.setHiddenSecret(hiddenSecretPathTelegramWebhookSecret, raw)
 	}
+	for _, provider := range []struct {
+		name string
+		cfg  *WebSearchProviderConfig
+	}{
+		{name: "brave", cfg: &src.Tools.WebSearch.Brave},
+		{name: "exa", cfg: &src.Tools.WebSearch.Exa},
+		{name: "tavily", cfg: &src.Tools.WebSearch.Tavily},
+	} {
+		path := hiddenSecretPathWebSearchAPIKey(provider.name)
+		if plaintext, raw, err := decodeHiddenSecretValue(provider.cfg.APIKey); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		} else {
+			provider.cfg.APIKey = plaintext
+			dst.setHiddenSecret(path, raw)
+		}
+	}
+	if plaintext, raw, err := decodeHiddenSecretValue(src.Tools.BrowserRun.APIToken); err != nil {
+		return fmt.Errorf("%s: %w", hiddenSecretPathBrowserRunAPIToken, err)
+	} else {
+		src.Tools.BrowserRun.APIToken = plaintext
+		dst.setHiddenSecret(hiddenSecretPathBrowserRunAPIToken, raw)
+	}
 	hooks := &src.Hooks
 	if plaintext, raw, err := decodeHiddenSecretValue(hooks.WebhookSecret); err != nil {
 		return fmt.Errorf("%s: %w", hiddenSecretPathHooksWebhookSecret, err)
@@ -232,6 +256,14 @@ func hiddenSecretPathModelProfileAPIKey(name string) string {
 		return "llm.profiles.api_key"
 	}
 	return "llm.profiles." + trimmed + ".api_key"
+}
+
+func hiddenSecretPathWebSearchAPIKey(provider string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(provider))
+	if trimmed == "" {
+		trimmed = "provider"
+	}
+	return "tools.web_search." + trimmed + ".api_key"
 }
 
 // HiddenSecretFieldPathModelProfileAPIKey returns the canonical hidden-secret

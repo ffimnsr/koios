@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ffimnsr/koios/internal/calendar"
+	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/workflow"
@@ -44,12 +45,8 @@ func configureCLICompletions(root *cobra.Command, ctx *commandContext) {
 		completionItem{value: string(calendar.AgendaScopeThisWeek), description: "this week's agenda"},
 		completionItem{value: string(calendar.AgendaScopeNextConflict), description: "next calendar conflict"},
 	)
-	registerFlagCompletions(findSubcommand(root, "model", "set"), "provider",
-		completionItem{value: "openai", description: "OpenAI-compatible provider"},
-		completionItem{value: "anthropic", description: "Anthropic provider"},
-		completionItem{value: "openrouter", description: "OpenRouter provider"},
-		completionItem{value: "nvidia", description: "NVIDIA NIM provider"},
-	)
+	registerFlagCompletions(findSubcommand(root, "model", "set"), "provider", llmProviderCompletionItems()...)
+	registerFlagCompletions(findSubcommand(root, "peer-llm", "set"), "provider", llmProviderCompletionItems()...)
 
 	registerIDFlagCompletions(findSubcommand(root, "tasks", "get"), ctx, false)
 	registerIDFlagCompletions(findSubcommand(root, "tasks", "update"), ctx, false)
@@ -112,6 +109,24 @@ func registerPeerFlagCompletions(cmd *cobra.Command, ctx *commandContext) {
 	for _, child := range cmd.Commands() {
 		registerPeerFlagCompletions(child, ctx)
 	}
+}
+
+func llmProviderCompletionItems() []completionItem {
+	descriptions := map[string]string{
+		"anthropic":  "Anthropic provider",
+		"gemini":     "Google Gemini provider",
+		"litellm":    "LiteLLM proxy provider",
+		"nvidia":     "NVIDIA NIM provider",
+		"ollama":     "Ollama local provider",
+		"openai":     "OpenAI-compatible provider",
+		"openrouter": "OpenRouter provider",
+		"vllm":       "vLLM local provider",
+	}
+	items := make([]completionItem, 0, len(descriptions))
+	for _, provider := range config.SupportedLLMProviders() {
+		items = append(items, completionItem{value: provider, description: descriptions[provider]})
+	}
+	return items
 }
 
 func registerFlagCompletions(cmd *cobra.Command, flag string, items ...completionItem) {

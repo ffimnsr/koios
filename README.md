@@ -1078,9 +1078,13 @@ The operator CLI exposes the same lifecycle as `koios exec pending`, `koios exec
 {"id":"30","method":"exec.approve","params":{"id":"<approval-id>"}}
 ```
 
-### `web_search` / `web_fetch`
+### `web_search` / `web_fetch` / `web_browser_run`
 
-Search the public web or fetch page content.
+Search the public web, fetch page content, or render JavaScript-heavy pages through Cloudflare Browser Run.
+
+`web_search` uses the configured ordered `[tools.web_search]` providers. Koios currently supports `brave`, `exa`, and `tavily`, and falls back to the next configured provider when an earlier one fails. Provider API keys live under `tools.web_search.<provider>.api_key`.
+
+`web_browser_run` uses `[tools.browser_run]` and supports `content`, `markdown`, `screenshot`, `scrape`, and `json` actions through Cloudflare Browser Run.
 
 ```json
 {"id":"31","method":"web_search","params":{"query":"golang context tutorial","limit":5}}
@@ -1088,6 +1092,10 @@ Search the public web or fetch page content.
 
 ```json
 {"id":"32","method":"web_fetch","params":{"url":"https://example.com"}}
+```
+
+```json
+{"id":"33","method":"web_browser_run","params":{"action":"markdown","url":"https://example.com","options":{"gotoOptions":{"waitUntil":"networkidle0"}}}}
 ```
 
 ---
@@ -1132,23 +1140,49 @@ When workspace is enabled, the agent can call:
 
 ## Providers
 
+Koios currently supports these `provider` values in config and BYOK provider profiles:
+
 | Provider value | Backend | Notes |
 |---|---|---|
 | `openai` | [OpenAI](https://platform.openai.com/) | Default |
-| `anthropic` | [Anthropic](https://www.anthropic.com/) | Requests are translated from OpenAI format automatically |
+| `anthropic` | [Anthropic](https://www.anthropic.com/) | Uses the native Anthropic API |
 | `openrouter` | [OpenRouter](https://openrouter.ai/) | OpenAI-compatible; supports models from many providers |
 | `nvidia` | [NVIDIA NIM](https://build.nvidia.com/) | OpenAI-compatible |
+| `gemini` | [Google Gemini](https://ai.google.dev/) | Uses Gemini's OpenAI-compatible endpoint |
+| `ollama` | [Ollama](https://ollama.com/) | Local provider; no API key required by default |
+| `vllm` | [vLLM](https://github.com/vllm-project/vllm) | Local OpenAI-compatible server |
+| `litellm` | [LiteLLM](https://www.litellm.ai/) | OpenAI-compatible proxy/gateway |
 
-To use a local model served by [Ollama](https://ollama.com/) or another OpenAI-compatible server:
+Example Ollama profile:
 
-```sh
+```toml
 [llm]
 default_profile = "local"
 
 [[llm.profiles]]
 name = "local"
-provider = "openai"
-base_url = "http://localhost:11434/v1"
-api_key = "ollama" # any non-empty value
+provider = "ollama"
+base_url = "http://localhost:11434"
 model = "llama3.2"
+```
+
+Example vLLM profile:
+
+```toml
+[[llm.profiles]]
+name = "vllm-local"
+provider = "vllm"
+base_url = "http://localhost:8000"
+model = "meta-llama/Meta-Llama-3-8B-Instruct"
+```
+
+Example LiteLLM proxy profile:
+
+```toml
+[[llm.profiles]]
+name = "gateway"
+provider = "litellm"
+base_url = "http://localhost:4000"
+api_key = "your-litellm-key"
+model = "gpt-4o"
 ```

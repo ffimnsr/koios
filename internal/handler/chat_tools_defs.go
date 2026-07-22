@@ -1,6 +1,10 @@
 package handler
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/ffimnsr/koios/internal/config"
+)
 
 func mustJSONSchema(v any) json.RawMessage {
 	b, err := json.Marshal(v)
@@ -3236,7 +3240,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name:        "web_search",
-		description: "Search the public web and return result titles, URLs, and snippets.",
+		description: "Search the public web with the configured ordered web search providers and return result titles, URLs, and snippets. Koios falls back to the next provider when an earlier one fails.",
 		parameters: mustJSONSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -3260,6 +3264,26 @@ var toolDefs = []toolDef{
 			"additionalProperties": false,
 		}),
 		argHint: `{"url":"https://example.com"}`,
+	},
+	{
+		name:        "web_browser_run",
+		description: "Render a page through Cloudflare Browser Run and return one of: content, markdown, screenshot, scrape, or json. Use this for JavaScript-heavy pages when plain web_fetch is insufficient.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"action":          map[string]any{"type": "string", "enum": []string{"content", "markdown", "screenshot", "scrape", "json"}},
+				"url":             map[string]any{"type": "string"},
+				"html":            map[string]any{"type": "string"},
+				"elements":        map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"selector": map[string]any{"type": "string"}}, "required": []string{"selector"}, "additionalProperties": false}},
+				"prompt":          map[string]any{"type": "string"},
+				"response_format": map[string]any{"type": "object"},
+				"options":         map[string]any{"type": "object"},
+			},
+			"required":             []string{"action"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"action":"markdown","url":"https://example.com","options":{"gotoOptions":{"waitUntil":"networkidle0"}}}`,
+		available: func(h *Handler) bool { return h.browserRunConfig.Enabled },
 	},
 	// ── workflow.* ────────────────────────────────────────────────────────────
 	{
@@ -3957,7 +3981,7 @@ var toolDefs = []toolDef{
 			"type": "object",
 			"properties": map[string]any{
 				"name":          map[string]any{"type": "string", "description": "Stable alias for this profile, e.g. work-openai"},
-				"provider":      map[string]any{"type": "string", "description": "Provider name: openai | anthropic | openrouter | gemini | nvidia | ollama | vllm | litellm"},
+				"provider":      map[string]any{"type": "string", "description": "Provider name: " + config.SupportedLLMProvidersHint()},
 				"api_key":       map[string]any{"type": "string", "description": "API key for the provider. Empty for local providers like ollama."},
 				"base_url":      map[string]any{"type": "string", "description": "Optional base URL override. Defaults to the provider standard endpoint."},
 				"default_model": map[string]any{"type": "string", "description": "Default model to use with this profile, e.g. gpt-4.1 or claude-sonnet-4-20250514."},

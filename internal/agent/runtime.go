@@ -546,6 +546,7 @@ func NewRuntime(store *session.Store, prov Provider, model string, timeout time.
 		maxToolDefinitions:  24,
 		maxToolResultChars:  4000,
 		defaultMaxSteps:     80,
+		pruneToolMessages:   8,
 	}
 }
 
