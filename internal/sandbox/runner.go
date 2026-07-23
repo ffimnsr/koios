@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,9 +142,7 @@ func (r *Runner) BuildBubblewrapCommand(ctx context.Context, req Request) (*exec
 		"HOME":   "/tmp",
 		"TMPDIR": "/tmp",
 	}
-	for k, v := range req.Env {
-		env[k] = v
-	}
+	maps.Copy(env, req.Env)
 	args = append(args,
 		"--setenv", "PATH", env["PATH"],
 		"--setenv", "HOME", env["HOME"],

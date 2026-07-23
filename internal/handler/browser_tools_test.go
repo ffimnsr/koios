@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 
@@ -913,9 +914,7 @@ func fakeBrowserMergeMap(base map[string]any, patch map[string]any) map[string]a
 	if base == nil {
 		base = map[string]any{}
 	}
-	for key, value := range patch {
-		base[key] = value
-	}
+	maps.Copy(base, patch)
 	return base
 }
 

@@ -89,7 +89,7 @@ func skillReadMsg(t *testing.T, conn *websocket.Conn) skillsRPCMsg {
 func skillReadUntilID(t *testing.T, conn *websocket.Conn, id string) skillsRPCMsg {
 	t.Helper()
 	wantID, _ := json.Marshal(id)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		msg := skillReadMsg(t, conn)
 		if string(msg.ID) == string(wantID) {
 			return msg

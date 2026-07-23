@@ -350,13 +350,7 @@ func (t *Telegram) Shutdown(ctx context.Context) error {
 func (t *Telegram) pollLoop(ctx context.Context) {
 	defer t.wg.Done()
 	offset := int64(0)
-	timeoutSeconds := int(t.cfg.PollTimeout / time.Second)
-	if timeoutSeconds < 1 {
-		timeoutSeconds = 1
-	}
-	if timeoutSeconds > 50 {
-		timeoutSeconds = 50
-	}
+	timeoutSeconds := max(min(int(t.cfg.PollTimeout/time.Second), 50), 1)
 	for {
 		updates, err := t.client.GetUpdates(ctx, t.cfg.BotToken, offset, timeoutSeconds)
 		if err != nil {

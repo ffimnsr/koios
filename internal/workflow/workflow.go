@@ -135,6 +135,6 @@ type Run struct {
 	LastOutput string    `json:"last_output,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	StartedAt  time.Time `json:"started_at"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }

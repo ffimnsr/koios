@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -618,9 +619,7 @@ func (h *Handler) runWebBrowserRunTool(ctx context.Context, p webBrowserRunParam
 		return nil, fmt.Errorf("prompt or response_format is required for json action")
 	}
 	payload := make(map[string]any, len(p.Options)+4)
-	for key, value := range p.Options {
-		payload[key] = value
-	}
+	maps.Copy(payload, p.Options)
 	if strings.TrimSpace(p.URL) != "" {
 		payload["url"] = strings.TrimSpace(p.URL)
 	}

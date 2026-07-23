@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -340,10 +341,8 @@ func writeConfigWithValidation(path string, cfg *config.Config) error {
 }
 
 func appendIfMissing(items []string, value string) []string {
-	for _, item := range items {
-		if item == value {
-			return append([]string(nil), items...)
-		}
+	if slices.Contains(items, value) {
+		return append([]string(nil), items...)
 	}
 	return append(append([]string(nil), items...), value)
 }

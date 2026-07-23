@@ -677,8 +677,8 @@ func TestMarshalOpenAIWireRequestOpenRouterIncludesReasoning(t *testing.T) {
 	if got := reasoning["effort"]; got != "medium" {
 		t.Fatalf("reasoning.effort = %#v, want medium", got)
 	}
-	if got := reasoning["max_tokens"]; got != float64(2048) {
-		t.Fatalf("reasoning.max_tokens = %#v, want 2048", got)
+	if _, ok := reasoning["max_tokens"]; ok {
+		t.Fatalf("reasoning.max_tokens unexpectedly set alongside effort: %#v", reasoning["max_tokens"])
 	}
 	if got, ok := reasoning["enabled"].(bool); !ok || !got {
 		t.Fatalf("reasoning.enabled = %#v, want true", reasoning["enabled"])

@@ -150,11 +150,9 @@ func (s *Scheduler) TriggerRun(ctx context.Context, jobID string) (string, error
 		return "", fmt.Errorf("job %s not found", jobID)
 	}
 	runID := uuid.New().String()
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		s.executeJob(ctx, job, runID)
-	}()
+	})
 	return runID, nil
 }
 
@@ -607,21 +605,9 @@ func isPermanentError(err error) bool {
 // backoffDuration returns the wait duration before the next retry attempt.
 func backoffDuration(consecErrors int, kind ScheduleKind) time.Duration {
 	if kind == KindAt {
-		idx := consecErrors - 1
-		if idx < 0 {
-			idx = 0
-		}
-		if idx >= len(oneshotBackoff) {
-			idx = len(oneshotBackoff) - 1
-		}
+		idx := min(max(consecErrors-1, 0), len(oneshotBackoff)-1)
 		return oneshotBackoff[idx]
 	}
-	idx := consecErrors - 1
-	if idx < 0 {
-		idx = 0
-	}
-	if idx >= len(recurringBackoff) {
-		idx = len(recurringBackoff) - 1
-	}
+	idx := min(max(consecErrors-1, 0), len(recurringBackoff)-1)
 	return recurringBackoff[idx]
 }

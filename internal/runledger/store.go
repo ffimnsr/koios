@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -193,8 +194,7 @@ func (s *Store) List(f Filter, retainFor time.Duration) []Record {
 		cutoff = time.Now().Add(-retainFor)
 	}
 	out := make([]Record, 0, len(s.order))
-	for i := len(s.order) - 1; i >= 0; i-- {
-		id := s.order[i]
+	for _, id := range slices.Backward(s.order) {
 		rec, ok := s.index[id]
 		if !ok {
 			continue

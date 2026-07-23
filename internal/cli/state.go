@@ -147,10 +147,11 @@ func (s *repoState) baseHTTPURL() string {
 
 func (s *repoState) baseWSURL() string {
 	base := s.baseHTTPURL()
-	if strings.HasPrefix(base, "https://") {
-		return "wss://" + strings.TrimPrefix(base, "https://")
+	if rest, ok := strings.CutPrefix(base, "https://"); ok {
+		return "wss://" + rest
 	}
-	return "ws://" + strings.TrimPrefix(base, "http://")
+	rest, _ := strings.CutPrefix(base, "http://")
+	return "ws://" + rest
 }
 
 func (s *repoState) validate() []doctorFinding {

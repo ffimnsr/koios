@@ -75,7 +75,7 @@ func detectMigrations(raw []byte) []configMigration {
 // does NOT appear inside a TOML section header (i.e. not under [something]).
 func hasTopLevelKey(s, key string) bool {
 	inSection := false
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "[") {
 			inSection = true

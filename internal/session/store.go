@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -188,10 +189,7 @@ func (s *Session) appendMsgs(ctx context.Context, peerID string, maxMsgs, compac
 			sysEnd++
 		}
 		excess := len(s.Messages) - maxMsgs
-		cutEnd := sysEnd + excess
-		if cutEnd > len(s.Messages) {
-			cutEnd = len(s.Messages)
-		}
+		cutEnd := min(sysEnd+excess, len(s.Messages))
 		s.Messages = append(s.Messages[:sysEnd], s.Messages[cutEnd:]...)
 	}
 
@@ -690,9 +688,7 @@ func (st *Store) Maintain(now time.Time) MaintenanceReport {
 	report := MaintenanceReport{}
 	st.mu.RLock()
 	loaded := make(map[string]*Session, len(st.peers))
-	for peerID, sess := range st.peers {
-		loaded[peerID] = sess
-	}
+	maps.Copy(loaded, st.peers)
 	st.mu.RUnlock()
 
 	if st.idleResetAfter > 0 || (st.idlePruneAfter > 0 && st.idlePruneKeep > 0) || st.dailyResetMins >= 0 {
@@ -754,9 +750,7 @@ type sessionRecord struct {
 func (st *Store) sessionRecords(now time.Time) []sessionRecord {
 	st.mu.RLock()
 	loaded := make(map[string]*Session, len(st.peers))
-	for peerID, sess := range st.peers {
-		loaded[peerID] = sess
-	}
+	maps.Copy(loaded, st.peers)
 	sessionDir := st.sessionDir
 	st.mu.RUnlock()
 
@@ -844,10 +838,7 @@ func pruneSessionMessages(sess *Session, keep int) bool {
 	if nonSystem <= keep {
 		return false
 	}
-	start := len(sess.Messages) - keep
-	if start < sysEnd {
-		start = sysEnd
-	}
+	start := max(len(sess.Messages)-keep, sysEnd)
 	sess.Messages = append(append([]types.Message(nil), sess.Messages[:sysEnd]...), sess.Messages[start:]...)
 	return true
 }

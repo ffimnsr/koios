@@ -129,6 +129,7 @@
   flex: 1;
   /* Prevent the page from growing past the viewport; messages scroll inside. */
   min-height: 0;
+  text-align: left;
 }
 
 /* ── Chat header ─────────────────────────────────────────────── */
@@ -213,6 +214,24 @@
   align-items: center;
   gap: 8px;
   font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.chat-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-meta-pill {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.2;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent);
 }
 
 .chat-activity {
@@ -308,26 +327,204 @@
 .bubble-assistant { align-self: flex-start; }
 
 .bubble-author {
+  align-self: flex-start;
   font-size: 12px;
   color: var(--text);
   padding: 0 4px;
+  text-align: left;
 }
 
-.bubble-user .bubble-author { text-align: right; }
+.bubble-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.bubble-user .bubble-author {
+  align-self: flex-end;
+  text-align: right;
+}
+
+.bubble-reasoning {
+  align-self: flex-start;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--code-bg) 88%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+}
+
+.bubble-reasoning summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.bubble-reasoning-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.2;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bubble-reasoning-toggle svg {
+  flex-shrink: 0;
+}
+
+.bubble-reasoning-toggle span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bubble-reasoning summary::-webkit-details-marker {
+  display: none;
+}
+
+
+
+.bubble-reasoning-body {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.bubble-reasoning-summary {
+  margin-bottom: 6px;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.bubble-reasoning-body > :first-child {
+  margin-top: 0;
+}
+
+.bubble-reasoning-body > :last-child {
+  margin-bottom: 0;
+}
+
+.bubble-reasoning-body p,
+.bubble-reasoning-body ul,
+.bubble-reasoning-body ol,
+.bubble-reasoning-body pre,
+.bubble-reasoning-body blockquote {
+  margin: 0.5em 0;
+}
 
 .bubble-text {
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 12px 16px;
   border-radius: 12px;
   font-size: 16px;
   line-height: 160%;
-  white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.bubble-text > :first-child {
+  margin-top: 0;
+}
+
+.bubble-text > :last-child {
+  margin-bottom: 0;
+}
+
+.bubble-text p,
+.bubble-text ul,
+.bubble-text ol,
+.bubble-text pre,
+.bubble-text blockquote,
+.bubble-text table,
+.bubble-text hr {
+  margin: 0.75em 0;
+}
+
+.bubble-text ul,
+.bubble-text ol {
+  padding-left: 1.5em;
+}
+
+.bubble-text li + li {
+  margin-top: 0.25em;
+}
+
+.bubble-text blockquote {
+  margin-left: 0;
+  padding-left: 1em;
+  border-left: 3px solid color-mix(in srgb, currentColor 20%, transparent);
+  opacity: 0.9;
+}
+
+.bubble-text pre {
+  overflow-x: auto;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.bubble-text pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+
+.bubble-text code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+.bubble-text :not(pre) > code {
+  padding: 0.12em 0.35em;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.bubble-text a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+.bubble-text table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.bubble-text th,
+.bubble-text td {
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  text-align: left;
 }
 
 .bubble-user .bubble-text {
   background: var(--accent);
   color: #fff;
   border-bottom-right-radius: 4px;
+  text-align: right;
+}
+
+.bubble-assistant .bubble-text,
+.bubble-assistant .bubble-reasoning,
+.bubble-assistant .bubble-reasoning-body {
+  text-align: left;
 }
 
 .bubble-assistant .bubble-text {

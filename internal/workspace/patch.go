@@ -237,8 +237,8 @@ func parsePatch(patchText string) ([]patchOp, error) {
 				if line == "*** End Patch" || strings.HasPrefix(line, "*** Add File: ") || strings.HasPrefix(line, "*** Delete File: ") || strings.HasPrefix(line, "*** Update File: ") {
 					break
 				}
-				if strings.HasPrefix(line, "*** Move to: ") {
-					op.moveTo = strings.TrimSpace(strings.TrimPrefix(line, "*** Move to: "))
+				if rest, ok := strings.CutPrefix(line, "*** Move to: "); ok {
+					op.moveTo = strings.TrimSpace(rest)
 					i++
 					continue
 				}
@@ -300,10 +300,7 @@ func applyPatchHunks(lines []string, hunks []patchHunk) ([]string, int, int, err
 
 		idx := cursor
 		if len(oldSeq) > 0 {
-			start := cursor - len(oldSeq)
-			if start < 0 {
-				start = 0
-			}
+			start := max(cursor-len(oldSeq), 0)
 			idx = indexOfSubslice(updated, oldSeq, start)
 			if idx < 0 {
 				return nil, 0, 0, fmt.Errorf("hunk context not found")

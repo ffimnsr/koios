@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -620,12 +621,7 @@ func completionSuggestions(t *testing.T, dir string, args ...string) []string {
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func TestMemoryGetCommandFormatsProvenance(t *testing.T) {

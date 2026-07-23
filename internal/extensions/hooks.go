@@ -59,7 +59,6 @@ func RegisterHooks(manager *ops.Manager, caller HookToolCaller, manifests []Disc
 		return fmt.Errorf("extension hooks require an MCP tool caller")
 	}
 	for _, discovered := range bindings {
-		discovered := discovered
 		if discovered.Binding.Mode == HookModeIntercept {
 			manager.RegisterInterceptor(discovered.Event, discovered.Binding.Priority, func(ctx context.Context, ev ops.Event) (ops.Event, error) {
 				result, err := caller.CallTool(ctx, discovered.fullToolName(), discovered.payload(ev))

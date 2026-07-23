@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -336,9 +337,9 @@ func isInboxSessionKey(peerID, sessionKey string) bool {
 
 func inboxConversationPeerID(peerID, sessionKey string) string {
 	prefix := strings.TrimSpace(peerID) + "::channel::"
-	trimmedKey := strings.TrimSpace(sessionKey)
-	if strings.HasPrefix(trimmedKey, prefix) {
-		return strings.TrimSpace(strings.TrimPrefix(trimmedKey, prefix))
+	rest, ok := strings.CutPrefix(strings.TrimSpace(sessionKey), prefix)
+	if ok {
+		return strings.TrimSpace(rest)
 	}
 	return ""
 }
@@ -399,8 +400,8 @@ func collectRecentUserPreviews(history []types.Message, limit int) []string {
 }
 
 func lastNonEmptyContent(history []types.Message) string {
-	for i := len(history) - 1; i >= 0; i-- {
-		if content := strings.TrimSpace(history[i].Content); content != "" {
+	for _, msg := range slices.Backward(history) {
+		if content := strings.TrimSpace(msg.Content); content != "" {
 			return content
 		}
 	}

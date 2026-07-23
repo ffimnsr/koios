@@ -486,7 +486,7 @@ func ExtractCandidateInputs(text string) []CandidateInput {
 		return nil
 	}
 	units := make([]string, 0)
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			units = append(units, line)

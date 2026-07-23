@@ -151,7 +151,7 @@ func TestStore_SearchCompact(t *testing.T) {
 	ctx := context.Background()
 
 	longContent := ""
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		longContent += "word "
 	}
 	longContent += "findme searchable content here"

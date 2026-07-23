@@ -79,7 +79,7 @@ func TestListByOwner(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		name := "server_" + string(rune('a'+i))
 		_, err := s.Create(ctx, Input{OwnerPeerID: "bob", Name: name, Transport: "stdio", Command: "echo"})
 		if err != nil {

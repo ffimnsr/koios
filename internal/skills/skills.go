@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -400,8 +401,8 @@ func (m *Manager) buildSnapshot(fingerprint string) (CatalogSnapshot, error) {
 			return group[i].Skill.Path < group[j].Skill.Path
 		})
 		selected := -1
-		for i := len(group) - 1; i >= 0; i-- {
-			if group[i].Status == "active" {
+		for i, g := range slices.Backward(group) {
+			if g.Status == "active" {
 				selected = i
 				break
 			}

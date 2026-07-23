@@ -437,18 +437,17 @@ func isDataURI(s string) bool {
 // Returns empty strings if the URI is malformed.
 func parseDataURI(s string) (mediaType, data string) {
 	// data:<mediatype>;base64,<data>
-	s = strings.TrimPrefix(s, "data:")
-	semicolon := strings.Index(s, ";")
-	if semicolon < 0 {
+	s, ok := strings.CutPrefix(s, "data:")
+	if !ok {
 		return "", ""
 	}
-	mediaType = s[:semicolon]
-	rest := s[semicolon+1:]
-	comma := strings.Index(rest, ",")
-	if comma < 0 {
+	mediaType, rest, ok := strings.Cut(s, ";")
+	if !ok {
 		return "", ""
 	}
-	data = rest[comma+1:]
+	if _, data, ok = strings.Cut(rest, ","); !ok {
+		return "", ""
+	}
 	return mediaType, data
 }
 

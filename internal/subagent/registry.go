@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -80,10 +81,10 @@ type SubTurn struct {
 	Steps            int          `json:"steps,omitempty"`
 	ToolCalls        int          `json:"tool_calls,omitempty"`
 	LastEvent        string       `json:"last_event,omitempty"`
-	LastEventAt      time.Time    `json:"last_event_at,omitempty"`
-	QueuedAt         time.Time    `json:"queued_at,omitempty"`
-	StartedAt        time.Time    `json:"started_at,omitempty"`
-	FinishedAt       time.Time    `json:"finished_at,omitempty"`
+	QueuedAt         time.Time    `json:"queued_at"`
+	StartedAt        time.Time    `json:"started_at"`
+	LastEventAt      time.Time    `json:"last_event_at"`
+	FinishedAt       time.Time    `json:"finished_at"`
 }
 
 // Attachment is carried with a subagent spawn request.
@@ -135,8 +136,8 @@ type RunRecord struct {
 	MaxChildren  int              `json:"max_children,omitempty"`
 	Status       Status           `json:"status"`
 	CreatedAt    time.Time        `json:"created_at"`
-	StartedAt    time.Time        `json:"started_at,omitempty"`
-	FinishedAt   time.Time        `json:"finished_at,omitempty"`
+	StartedAt    time.Time        `json:"started_at"`
+	FinishedAt   time.Time        `json:"finished_at"`
 	FinalReply   string           `json:"final_reply,omitempty"`
 	Error        string           `json:"error,omitempty"`
 	Events       []LifecycleEvent `json:"events,omitempty"`
@@ -401,10 +402,8 @@ func (r *Registry) LinkChild(parentID, childID string) {
 		return
 	}
 	_, _ = r.Update(parentID, func(rec *RunRecord) {
-		for _, existing := range rec.Children {
-			if existing == childID {
-				return
-			}
+		if slices.Contains(rec.Children, childID) {
+			return
 		}
 		rec.Children = append(rec.Children, childID)
 	})

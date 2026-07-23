@@ -11,7 +11,7 @@ import (
 func TestAgentTUIScrollPreservesViewportUntilFollowResumes(t *testing.T) {
 	m := newAgentTUIModel(nil, agentOptions{Peer: "peer-1", Scope: "main"})
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 18})
-	for i := 0; i < 24; i++ {
+	for i := range 24 {
 		m.lines = append(m.lines, chatLine{at: time.Now(), role: "meta", content: fmt.Sprintf("line %02d", i)})
 	}
 	m.syncViewport()

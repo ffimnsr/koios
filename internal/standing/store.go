@@ -52,7 +52,7 @@ type Document struct {
 	Content        string             `json:"content"`
 	DefaultProfile string             `json:"default_profile,omitempty"`
 	Profiles       map[string]Profile `json:"profiles,omitempty"`
-	UpdatedAt      time.Time          `json:"updated_at,omitempty"`
+	UpdatedAt      time.Time          `json:"updated_at"`
 }
 
 type Store struct {

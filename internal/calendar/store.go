@@ -373,10 +373,7 @@ func expandEvents(source Source, parsed []icsEvent, windowStart, windowEnd time.
 	}
 	out := make([]Event, 0, len(masters))
 	for _, item := range masters {
-		duration := item.End.Sub(item.Start)
-		if duration < 0 {
-			duration = 0
-		}
+		duration := max(item.End.Sub(item.Start), 0)
 		if item.RRule == "" && len(item.RDates) == 0 {
 			if eventIntersects(item.Start.Unix(), item.End.Unix(), windowStart.Unix(), windowEnd.Unix()) {
 				out = append(out, buildEvent(source, item, item.Start, item.End))

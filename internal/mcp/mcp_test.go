@@ -415,9 +415,7 @@ func TestSSEClient_CallMu_NoConcurrentPanic(t *testing.T) {
 	panicked := false
 	var panicMu sync.Mutex
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {
 					panicMu.Lock()
@@ -428,7 +426,7 @@ func TestSSEClient_CallMu_NoConcurrentPanic(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			_, _ = c.send(ctx, "tools/list", encodeParams(map[string]any{}))
-		}()
+		})
 	}
 	wg.Wait()
 

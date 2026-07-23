@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -280,11 +281,7 @@ func waitForBackgroundProcessRecord(t *testing.T, ledger *runledger.Store, id st
 	return runledger.Record{}
 }
 
+// containsString reports whether items contains want.
 func containsString(items []string, want string) bool {
-	for _, item := range items {
-		if item == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(items, want)
 }

@@ -49,7 +49,7 @@ func TestDecisionList(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if _, err := s.Record(ctx, "peer1", decisions.Input{
 			Title:    "Decision",
 			Decision: "Choice",

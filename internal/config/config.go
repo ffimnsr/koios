@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,12 +135,7 @@ func SupportedLLMProviders() []string {
 // IsSupportedLLMProvider reports whether name is a runtime-supported provider.
 func IsSupportedLLMProvider(name string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(name))
-	for _, provider := range supportedLLMProviders {
-		if provider == trimmed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(supportedLLMProviders, trimmed)
 }
 
 // SupportedLLMProvidersHint returns the supported providers as human-readable text.
@@ -163,12 +159,7 @@ func SupportedWebSearchProviders() []string {
 // IsSupportedWebSearchProvider reports whether name is a runtime-supported web search provider.
 func IsSupportedWebSearchProvider(name string) bool {
 	trimmed := strings.ToLower(strings.TrimSpace(name))
-	for _, provider := range supportedWebSearchProviders {
-		if provider == trimmed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(supportedWebSearchProviders, trimmed)
 }
 
 // SupportedWebSearchProvidersHint returns the supported web search providers as human-readable text.
@@ -1009,7 +1000,7 @@ func encodeWebSearchSection(cfg *Config, includeAPIKey bool) string {
 	fmt.Fprintf(&b, "enabled = %t\n", cfg.WebSearchEnabled)
 	fmt.Fprintf(&b, "providers = [%s]\n\n", inlineQuotedStringSlice(cfg.WebSearchProviders))
 	encodeWebSearchProviderSection := func(name string, provider RuntimeWebSearchProviderConfig) {
-		b.WriteString("[tools.web_search." + name + "]\n")
+		fmt.Fprintf(&b, "[tools.web_search.%s]\n", name)
 		if provider.APIKey != "" || includeAPIKey {
 			fmt.Fprintf(&b, "api_key = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathWebSearchAPIKey(name), provider.APIKey))
 		}

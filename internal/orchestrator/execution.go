@@ -186,9 +186,7 @@ func (o *Orchestrator) runChild(ctx context.Context, run *Run, req FanOutRequest
 	}
 
 	hedge := task.HedgeCount
-	if hedge < 1 {
-		hedge = 1
-	}
+	hedge = max(hedge, 1)
 
 	var (
 		lastOutcome childOutcome
@@ -286,7 +284,7 @@ func (o *Orchestrator) runChildHedged(ctx context.Context, run *Run, req FanOutR
 	}
 	ch := make(chan result, count)
 
-	for i := 0; i < count; i++ {
+	for range count {
 		go func() {
 			out := o.spawnAndPoll(hedgeCtx, run, req, idx, task)
 			ch <- result{out, out.status == subagent.StatusCompleted}
@@ -410,9 +408,7 @@ func (o *Orchestrator) runDAGWave(
 		localIdx := local
 		task := tasks[local]
 		launched++
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
 			defer func() { completionCh <- localIdx }()
 			defer func() {
@@ -426,7 +422,7 @@ func (o *Orchestrator) runDAGWave(
 				depMu.Unlock()
 			}()
 			o.runChild(ctx, run, req, idx, task)
-		}()
+		})
 	}
 
 	go func() { wg.Wait(); close(completionCh) }()

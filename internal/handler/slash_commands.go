@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -99,9 +100,9 @@ func trimLeadingFields(rest string, count int) string {
 // lastUserText returns the trimmed content of the last user-role message in
 // msgs, or "" if no user message is present.
 func lastUserText(msgs []types.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
-			return strings.TrimSpace(msgs[i].Content)
+	for _, m := range slices.Backward(msgs) {
+		if m.Role == "user" {
+			return strings.TrimSpace(m.Content)
 		}
 	}
 	return ""
@@ -148,7 +149,7 @@ func (h *Handler) handleSlashCommand(ctx context.Context, wsc *wsConn, req *rpcR
 		h.slashProfile(wsc, req, arg)
 		return true
 	case "status":
-		h.slashStatus(wsc, req)
+		h.slashStatus(ctx, wsc, req)
 		return true
 	case "new", "reset":
 		h.slashReset(wsc, req)
@@ -487,43 +488,91 @@ func (h *Handler) slashSandbox(wsc *wsConn, req *rpcRequest, arg string) bool {
 
 // ── /status ───────────────────────────────────────────────────────────────────
 
-func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
-	model := h.model
-	policy := h.store.Policy(wsc.peerID)
-	resolvedProfileName := ""
-	if policy.ModelOverride != "" {
-		model = policy.ModelOverride
-	}
-	if h.standingManager != nil {
-		resolved, err := h.standingManager.ResolveProfile(wsc.peerID, policy.ActiveProfile)
-		if err == nil && resolved != nil {
-			resolvedProfileName = resolved.Name
-		}
-	}
+type slashStatusView struct {
+	model                   string
+	resolvedProviderName    string
+	resolvedProfileName     string
+	providerProfileName     string
+	resolvedProviderProfile string
+	histLen                 int
+}
 
-	histLen := 0
-	if sess := h.store.Get(wsc.peerID); sess != nil {
-		histLen = len(sess.History())
-	}
+func (h *Handler) slashStatus(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	policy := h.store.Policy(wsc.peerID)
+	view := h.resolveSlashStatusView(ctx, wsc.peerID, policy)
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Model: %s\n", model)
-	fmt.Fprintf(&sb, "Session messages: %d\n", histLen)
+	fmt.Fprintf(&sb, "Model: %s\n", view.model)
+	fmt.Fprintf(&sb, "Provider: %s\n", view.resolvedProviderName)
+	fmt.Fprintf(&sb, "Session messages: %d\n", view.histLen)
+	h.appendSlashStatusPolicyLines(&sb, policy, view)
+	h.appendSlashStatusUsageLines(&sb, wsc.peerID)
 
+	b, _ := json.Marshal(h.slashStatusPayload(policy, view))
+	wsc.reply(req.ID, map[string]any{
+		"assistant_text": strings.TrimRight(sb.String(), "\n"),
+		"status":         json.RawMessage(b),
+		"done":           true,
+	})
+}
+
+func (h *Handler) resolveSlashStatusView(ctx context.Context, peerID string, policy session.SessionPolicy) slashStatusView {
+	view := slashStatusView{
+		model:                   h.model,
+		resolvedProviderName:    h.modelCatalog.Provider,
+		providerProfileName:     strings.TrimSpace(policy.ProviderProfile),
+		resolvedProviderProfile: "",
+	}
+	if policy.ModelOverride != "" {
+		view.model = policy.ModelOverride
+	}
+	if h.standingManager != nil {
+		resolved, err := h.standingManager.ResolveProfile(peerID, policy.ActiveProfile)
+		if err == nil && resolved != nil {
+			view.resolvedProfileName = resolved.Name
+		}
+	}
+	resolvedModel, info, viaProfile := h.resolveModelInfo(view.model)
+	if strings.TrimSpace(resolvedModel) != "" {
+		view.model = resolvedModel
+	}
+	if strings.TrimSpace(info.Provider) != "" {
+		view.resolvedProviderName = info.Provider
+	}
+	if view.providerProfileName != "" && h.peerLLMStore != nil {
+		if p, err := h.peerLLMStore.Get(ctx, peerID, view.providerProfileName); err == nil && p != nil {
+			view.resolvedProviderName = p.Provider
+			view.resolvedProviderProfile = view.providerProfileName
+			if strings.TrimSpace(policy.ModelOverride) == "" && strings.TrimSpace(p.DefaultModel) != "" {
+				view.model = strings.TrimSpace(p.DefaultModel)
+			}
+		} else if viaProfile {
+			view.resolvedProviderProfile = info.Name
+		}
+	} else if viaProfile {
+		view.resolvedProviderProfile = info.Name
+	}
+	if sess := h.store.Get(peerID); sess != nil {
+		view.histLen = len(sess.History())
+	}
+	return view
+}
+
+func (h *Handler) appendSlashStatusPolicyLines(sb *strings.Builder, policy session.SessionPolicy, view slashStatusView) {
 	if policy.ThinkLevel != "" {
-		fmt.Fprintf(&sb, "Think level: %s\n", policy.ThinkLevel)
+		fmt.Fprintf(sb, "Think level: %s\n", policy.ThinkLevel)
 	}
 	if policy.ReasoningVisibility != "" {
-		fmt.Fprintf(&sb, "Reasoning visibility: %s\n", reasoningVisibilityLabel(policy.ReasoningVisibility))
+		fmt.Fprintf(sb, "Reasoning visibility: %s\n", reasoningVisibilityLabel(policy.ReasoningVisibility))
 	}
 	if policy.ActivationMode != "" {
-		fmt.Fprintf(&sb, "Session activation: %s\n", policy.ActivationMode)
+		fmt.Fprintf(sb, "Session activation: %s\n", policy.ActivationMode)
 	}
 	if policy.GroupActivationMode != "" {
-		fmt.Fprintf(&sb, "Group activation default: %s\n", policy.GroupActivationMode)
+		fmt.Fprintf(sb, "Group activation default: %s\n", policy.GroupActivationMode)
 	}
 	if policy.ChatActivationMode != "" {
-		fmt.Fprintf(&sb, "Chat activation default: %s\n", policy.ChatActivationMode)
+		fmt.Fprintf(sb, "Chat activation default: %s\n", policy.ChatActivationMode)
 	}
 	if policy.VerboseMode {
 		sb.WriteString("Verbose mode: on\n")
@@ -535,62 +584,71 @@ func (h *Handler) slashStatus(wsc *wsConn, req *rpcRequest) {
 		sb.WriteString("Elevated bash: on\n")
 	}
 	if policy.SessionKind != "" {
-		fmt.Fprintf(&sb, "Session kind: %s\n", policy.SessionKind)
+		fmt.Fprintf(sb, "Session kind: %s\n", policy.SessionKind)
 	}
 	if policy.UsageMode != "" {
-		fmt.Fprintf(&sb, "Usage footer: %s\n", policy.UsageMode)
+		fmt.Fprintf(sb, "Usage footer: %s\n", policy.UsageMode)
 	}
 	if policy.ActiveProfile != "" {
-		fmt.Fprintf(&sb, "Active profile: %s\n", policy.ActiveProfile)
-	} else if resolvedProfileName != "" {
-		fmt.Fprintf(&sb, "Active profile: %s (default)\n", resolvedProfileName)
+		fmt.Fprintf(sb, "Active profile: %s\n", policy.ActiveProfile)
+	} else if view.resolvedProfileName != "" {
+		fmt.Fprintf(sb, "Active profile: %s (default)\n", view.resolvedProfileName)
+	}
+	if view.providerProfileName != "" {
+		fmt.Fprintf(sb, "Provider profile: %s\n", view.providerProfileName)
+	} else if view.resolvedProviderProfile != "" {
+		fmt.Fprintf(sb, "Provider profile: %s (default)\n", view.resolvedProviderProfile)
 	}
 	if policy.QueueMode != "" {
-		fmt.Fprintf(&sb, "Queue mode: %s\n", policy.QueueMode)
+		fmt.Fprintf(sb, "Queue mode: %s\n", policy.QueueMode)
 	}
 	if policy.BlockStream {
 		sb.WriteString("Block streaming: on\n")
 	}
 	if policy.StreamChunkChars > 0 {
-		fmt.Fprintf(&sb, "Stream chunk chars: %d\n", policy.StreamChunkChars)
+		fmt.Fprintf(sb, "Stream chunk chars: %d\n", policy.StreamChunkChars)
 	}
 	if policy.StreamCoalesceMS > 0 {
-		fmt.Fprintf(&sb, "Stream coalesce ms: %d\n", policy.StreamCoalesceMS)
+		fmt.Fprintf(sb, "Stream coalesce ms: %d\n", policy.StreamCoalesceMS)
 	}
+}
 
-	if h.usageStore != nil {
-		if u, ok := h.usageStore.Get(wsc.peerID); ok {
-			fmt.Fprintf(&sb, "Tokens (prompt/completion/total): %d / %d / %d\n",
-				u.PromptTokens, u.CompletionTokens, u.TotalTokens)
-			fmt.Fprintf(&sb, "Turns: %d\n", u.Turns)
-		}
+func (h *Handler) appendSlashStatusUsageLines(sb *strings.Builder, peerID string) {
+	if h.usageStore == nil {
+		return
 	}
+	u, ok := h.usageStore.Get(peerID)
+	if !ok {
+		return
+	}
+	fmt.Fprintf(sb, "Tokens (prompt/completion/total): %d / %d / %d\n", u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+	fmt.Fprintf(sb, "Turns: %d\n", u.Turns)
+}
 
-	b, _ := json.Marshal(map[string]any{
-		"model":                model,
-		"session_messages":     histLen,
-		"active_profile":       policy.ActiveProfile,
-		"resolved_profile":     resolvedProfileName,
-		"queue_mode":           policy.QueueMode,
-		"think_level":          policy.ThinkLevel,
-		"reasoning_visibility": reasoningVisibilityLabel(policy.ReasoningVisibility),
-		"activation_mode":      activationModeLabel(policy.ActivationMode),
-		"group_activation":     activationModeLabel(policy.GroupActivationMode),
-		"chat_activation":      activationModeLabel(policy.ChatActivationMode),
-		"usage_mode":           usageModeLabel(policy.UsageMode),
-		"verbose_mode":         policy.VerboseMode,
-		"trace_mode":           policy.TraceMode,
-		"elevated_bash":        policy.ElevatedBash,
-		"session_kind":         policy.SessionKind,
-		"block_stream":         policy.BlockStream,
-		"stream_chunk_chars":   policy.StreamChunkChars,
-		"stream_coalesce_ms":   policy.StreamCoalesceMS,
-	})
-	wsc.reply(req.ID, map[string]any{
-		"assistant_text": strings.TrimRight(sb.String(), "\n"),
-		"status":         json.RawMessage(b),
-		"done":           true,
-	})
+func (h *Handler) slashStatusPayload(policy session.SessionPolicy, view slashStatusView) map[string]any {
+	return map[string]any{
+		"model":                     view.model,
+		"provider":                  view.resolvedProviderName,
+		"session_messages":          view.histLen,
+		"active_profile":            policy.ActiveProfile,
+		"resolved_profile":          view.resolvedProfileName,
+		"provider_profile":          view.providerProfileName,
+		"resolved_provider_profile": view.resolvedProviderProfile,
+		"queue_mode":                policy.QueueMode,
+		"think_level":               policy.ThinkLevel,
+		"reasoning_visibility":      reasoningVisibilityLabel(policy.ReasoningVisibility),
+		"activation_mode":           activationModeLabel(policy.ActivationMode),
+		"group_activation":          activationModeLabel(policy.GroupActivationMode),
+		"chat_activation":           activationModeLabel(policy.ChatActivationMode),
+		"usage_mode":                usageModeLabel(policy.UsageMode),
+		"verbose_mode":              policy.VerboseMode,
+		"trace_mode":                policy.TraceMode,
+		"elevated_bash":             policy.ElevatedBash,
+		"session_kind":              policy.SessionKind,
+		"block_stream":              policy.BlockStream,
+		"stream_chunk_chars":        policy.StreamChunkChars,
+		"stream_coalesce_ms":        policy.StreamCoalesceMS,
+	}
 }
 
 func (h *Handler) slashProfile(wsc *wsConn, req *rpcRequest, arg string) {
@@ -1807,15 +1865,7 @@ func firstNonEmptySlashValue(values ...string) string {
 // isOwner returns true when h.ownerPeerIDs is empty (no restriction) or when
 // peerID is listed in ownerPeerIDs.
 func (h *Handler) isOwner(peerID string) bool {
-	if len(h.ownerPeerIDs) == 0 {
-		return true
-	}
-	for _, id := range h.ownerPeerIDs {
-		if id == peerID {
-			return true
-		}
-	}
-	return false
+	return len(h.ownerPeerIDs) == 0 || slices.Contains(h.ownerPeerIDs, peerID)
 }
 
 func (h *Handler) slashRestart(wsc *wsConn, req *rpcRequest) {

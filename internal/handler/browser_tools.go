@@ -608,9 +608,9 @@ func parseBrowserSnapshotAttributes(suffix string) map[string]any {
 		if token == "" {
 			continue
 		}
-		if idx := strings.IndexByte(token, '='); idx >= 0 {
-			key := strings.TrimSpace(token[:idx])
-			value := strings.TrimSpace(token[idx+1:])
+		if before, after, ok := strings.Cut(token, "="); ok {
+			key := strings.TrimSpace(before)
+			value := strings.TrimSpace(after)
 			if key == "" {
 				continue
 			}

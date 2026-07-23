@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -50,9 +51,7 @@ func cloneWorkflow(wf *Workflow) *Workflow {
 			cp.Steps[i] = step
 			if len(step.Headers) > 0 {
 				cp.Steps[i].Headers = make(map[string]string, len(step.Headers))
-				for k, v := range step.Headers {
-					cp.Steps[i].Headers[k] = v
-				}
+				maps.Copy(cp.Steps[i].Headers, step.Headers)
 			}
 		}
 	}
@@ -66,9 +65,7 @@ func cloneRun(run *Run) *Run {
 	cp := *run
 	if len(run.StepResults) > 0 {
 		cp.StepResults = make(map[string]StepResult, len(run.StepResults))
-		for k, v := range run.StepResults {
-			cp.StepResults[k] = v
-		}
+		maps.Copy(cp.StepResults, run.StepResults)
 	} else {
 		cp.StepResults = make(map[string]StepResult)
 	}
@@ -193,10 +190,7 @@ func (r *Runner) execute(ctx context.Context, wf *Workflow, run *Run) {
 
 	stepIdx := buildStepIndex(wf)
 	// Cap iterations to prevent infinite loops from circular step graphs.
-	maxIter := len(wf.Steps) * 3
-	if maxIter < 20 {
-		maxIter = 20
-	}
+	maxIter := max(len(wf.Steps)*3, 20)
 
 	for i := 0; i < maxIter; i++ {
 		select {

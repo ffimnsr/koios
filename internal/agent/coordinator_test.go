@@ -81,10 +81,8 @@ func TestCoordinator_SerializesRunsPerSession(t *testing.T) {
 	coord := agent.NewCoordinator(rt)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			_, err := coord.Run(context.Background(), agent.RunRequest{
 				PeerID:   "peer",
 				Scope:    agent.ScopeMain,
@@ -93,7 +91,7 @@ func TestCoordinator_SerializesRunsPerSession(t *testing.T) {
 			if err != nil {
 				t.Errorf("Run: %v", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if maxSeen != 1 {

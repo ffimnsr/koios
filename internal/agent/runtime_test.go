@@ -1,9 +1,11 @@
 package agent_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -95,9 +97,9 @@ func (s *stubProvider) Capabilities(string) types.ProviderCapabilities {
 	return s.caps
 }
 
-func mustRawJSON(t *testing.T, raw string) json.RawMessage {
+func mustObjectJSON(t *testing.T) json.RawMessage {
 	t.Helper()
-	return json.RawMessage(raw)
+	return json.RawMessage(`{"type":"object"}`)
 }
 
 func TestRuntime_DirectScopeUsesSenderSession(t *testing.T) {
@@ -229,6 +231,42 @@ func TestRuntime_RetryStatusCodeFilter(t *testing.T) {
 	}
 }
 
+func TestRuntime_LogsProviderOnInvoke(t *testing.T) {
+	store := session.New(20)
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(oldLogger)
+
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}, nil
+		},
+		caps: types.ProviderCapabilities{Name: "openrouter"},
+	}
+	model := "demo-model"
+	rt := agent.NewRuntime(store, prov, model, time.Second, agent.RetryPolicy{MaxAttempts: 1})
+
+	if _, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "agent: invoking llm") {
+		t.Fatalf("expected llm invoke log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "provider=openrouter") {
+		t.Fatalf("expected provider name in log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "model="+model) {
+		t.Fatalf("expected model name in log, got %q", logOutput)
+	}
+}
+
 func TestRuntime_UsesResolvedProviderCapabilitiesForToolSupport(t *testing.T) {
 	store := session.New(20)
 	globalProv := &stubProvider{
@@ -260,7 +298,7 @@ func TestRuntime_UsesResolvedProviderCapabilitiesForToolSupport(t *testing.T) {
 			Function: types.ToolFunction{
 				Name:        "task.create",
 				Description: "create a task",
-				Parameters:  mustRawJSON(t, `{"type":"object"}`),
+				Parameters:  mustObjectJSON(t),
 			},
 		}},
 	}
@@ -308,9 +346,9 @@ func TestRuntime_UsesContextualToolSelectionLimits(t *testing.T) {
 		},
 		contextDefs: func(_, _, _ string, _ []types.Message, maxDefinitions int) []types.Tool {
 			all := []types.Tool{
-				{Type: "function", Function: types.ToolFunction{Name: "tool.search", Parameters: mustRawJSON(t, `{"type":"object"}`)}},
-				{Type: "function", Function: types.ToolFunction{Name: "calendar.today", Parameters: mustRawJSON(t, `{"type":"object"}`)}},
-				{Type: "function", Function: types.ToolFunction{Name: "task.list", Parameters: mustRawJSON(t, `{"type":"object"}`)}},
+				{Type: "function", Function: types.ToolFunction{Name: "tool.search", Parameters: mustObjectJSON(t)}},
+				{Type: "function", Function: types.ToolFunction{Name: "calendar.today", Parameters: mustObjectJSON(t)}},
+				{Type: "function", Function: types.ToolFunction{Name: "task.list", Parameters: mustObjectJSON(t)}},
 			}
 			return append([]types.Tool(nil), all[:maxDefinitions]...)
 		},
@@ -364,7 +402,7 @@ func TestRuntime_TruncatesLargeToolResultsInActiveContext(t *testing.T) {
 		},
 		defs: []types.Tool{{
 			Type:     "function",
-			Function: types.ToolFunction{Name: "workspace.read", Parameters: mustRawJSON(t, `{"type":"object"}`)},
+			Function: types.ToolFunction{Name: "workspace.read", Parameters: mustObjectJSON(t)},
 		}},
 	}
 	_, err := rt.Run(context.Background(), agent.RunRequest{

@@ -311,13 +311,13 @@ func (h *Handler) rpcCronList(_ context.Context, wsc *wsConn, req *rpcRequest) {
 }
 
 type cronCreateParams struct {
-	Name           string                   `json:"name"`
-	Description    string                   `json:"description,omitempty"`
-	Schedule       scheduler.Schedule       `json:"schedule"`
-	Payload        scheduler.Payload        `json:"payload"`
-	Dispatch       scheduler.DispatchPolicy `json:"dispatch,omitempty"`
-	Enabled        *bool                    `json:"enabled,omitempty"`
-	DeleteAfterRun *bool                    `json:"delete_after_run,omitempty"`
+	Name           string                    `json:"name"`
+	Description    string                    `json:"description,omitempty"`
+	Schedule       scheduler.Schedule        `json:"schedule"`
+	Payload        scheduler.Payload         `json:"payload"`
+	Dispatch       *scheduler.DispatchPolicy `json:"dispatch,omitempty"`
+	Enabled        *bool                     `json:"enabled,omitempty"`
+	DeleteAfterRun *bool                     `json:"delete_after_run,omitempty"`
 }
 
 func (h *Handler) rpcCronCreate(_ context.Context, wsc *wsConn, req *rpcRequest) {
@@ -354,9 +354,11 @@ func (h *Handler) rpcCronCreate(_ context.Context, wsc *wsConn, req *rpcRequest)
 		Description:    p.Description,
 		Schedule:       p.Schedule,
 		Payload:        p.Payload,
-		Dispatch:       p.Dispatch,
 		Enabled:        enabled,
 		DeleteAfterRun: deleteAfterRun,
+	}
+	if p.Dispatch != nil {
+		job.Dispatch = *p.Dispatch
 	}
 	nextRun, err := scheduler.CalcInitialNextRun(job, h.sched.CronParser())
 	if err != nil {

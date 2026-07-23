@@ -208,9 +208,7 @@ func (h *Handler) startCodeExecutionJob(ctx context.Context, peerID string, prep
 	h.codeExecutionRunsMu.Lock()
 	h.codeExecutionRuns[id] = runCancel
 	h.codeExecutionRunsMu.Unlock()
-	h.dispatchWG.Add(1)
-	go func() {
-		defer h.dispatchWG.Done()
+	h.dispatchWG.Go(func() {
 		defer func() {
 			h.codeExecutionRunsMu.Lock()
 			delete(h.codeExecutionRuns, id)
@@ -260,7 +258,7 @@ func (h *Handler) startCodeExecutionJob(ctx context.Context, peerID string, prep
 		}); err != nil {
 			slog.Debug("code_execution: failed to mark run finished", "id", id, "error", err)
 		}
-	}()
+	})
 	return map[string]any{
 		"id":              id,
 		"kind":            string(runledger.KindCodeExecution),

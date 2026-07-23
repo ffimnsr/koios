@@ -95,14 +95,11 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	for _, s := range servers {
-		s := s
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := m.connectServer(ctx, s); err != nil {
 				slog.Warn("mcp: server init failed", "server", s.name, "err", err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	return nil

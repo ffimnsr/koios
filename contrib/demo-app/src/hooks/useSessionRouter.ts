@@ -29,10 +29,15 @@ export interface RuntimeEvent {
   kind: string
   session_key?: string
   message?: string
+  content?: string
   attempt?: number
   step?: number
   count?: number
   error?: string
+  provider?: string
+  model?: string
+  profile?: string
+  provider_profile?: string
 }
 
 export interface SessionPushMessage {
@@ -44,6 +49,12 @@ export interface SessionMessageEvent {
   peer_id?: string
   source?: string
   message?: SessionPushMessage
+}
+
+export interface SessionPatchParams {
+  session_key?: string
+  think_level?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+  reasoning_visibility?: 'off' | 'summary' | 'full'
 }
 
 interface Pending {
@@ -186,6 +197,11 @@ export function useSessionRouter(wsUrl: string) {
 
   const resetSession = useCallback(() => call('session.reset'), [call])
 
+  const patchSession = useCallback(
+    (params: SessionPatchParams) => call('session.patch', params) as Promise<{ ok: boolean }>,
+    [call],
+  )
+
   const onSessionMessage = useCallback((listener: (event: SessionMessageEvent) => void) => {
     sessionMessageListenersRef.current.add(listener)
     return () => {
@@ -193,5 +209,5 @@ export function useSessionRouter(wsUrl: string) {
     }
   }, [])
 
-  return { connState, sendChat, resetSession, onSessionMessage }
+  return { connState, sendChat, resetSession, patchSession, onSessionMessage }
 }

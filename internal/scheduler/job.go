@@ -92,7 +92,7 @@ type Job struct {
 	Description    string         `json:"description,omitempty"`
 	Schedule       Schedule       `json:"schedule"`
 	Payload        Payload        `json:"payload"`
-	Dispatch       DispatchPolicy `json:"dispatch,omitempty"`
+	Dispatch       DispatchPolicy `json:"dispatch"`
 	Enabled        bool           `json:"enabled"`
 	DeleteAfterRun bool           `json:"delete_after_run"`
 	NextRunAt      time.Time      `json:"next_run_at"`

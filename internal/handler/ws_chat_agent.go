@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -195,8 +196,8 @@ func attachFilesToLastUserMessage(msgs []types.Message, files []FileAttachment) 
 	}
 	// Find the last user message.
 	lastIdx := -1
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == "user" {
+	for i, m := range slices.Backward(msgs) {
+		if m.Role == "user" {
 			lastIdx = i
 			break
 		}

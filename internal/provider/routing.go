@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/ffimnsr/koios/internal/config"
@@ -210,8 +211,7 @@ func (rp *RoutingProvider) buildChain(req *types.ChatRequest) []modelEntry {
 // threshold, signalling a "lightweight" query that doesn't need a powerful model.
 func isSimpleRequest(req *types.ChatRequest, threshold int) bool {
 	// Walk backwards to find the last user message.
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		m := req.Messages[i]
+	for _, m := range slices.Backward(req.Messages) {
 		if m.Role != "user" {
 			continue
 		}

@@ -15,7 +15,6 @@ func (h *Handler) activeDefs(peerID, sessionKey, activeProfile string) []toolDef
 	active := builtInTools.ActiveDefs(h, policy)
 	if h.pluginRegistry != nil {
 		for _, tool := range h.pluginRegistry.Tools() {
-			tool := tool
 			if tool.Available != nil && !tool.Available(h) {
 				continue
 			}
@@ -35,7 +34,6 @@ func (h *Handler) activeDefs(peerID, sessionKey, activeProfile string) []toolDef
 	// User-managed MCP tools are only visible to their owning peer.
 	if h.mcpManager != nil {
 		for _, mt := range h.mcpManager.ListTools() {
-			mt := mt
 			// User-managed servers are tagged with Kind="user" and
 			// ProfileName=ownerPeerID. Non-owners cannot see these tools.
 			if mt.Kind == "user" && mt.ProfileName != "" && mt.ProfileName != peerID {
@@ -107,10 +105,16 @@ func (h *Handler) toolPromptForDefs(peerID, sessionKey, activeProfile string, de
 		browserLine = "Active browser profile: " + browserProfile + "\n"
 	}
 
-	domainSection := "### Tools by Domain\n"
+	var domainBuilder strings.Builder
+	domainBuilder.WriteString("### Tools by Domain\n")
 	for _, domain := range domains {
-		domainSection += "**" + domain + "**: " + strings.Join(toolsByDomain[domain], ", ") + "\n"
+		domainBuilder.WriteString("**")
+		domainBuilder.WriteString(domain)
+		domainBuilder.WriteString("**: ")
+		domainBuilder.WriteString(strings.Join(toolsByDomain[domain], ", "))
+		domainBuilder.WriteString("\n")
 	}
+	domainSection := domainBuilder.String()
 
 	return "You can use server-side tools to take actions for the current peer.\n" +
 		"Current peer_id: " + peerID + "\n" +
@@ -302,10 +306,7 @@ func toolDomainHints(keywords []string) map[string]int {
 
 func recentToolNames(messages []types.Message) map[string]struct{} {
 	out := make(map[string]struct{})
-	start := len(messages) - 8
-	if start < 0 {
-		start = 0
-	}
+	start := max(len(messages)-8, 0)
 	for _, msg := range messages[start:] {
 		for _, tc := range msg.ToolCalls {
 			if strings.TrimSpace(tc.Function.Name) != "" {

@@ -12,16 +12,27 @@ tasks:
           go install golang.org/x/tools/cmd/goimports@latest
           go install honnef.co/go/tools/cmd/staticcheck@latest
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          go install golang.org/x/tools/gopls@latest
     description: Install tools that are needed for development
   dev:
     commands:
-      - command: go run .
+      - command: go run . serve
         retrigger: true
     description: Run the application in development mode
+  dev-fe:
+    commands:
+      - |
+        cd contrib/demo-app
+        pnpm run dev
+    description: Run the test application frontend
   build:
     commands:
       - command: go build ./...
     description: Build and compile the code
+  check:
+    commands:
+      - find . -name '*.go' -print0 | xargs -0 -n1 gopls check -severity=hint
+    description: Check all files for needed update
   format:
     commands:
       - command: go fmt ./...

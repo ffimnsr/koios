@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"maps"
+
 	"github.com/ffimnsr/koios/internal/channels"
 )
 
@@ -36,9 +38,7 @@ func (h *Handler) runMessageTool(ctx context.Context, peerID string, args messag
 		return nil, fmt.Errorf("subject_id or conversation_id is required")
 	}
 	messageMetadata := make(map[string]any, len(args.Metadata)+1)
-	for key, value := range args.Metadata {
-		messageMetadata[key] = value
-	}
+	maps.Copy(messageMetadata, args.Metadata)
 	messageMetadata["source_peer_id"] = strings.TrimSpace(peerID)
 	receipt, err := h.channelManager.SendMessage(ctx, channelID, channels.OutboundTarget{
 		SubjectID:      subjectID,

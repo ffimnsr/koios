@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -202,14 +203,10 @@ func (r *pluginRegistry) Merge(other *pluginRegistry) error {
 	}
 	other.mu.RLock()
 	plugins := make(map[string]pluginDescriptor, len(other.plugins))
-	for id, descriptor := range other.plugins {
-		plugins[id] = descriptor
-	}
+	maps.Copy(plugins, other.plugins)
 	toolOrder := append([]string(nil), other.toolOrder...)
 	tools := make(map[string]pluginTool, len(other.tools))
-	for name, tool := range other.tools {
-		tools[name] = tool
-	}
+	maps.Copy(tools, other.tools)
 	hooks := append([]pluginHookRegistration(nil), other.hooks...)
 	interceptors := append([]pluginInterceptorRegistration(nil), other.interceptors...)
 	other.mu.RUnlock()
@@ -229,9 +226,7 @@ func (r *pluginRegistry) Merge(other *pluginRegistry) error {
 			return fmt.Errorf("plugin tool %q already registered", name)
 		}
 	}
-	for id, descriptor := range plugins {
-		r.plugins[id] = descriptor
-	}
+	maps.Copy(r.plugins, plugins)
 	for _, name := range toolOrder {
 		r.tools[name] = tools[name]
 		r.toolOrder = append(r.toolOrder, name)

@@ -50,7 +50,7 @@ func TestStore_PruneKeepsSystemMessages(t *testing.T) {
 	peer := "p"
 
 	st.Append(peer, types.Message{Role: "system", Content: "sys"})
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		st.Append(peer,
 			types.Message{Role: "user", Content: "u"},
 			types.Message{Role: "assistant", Content: "a"},
@@ -130,12 +130,12 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 	const ops = 100
 
 	var wg sync.WaitGroup
-	for i := 0; i < peers; i++ {
+	for i := range peers {
 		peerID := string(rune('a'+i)) + "_peer"
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			for j := 0; j < ops; j++ {
+			for range ops {
 				st.Append(id, types.Message{Role: "user", Content: "msg"})
 				_ = st.Get(id).History()
 			}
@@ -255,7 +255,7 @@ func TestStore_Compaction(t *testing.T) {
 		Compactor:        comp,
 	})
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		st.Append("peer", types.Message{Role: "user", Content: fmt.Sprintf("msg%d", i)})
 	}
 
@@ -284,7 +284,7 @@ func TestStore_CompactionPersistReload(t *testing.T) {
 		CompactReserve:   1,
 		Compactor:        comp,
 	})
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		st.Append("carol", types.Message{Role: "user", Content: fmt.Sprintf("m%d", i)})
 	}
 
@@ -310,7 +310,7 @@ func TestStore_CompactionFlushesMemory(t *testing.T) {
 		Compactor:               comp,
 		CompactionMemoryFlusher: flush,
 	})
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		st.Append("peer", types.Message{Role: "user", Content: fmt.Sprintf("m%d", i)})
 	}
 	if flush.calls != 1 {
@@ -339,7 +339,7 @@ func TestStore_CompactionFlushesMemoryBeforeCompactor(t *testing.T) {
 		Compactor:               comp,
 		CompactionMemoryFlusher: flush,
 	})
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		st.Append("peer", types.Message{Role: "user", Content: fmt.Sprintf("m%d", i)})
 	}
 	if comp.calls != 1 {

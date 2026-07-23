@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -154,8 +155,8 @@ func (m *Manager) Start(ctx context.Context) error {
 	started := make([]Channel, 0, len(channels))
 	for _, ch := range channels {
 		if err := ch.Start(ctx); err != nil {
-			for i := len(started) - 1; i >= 0; i-- {
-				_ = started[i].Shutdown(ctx)
+			for _, s := range slices.Backward(started) {
+				_ = s.Shutdown(ctx)
 			}
 			return fmt.Errorf("start channel %q: %w", ch.ID(), err)
 		}
@@ -172,9 +173,9 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	channels := append([]Channel(nil), m.channels...)
 	m.mu.RUnlock()
 	var errs []string
-	for i := len(channels) - 1; i >= 0; i-- {
-		if err := channels[i].Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", channels[i].ID(), err))
+	for _, ch := range slices.Backward(channels) {
+		if err := ch.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", ch.ID(), err))
 		}
 	}
 	if len(errs) > 0 {

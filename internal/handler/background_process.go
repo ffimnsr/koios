@@ -300,8 +300,7 @@ func backgroundProcessResult(proc *managedBackgroundProcess, finishedAt time.Tim
 		result["exit_code"] = 0
 		return result, runledger.StatusCompleted, ""
 	}
-	var exitErr *exec.ExitError
-	if errors.As(waitErr, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](waitErr); ok {
 		exitCode := exitErr.ExitCode()
 		result["exit_code"] = exitCode
 		if proc.wasStopRequested() {

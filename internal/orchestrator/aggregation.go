@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"strings"
 	"time"
@@ -165,9 +166,7 @@ func (o *Orchestrator) aggregateVote(ctx context.Context, run *Run, req FanOutRe
 		}
 		if !joined {
 			clusterCentroid := make(map[string]float64, len(v))
-			for k, val := range v {
-				clusterCentroid[k] = val
-			}
+			maps.Copy(clusterCentroid, v)
 			clusters = append(clusters, cluster{indices: []int{i}, centroid: clusterCentroid})
 		}
 	}

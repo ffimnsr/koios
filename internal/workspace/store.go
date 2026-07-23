@@ -273,12 +273,12 @@ func (m *Manager) Edit(peerID, relPath, oldText, newText string, replaceAll bool
 		}
 		updated = strings.ReplaceAll(original, oldText, newText)
 	} else {
-		idx := strings.Index(original, oldText)
-		if idx < 0 {
+		before, after, ok := strings.Cut(original, oldText)
+		if !ok {
 			return nil, fmt.Errorf("old_text not found")
 		}
 		replacements = 1
-		updated = original[:idx] + newText + original[idx+len(oldText):]
+		updated = before + newText + after
 	}
 	if len(updated) > m.maxFileBytes {
 		return nil, fmt.Errorf("edited content exceeds max bytes %d", m.maxFileBytes)
@@ -660,11 +660,4 @@ func compileTextMatcher(pattern string, caseSensitive, useRegexp bool) (func(str
 		}
 		return idx + 1, true
 	}, nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

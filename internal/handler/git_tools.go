@@ -334,13 +334,13 @@ func parseGitStatus(repoRoot, out string) (map[string]any, error) {
 	unstagedCount := 0
 	untrackedCount := 0
 	ignoredCount := 0
-	for _, raw := range strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n") {
+	for raw := range strings.SplitSeq(strings.ReplaceAll(out, "\r\n", "\n"), "\n") {
 		line := strings.TrimRight(raw, "\r")
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "## ") {
-			head, upstream, ahead, behind, detached = parseGitBranchSummary(strings.TrimPrefix(line, "## "))
+		if rest, ok := strings.CutPrefix(line, "## "); ok {
+			head, upstream, ahead, behind, detached = parseGitBranchSummary(rest)
 			if !detached {
 				branch = head
 			}
@@ -404,26 +404,26 @@ func parseGitStatus(repoRoot, out string) (map[string]any, error) {
 func parseGitBranchSummary(summary string) (branch string, upstream string, ahead int, behind int, detached bool) {
 	headPart := summary
 	statusPart := ""
-	if idx := strings.Index(summary, "["); idx >= 0 {
-		headPart = strings.TrimSpace(summary[:idx])
-		statusPart = strings.TrimSuffix(strings.TrimSpace(summary[idx+1:]), "]")
+	if before, after, ok := strings.Cut(summary, "["); ok {
+		headPart = strings.TrimSpace(before)
+		statusPart = strings.TrimSuffix(strings.TrimSpace(after), "]")
 	}
-	if idx := strings.Index(headPart, "..."); idx >= 0 {
-		branch = strings.TrimSpace(headPart[:idx])
-		upstream = strings.TrimSpace(headPart[idx+3:])
+	if before, after, ok := strings.Cut(headPart, "..."); ok {
+		branch = strings.TrimSpace(before)
+		upstream = strings.TrimSpace(after)
 	} else {
 		branch = strings.TrimSpace(headPart)
 	}
 	if branch == "HEAD" || strings.HasPrefix(branch, "HEAD ") {
 		detached = true
 	}
-	for _, item := range strings.Split(statusPart, ",") {
-		part := strings.TrimSpace(item)
-		if strings.HasPrefix(part, "ahead ") {
-			ahead, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(part, "ahead ")))
+	for part := range strings.SplitSeq(statusPart, ",") {
+		part = strings.TrimSpace(part)
+		if rest, ok := strings.CutPrefix(part, "ahead "); ok {
+			ahead, _ = strconv.Atoi(strings.TrimSpace(rest))
 		}
-		if strings.HasPrefix(part, "behind ") {
-			behind, _ = strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(part, "behind ")))
+		if rest, ok := strings.CutPrefix(part, "behind "); ok {
+			behind, _ = strconv.Atoi(strings.TrimSpace(rest))
 		}
 	}
 	return branch, upstream, ahead, behind, detached
@@ -431,7 +431,7 @@ func parseGitBranchSummary(summary string) (branch string, upstream string, ahea
 
 func parseGitLog(out string) []map[string]any {
 	items := make([]map[string]any, 0)
-	for _, raw := range strings.Split(out, "\x1e") {
+	for raw := range strings.SplitSeq(out, "\x1e") {
 		record := strings.TrimSpace(raw)
 		if record == "" {
 			continue
@@ -469,7 +469,7 @@ func listGitBranches(ctx context.Context, repoRoot string, all bool) ([]map[stri
 		return nil, "", false, err
 	}
 	branches := make([]map[string]any, 0)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -533,7 +533,7 @@ func extractPatchedFiles(patch string) []string {
 		seen[path] = struct{}{}
 		files = append(files, path)
 	}
-	for _, line := range strings.Split(strings.ReplaceAll(patch, "\r\n", "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.ReplaceAll(patch, "\r\n", "\n"), "\n") {
 		if strings.HasPrefix(line, "diff --git ") {
 			parts := strings.Fields(line)
 			if len(parts) >= 4 {
@@ -541,8 +541,8 @@ func extractPatchedFiles(patch string) []string {
 			}
 			continue
 		}
-		if strings.HasPrefix(line, "+++ ") {
-			appendPath(strings.TrimSpace(strings.TrimPrefix(line, "+++ ")))
+		if rest, ok := strings.CutPrefix(line, "+++ "); ok {
+			appendPath(strings.TrimSpace(rest))
 		}
 	}
 	return files

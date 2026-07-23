@@ -440,7 +440,7 @@ func detectCycle(n int, adj [][]int) bool {
 		color[v] = black
 		return false
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if color[i] == white && dfs(i) {
 			return true
 		}

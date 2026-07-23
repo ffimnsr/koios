@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -111,20 +112,23 @@ const (
 
 // Event is a structured runtime event.
 type Event struct {
-	Kind       EventKind `json:"kind"`
-	At         time.Time `json:"at,omitempty"`
-	SessionKey string    `json:"session_key,omitempty"`
-	Message    string    `json:"message,omitempty"`
-	Content    string    `json:"content,omitempty"`
-	Provider   string    `json:"provider,omitempty"`
-	Attempt    int       `json:"attempt,omitempty"`
-	Step       int       `json:"step,omitempty"`
-	Count      int       `json:"count,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	ToolName   string    `json:"tool_name,omitempty"`
-	Summary    string    `json:"summary,omitempty"`
-	DurationMs int64     `json:"duration_ms,omitempty"`
-	OK         *bool     `json:"ok,omitempty"`
+	Kind            EventKind `json:"kind"`
+	At              time.Time `json:"at,omitempty"`
+	SessionKey      string    `json:"session_key,omitempty"`
+	Message         string    `json:"message,omitempty"`
+	Content         string    `json:"content,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	Profile         string    `json:"profile,omitempty"`
+	ProviderProfile string    `json:"provider_profile,omitempty"`
+	Attempt         int       `json:"attempt,omitempty"`
+	Step            int       `json:"step,omitempty"`
+	Count           int       `json:"count,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	ToolName        string    `json:"tool_name,omitempty"`
+	Summary         string    `json:"summary,omitempty"`
+	DurationMs      int64     `json:"duration_ms,omitempty"`
+	OK              *bool     `json:"ok,omitempty"`
 }
 
 // Result contains the outcome of a run.
@@ -133,7 +137,7 @@ type Result struct {
 	Attempts                   int                         `json:"attempts"`
 	AssistantText              string                      `json:"assistant_text,omitempty"`
 	Response                   *types.ChatResponse         `json:"response,omitempty"`
-	Usage                      types.Usage                 `json:"usage,omitempty"`
+	Usage                      types.Usage                 `json:"usage"`
 	Steps                      int                         `json:"steps"`
 	Events                     []Event                     `json:"events,omitempty"`
 	SuppressedReply            bool                        `json:"suppressed_reply,omitempty"`
@@ -593,10 +597,12 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	}
 	sessionKey := rt.sessionKey(req)
 
+	policy := rt.sessionPolicy(sessionKey)
+
 	// Apply session-persisted model override; it takes precedence over the
 	// runtime default but yields to an explicit per-request Model value.
 	if req.Model == rt.model {
-		if policy := rt.sessionPolicy(sessionKey); policy.ModelOverride != "" {
+		if policy.ModelOverride != "" {
 			req.Model = policy.ModelOverride
 		}
 	}
@@ -618,8 +624,17 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	reqCopy.SessionKey = sessionKey
 	reqCopy.Messages = append([]types.Message(nil), req.Messages...)
 	runStartedAt := time.Now().UTC()
+	resolvedProvider := providerNameForLog(rt.providerForContext(ctx), req.Model)
 	rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventSessionKey, SessionKey: sessionKey})
-	rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunStart, SessionKey: sessionKey, At: runStartedAt})
+	rt.emitEvent(result, reqCopy.EventSink, Event{
+		Kind:            EventRunStart,
+		SessionKey:      sessionKey,
+		At:              runStartedAt,
+		Provider:        resolvedProvider,
+		Model:           req.Model,
+		Profile:         req.ActiveProfile,
+		ProviderProfile: policy.ProviderProfile,
+	})
 	if reqCopy.Timeout <= 0 {
 		reqCopy.Timeout = rt.defaultTimeout
 	}
@@ -854,7 +869,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 					if toolCalls := nativeToolCalls(resp); len(toolCalls) > 0 {
 						baseAssistantMsg, _ := assistantMessage(assistantText, resp)
 						for _, tc := range toolCalls {
-							assistantToolMsg, toolResultMsg, execErr, meta := rt.executeToolCall(toolExecCtx, reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, step, assistantText, baseAssistantMsg, tc, reqCopy.EventSink, result)
+							assistantToolMsg, toolResultMsg, meta, execErr := rt.executeToolCall(toolExecCtx, reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, step, assistantText, baseAssistantMsg, tc, reqCopy.EventSink, result)
 							workingMessages = append(workingMessages, assistantToolMsg, toolResultMsg)
 							updatePendingMutatingToolFailure(result, normalizeToolCall(reqCopy.ToolExecutor, reqCopy.PeerID, tc), meta, step)
 							if execErr != nil {
@@ -880,7 +895,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						break
 					}
 					if ok {
-						assistantToolMsg, toolResultMsg, execErr, meta := rt.executeToolCall(toolExecCtx, reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, step, assistantText, types.Message{Role: "assistant", Content: assistantText}, *call, reqCopy.EventSink, result)
+						assistantToolMsg, toolResultMsg, meta, execErr := rt.executeToolCall(toolExecCtx, reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, step, assistantText, types.Message{Role: "assistant", Content: assistantText}, *call, reqCopy.EventSink, result)
 						workingMessages = append(workingMessages, assistantToolMsg, toolResultMsg)
 						updatePendingMutatingToolFailure(result, normalizeToolCall(reqCopy.ToolExecutor, reqCopy.PeerID, *call), meta, step)
 						if execErr != nil {
@@ -1008,6 +1023,13 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 	}); err != nil {
 		return "", nil, err
 	}
+	slog.Info("agent: invoking llm",
+		"session", CurrentSessionKey(ctx),
+		"provider", providerNameForLog(prov, req.Model),
+		"model", req.Model,
+		"stream", stream,
+		"messages", len(req.Messages),
+	)
 	var text string
 	var resp *types.ChatResponse
 	var callErr error
@@ -1740,12 +1762,7 @@ func containsHTTPStatusCode(msg string, code int) bool {
 	fields := strings.FieldsFunc(msg, func(r rune) bool {
 		return r < '0' || r > '9'
 	})
-	for _, field := range fields {
-		if field == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(fields, target)
 }
 
 const (
@@ -1818,7 +1835,7 @@ func (rt *Runtime) formatToolResult(name string, result any, err error) string {
 	}
 	preview, marshalErr := json.Marshal(summary)
 	if marshalErr != nil {
-		preview = []byte(fmt.Sprintf(`{"ok":false,"truncated":true,"original_chars":%d,"preview_head":%q,"preview_tail":%q}`, len(encoded), head, tail))
+		preview = fmt.Appendf(nil, `{"ok":false,"truncated":true,"original_chars":%d,"preview_head":%q,"preview_tail":%q}`, len(encoded), head, tail)
 	}
 	return fmt.Sprintf("[tool_result %s]\n%s", name, string(preview))
 }
@@ -1946,7 +1963,7 @@ func toolLikelyMutating(name string) bool {
 	return false
 }
 
-func (rt *Runtime) executeToolCall(ctx context.Context, exec ToolExecutor, peerID, sessionKey string, step int, assistantText string, baseAssistant types.Message, call ToolCall, eventSink func(Event), result *Result) (types.Message, types.Message, error, ToolResultMetadata) {
+func (rt *Runtime) executeToolCall(ctx context.Context, exec ToolExecutor, peerID, sessionKey string, step int, assistantText string, baseAssistant types.Message, call ToolCall, eventSink func(Event), result *Result) (types.Message, types.Message, ToolResultMetadata, error) {
 	call = normalizeToolCall(exec, peerID, call)
 	assistantMsg := toolAssistantMessage(baseAssistant, assistantText, call)
 	mutatesState := toolMutatesState(exec, peerID, call.Name)
@@ -2012,7 +2029,7 @@ func (rt *Runtime) executeToolCall(ctx context.Context, exec ToolExecutor, peerI
 	}
 	ok := execErr == nil
 	rt.emitEvent(result, eventSink, Event{Kind: EventToolResult, SessionKey: sessionKey, Step: step, Message: call.Name, ToolName: call.Name, Summary: summarizeToolResult(toolResult, execErr), DurationMs: durationMS, OK: &ok})
-	return assistantMsg, types.Message{Role: "tool", ToolCallID: call.ID, Content: rt.formatToolResult(call.Name, toolResult, execErr)}, execErr, meta
+	return assistantMsg, types.Message{Role: "tool", ToolCallID: call.ID, Content: rt.formatToolResult(call.Name, toolResult, execErr)}, meta, execErr
 }
 
 func providerCapabilitiesFor(prov Provider, model string) types.ProviderCapabilities {
@@ -2020,6 +2037,14 @@ func providerCapabilitiesFor(prov Provider, model string) types.ProviderCapabili
 		return caps.Capabilities(model)
 	}
 	return types.ProviderCapabilities{}
+}
+
+func providerNameForLog(prov Provider, model string) string {
+	name := strings.TrimSpace(providerCapabilitiesFor(prov, model).Name)
+	if name != "" {
+		return name
+	}
+	return fmt.Sprintf("%T", prov)
 }
 
 func suppressSilentReply(assistantText string, resp *types.ChatResponse) (string, *types.ChatResponse, bool, string) {

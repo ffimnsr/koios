@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -154,6 +155,8 @@ func SplitMessages(msgs []types.Message) (sys, turns []types.Message) {
 
 // Build assembles a request from system messages, stored history, new turns,
 // and optional long-term memory injection.
+//
+//nolint:gocyclo // The assembly path is intentionally linear so injection, pruning, and budgeting stay ordered and easy to audit.
 func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	if err := ValidateMessages(opts.Messages); err != nil {
 		return nil, err
@@ -407,10 +410,7 @@ func EstimateRequestTokens(req *types.ChatRequest) (tokens int, bytes int) {
 	if bytes <= 0 {
 		return 0, 0
 	}
-	tokens = (bytes + 3) / 4
-	if tokens < 1 {
-		tokens = 1
-	}
+	tokens = max((bytes+3)/4, 1)
 	return tokens, bytes
 }
 
@@ -592,10 +592,8 @@ func collectToolBlocks(history []types.Message) [][]int {
 }
 
 func appendUniqueIndex(indexes []int, idx int) []int {
-	for _, existing := range indexes {
-		if existing == idx {
-			return indexes
-		}
+	if slices.Contains(indexes, idx) {
+		return indexes
 	}
 	return append(indexes, idx)
 }

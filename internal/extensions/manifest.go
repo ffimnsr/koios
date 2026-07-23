@@ -2,8 +2,10 @@ package extensions
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -209,12 +211,7 @@ func (d DiscoveredManifest) Enabled() bool {
 
 func (d DiscoveredManifest) HasCapability(name string) bool {
 	want := strings.ToLower(strings.TrimSpace(name))
-	for _, capability := range d.Manifest.Capabilities {
-		if capability == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(d.Manifest.Capabilities, want)
 }
 
 func (d DiscoveredManifest) MCPServerConfig() (config.MCPServerConfig, bool, error) {
@@ -666,12 +663,7 @@ func validateChannelBinding(binding ChannelBinding, path string) error {
 }
 
 func hasCapability(capabilities []string, target string) bool {
-	for _, capability := range capabilities {
-		if capability == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(capabilities, target)
 }
 
 func validateMCPServer(server config.MCPServerConfig, path string) error {
@@ -696,8 +688,6 @@ func cloneStringMap(src map[string]string) map[string]string {
 		return nil
 	}
 	dst := make(map[string]string, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
+	maps.Copy(dst, src)
 	return dst
 }

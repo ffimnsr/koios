@@ -258,8 +258,7 @@ func applyOpenAICompatibleReasoning(providerName string, req *types.ChatRequest,
 		wire.Reasoning = &openRouterReasoning{Enabled: &enabled}
 		if req.ReasoningEffort != "" {
 			wire.Reasoning.Effort = req.ReasoningEffort
-		}
-		if req.ReasoningBudget > 0 {
+		} else if req.ReasoningBudget > 0 {
 			wire.Reasoning.MaxTokens = req.ReasoningBudget
 		}
 	case "gemini":
@@ -788,10 +787,7 @@ func firstInlineThoughtOpenTag(text string, tags []string) (int, string) {
 func longestInlineThoughtPrefixSuffix(text string, tags []string) int {
 	best := 0
 	for _, tag := range tags {
-		max := len(tag) - 1
-		if max > len(text) {
-			max = len(text)
-		}
+		max := min(len(tag)-1, len(text))
 		for n := max; n > best; n-- {
 			if strings.EqualFold(text[len(text)-n:], tag[:n]) {
 				best = n
@@ -1258,6 +1254,7 @@ func (p *openAIProvider) completeChatCompletionsStream(ctx context.Context, req 
 	return sb.String(), nil
 }
 
+//nolint:gocyclo // This SSE state machine mirrors OpenAI Responses protocol events and is kept linear for correctness.
 func (p *openAIProvider) completeResponsesStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
 	streamCtx, cancel := newStreamContext(ctx)
 	defer cancel(nil)
@@ -1308,14 +1305,14 @@ func (p *openAIProvider) completeResponsesStream(ctx context.Context, req *types
 	for scanner.Scan() {
 		touch()
 		line := scanner.Text()
-		if strings.HasPrefix(line, "event: ") {
-			eventType = strings.TrimPrefix(line, "event: ")
+		if rest, ok := strings.CutPrefix(line, "event: "); ok {
+			eventType = rest
 			continue
 		}
-		if !strings.HasPrefix(line, "data: ") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
 			continue
 		}
-		payload := strings.TrimPrefix(line, "data: ")
 		if payload == "[DONE]" {
 			break
 		}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -191,7 +192,7 @@ func readMsg(t *testing.T, conn *websocket.Conn) rpcMsg {
 func readUntilID(t *testing.T, conn *websocket.Conn, id string) rpcMsg {
 	t.Helper()
 	wantID, _ := json.Marshal(id)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		msg := readMsg(t, conn)
 		if string(msg.ID) == string(wantID) {
 			return msg
@@ -205,7 +206,7 @@ func readFramesUntilID(t *testing.T, conn *websocket.Conn, id string) []rpcMsg {
 	t.Helper()
 	wantID, _ := json.Marshal(id)
 	var msgs []rpcMsg
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		msg := readMsg(t, conn)
 		msgs = append(msgs, msg)
 		if string(msg.ID) == string(wantID) {
@@ -229,10 +230,5 @@ func readResultFromFrames(t *testing.T, frames []rpcMsg, id string) rpcMsg {
 }
 
 func contains(items []string, want string) bool {
-	for _, item := range items {
-		if item == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(items, want)
 }

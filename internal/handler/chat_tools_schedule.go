@@ -51,9 +51,11 @@ func (h *Handler) createCronJob(peerID string, p cronCreateParams) (*scheduler.J
 		Description:    p.Description,
 		Schedule:       p.Schedule,
 		Payload:        p.Payload,
-		Dispatch:       p.Dispatch,
 		Enabled:        enabled,
 		DeleteAfterRun: deleteAfterRun,
+	}
+	if p.Dispatch != nil {
+		job.Dispatch = *p.Dispatch
 	}
 	nextRun, err := scheduler.CalcInitialNextRun(job, h.sched.CronParser())
 	if err != nil {

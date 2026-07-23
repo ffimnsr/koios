@@ -389,8 +389,7 @@ func (h *Handler) executeCommand(ctx context.Context, peerID, command, workdir s
 	timedOut := errors.Is(runCtx.Err(), context.DeadlineExceeded)
 
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			exitCode = exitErr.ExitCode()
 		} else if timedOut {
 			exitCode = -1
