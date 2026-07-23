@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.18] - 2026-07-23
+
+### Added
+
+- fix all gopls check warnings (`41c5aa2`)
+
 ## [0.7.17] - 2026-07-23
 
 ### Fixed
@@ -383,7 +389,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.17...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.18...HEAD
+[0.7.18]: https://github.com/ffimnsr/koios/releases/tag/v0.7.18
 [0.7.17]: https://github.com/ffimnsr/koios/releases/tag/v0.7.17
 [0.7.16]: https://github.com/ffimnsr/koios/releases/tag/v0.7.16
 [0.7.15]: https://github.com/ffimnsr/koios/releases/tag/v0.7.15
