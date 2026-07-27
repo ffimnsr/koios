@@ -396,14 +396,14 @@ func TestWS_ServerCapabilities(t *testing.T) {
 	if !containsString(result.Methods, "server.capabilities") || !containsString(result.Methods, "cron.create") {
 		t.Fatalf("expected methods to include server.capabilities and cron.create, got %#v", result.Methods)
 	}
-	if !containsString(result.Methods, "session.history") {
-		t.Fatalf("expected methods to include session.history, got %#v", result.Methods)
+	if !containsString(result.Methods, "session.history") || !containsString(result.Methods, "session.status") {
+		t.Fatalf("expected methods to include session.history and session.status, got %#v", result.Methods)
 	}
 	if !containsString(result.ChatTools, "cron.create") || !containsString(result.ChatTools, "time.now") {
 		t.Fatalf("expected chat tools to include cron.create and time.now, got %#v", result.ChatTools)
 	}
-	if !containsString(result.ChatTools, "session.history") {
-		t.Fatalf("expected chat tools to include session.history, got %#v", result.ChatTools)
+	if !containsString(result.ChatTools, "session.history") || !containsString(result.ChatTools, "session.status") {
+		t.Fatalf("expected chat tools to include session.history and session.status, got %#v", result.ChatTools)
 	}
 	if result.Idempotency.ParamsField != "idempotency_key" {
 		t.Fatalf("expected idempotency params_field, got %#v", result.Idempotency)
@@ -416,7 +416,67 @@ func TestWS_ServerCapabilities(t *testing.T) {
 	}
 }
 
-func TestWS_ServerCapabilities_WorkspaceMethods(t *testing.T) {
+func TestWS_SessionStatus(t *testing.T) {
+	store := session.New(10)
+	if err := store.SetPolicy("alice::sender::bob", session.SessionPolicy{
+		ModelOverride:             "review",
+		LLMRouteKey:               "openai|https://api.example.test|review-model",
+		LLMProvider:               "openai",
+		LLMModel:                  "review-model",
+		OpenAIPreviousResponseID:  "resp_prev",
+		OpenAICoveredMessages:     3,
+		OpenAICoveredMessagesHash: "hash_prev",
+	}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	store.Append("alice::sender::bob", types.Message{Role: "user", Content: "hello"})
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	coord := agent.NewCoordinator(rt)
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   coord,
+		ModelCatalog: handler.ModelCatalog{
+			Provider: "openai",
+			BaseURL:  "https://api.example.test",
+			Profiles: []handler.ModelProfileInfo{{
+				Name:     "review",
+				Provider: "anthropic",
+				Model:    "review-model",
+				BaseURL:  "https://anthropic.example.test",
+			}},
+		},
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "session-status-1", "session.status", map[string]any{"session_key": "alice::sender::bob"})
+	msg := readUntilID(t, conn, "session-status-1")
+	if msg.Error != nil {
+		t.Fatalf("unexpected error: %v", msg.Error)
+	}
+	var result struct {
+		SessionKey string `json:"session_key"`
+		Model      struct {
+			SelectedModel string `json:"selected_model"`
+			Provider      string `json:"provider"`
+		} `json:"model"`
+		SessionRoute struct {
+			LLMRouteKey string `json:"llm_route_key"`
+		} `json:"session_route"`
+	}
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.SessionKey != "alice::sender::bob" || result.Model.SelectedModel != "review-model" || result.Model.Provider != "anthropic" || result.SessionRoute.LLMRouteKey != "openai|https://api.example.test|review-model" {
+		t.Fatalf("unexpected session.status rpc result: %#v", result)
+	}
+}
+
+func TestWS_ServerCapabilitiesWithWorkspace(t *testing.T) {
 	store := session.New(10)
 	prov := &stubProvider{response: &types.ChatResponse{}}
 	wsStore, err := workspace.New(t.TempDir(), true, 1024)

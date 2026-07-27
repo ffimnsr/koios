@@ -110,6 +110,8 @@ var supportedLLMProviders = []string{
 	"nvidia",
 	"ollama",
 	"openai",
+	"openai-compatible",
+	"opencode-go",
 	"openrouter",
 	"vllm",
 }
@@ -142,6 +144,15 @@ func IsSupportedLLMProvider(name string) bool {
 // SupportedLLMProvidersHint returns the supported providers as human-readable text.
 func SupportedLLMProvidersHint() string {
 	return strings.Join(supportedLLMProviders, ", ")
+}
+
+func requiresExplicitLLMBaseURL(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "openai-compatible":
+		return true
+	default:
+		return false
+	}
 }
 
 // IsLocalLLMProvider reports whether the provider typically runs locally and can omit an API key.
@@ -2459,6 +2470,9 @@ func validate(cfg *Config) error {
 		if strings.TrimSpace(profile.Model) == "" {
 			return fmt.Errorf("llm.profiles[%d].model must not be empty", i)
 		}
+		if requiresExplicitLLMBaseURL(profile.Provider) && strings.TrimSpace(profile.BaseURL) == "" {
+			return fmt.Errorf("llm.profiles[%d].base_url is required for provider %q", i, profile.Provider)
+		}
 		normalizedKeys, err := NormalizeLLMAPIKeys(profile.APIKey, profile.APIKeys)
 		if err != nil {
 			return fmt.Errorf("llm.profiles[%d]: %w", i, err)
@@ -2509,6 +2523,9 @@ func validate(cfg *Config) error {
 	}
 	if !IsSupportedLLMProvider(cfg.Provider) {
 		return fmt.Errorf("unsupported llm.provider %q: must be one of %s", cfg.Provider, SupportedLLMProvidersHint())
+	}
+	if requiresExplicitLLMBaseURL(cfg.Provider) && strings.TrimSpace(cfg.BaseURL) == "" {
+		return fmt.Errorf("llm.base_url is required for provider %q", cfg.Provider)
 	}
 	if cfg.MaxSessionMessages < 1 {
 		return fmt.Errorf("session.max_messages must be >= 1")

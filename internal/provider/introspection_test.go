@@ -54,7 +54,7 @@ func TestOpenAIListModels(t *testing.T) {
 }
 
 func TestProviderNewOpenAICompatibleIntrospection(t *testing.T) {
-	providers := []string{"openai", "openrouter", "nvidia", "ollama", "vllm", "litellm", "gemini"}
+	providers := []string{"openai", "openrouter", "openai-compatible", "opencode-go", "nvidia", "ollama", "vllm", "litellm", "gemini"}
 
 	for _, providerName := range providers {
 		providerName := providerName
@@ -132,6 +132,14 @@ func TestProviderNewOpenAICompatibleIntrospection(t *testing.T) {
 				if catalog.Inspection.CatalogMode != "normalized_openai_compatible_catalog" {
 					t.Fatalf("unexpected openrouter catalog inspection: %#v", catalog.Inspection)
 				}
+			case "openai-compatible":
+				if catalog.Inspection.Family != "openai_compatible_generic" || catalog.Inspection.Interface != "openai_compatible" || catalog.Endpoint != "/v1/models" {
+					t.Fatalf("unexpected generic openai-compatible catalog inspection: %#v", catalog)
+				}
+			case "opencode-go":
+				if catalog.Inspection.Family != "opencode_go" || catalog.Inspection.Interface != "openai_compatible" || catalog.Endpoint != "/v1/models" {
+					t.Fatalf("unexpected opencode-go catalog inspection: %#v", catalog)
+				}
 			case "nvidia", "ollama", "vllm", "litellm":
 				if catalog.Inspection.Interface != "openai_compatible" || catalog.Endpoint != "/v1/models" {
 					t.Fatalf("unexpected openai-compatible catalog inspection for %q: %#v", providerName, catalog)
@@ -166,6 +174,19 @@ func TestProviderNewOpenAICompatibleIntrospection(t *testing.T) {
 				t.Fatalf("status.Inspection.SupportsUsage = true for unsupported provider %q", providerName)
 			}
 		})
+	}
+}
+
+func TestNewGenericOpenAICompatibleRequiresBaseURL(t *testing.T) {
+	_, err := New(&config.Config{
+		Provider:       "openai-compatible",
+		APIKey:         "test-key",
+		Model:          "compat-model",
+		RequestTimeout: time.Second,
+		LLMIdleTimeout: time.Second,
+	})
+	if err == nil || err.Error() != `provider "openai-compatible" requires base_url` {
+		t.Fatalf("expected base_url requirement error, got %v", err)
 	}
 }
 

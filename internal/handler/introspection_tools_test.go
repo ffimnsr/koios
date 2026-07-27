@@ -289,7 +289,15 @@ func TestRunToolsExposeWorkflowRuns(t *testing.T) {
 
 func TestUsageAndModelTools(t *testing.T) {
 	store := session.New(10)
-	if err := store.SetPolicy("alice", session.SessionPolicy{ModelOverride: "review"}); err != nil {
+	if err := store.SetPolicy("alice", session.SessionPolicy{
+		ModelOverride:             "review",
+		LLMRouteKey:               "openai|https://api.example.test|review-model",
+		LLMProvider:               "openai",
+		LLMModel:                  "review-model",
+		OpenAIPreviousResponseID:  "resp_prev",
+		OpenAICoveredMessages:     4,
+		OpenAICoveredMessagesHash: "hash_prev",
+	}); err != nil {
 		t.Fatalf("SetPolicy: %v", err)
 	}
 	usageStore := usage.New()
@@ -362,12 +370,12 @@ func TestUsageAndModelTools(t *testing.T) {
 		t.Fatalf("expected configured models in model.list, got %s", string(listRaw))
 	}
 
-	capsAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{Name: "model.capabilities", Arguments: json.RawMessage(`{"model":"review"}`)})
+	capsAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{Name: "model.capabilities", Arguments: json.RawMessage(`{"model":"review","session_key":"alice"}`)})
 	if err != nil {
 		t.Fatalf("ExecuteTool(model.capabilities): %v", err)
 	}
 	capsRaw, _ := json.Marshal(capsAny)
-	if !strings.Contains(string(capsRaw), `"resolved_model":"review-model"`) || !strings.Contains(string(capsRaw), `"requires_max_tokens":true`) {
+	if !strings.Contains(string(capsRaw), `"resolved_model":"review-model"`) || !strings.Contains(string(capsRaw), `"requires_max_tokens":true`) || !strings.Contains(string(capsRaw), `"llm_route_key":"openai|https://api.example.test|review-model"`) || !strings.Contains(string(capsRaw), `"openai_replay_state_available":true`) {
 		t.Fatalf("expected review profile capabilities, got %s", string(capsRaw))
 	}
 
@@ -376,7 +384,7 @@ func TestUsageAndModelTools(t *testing.T) {
 		t.Fatalf("ExecuteTool(model.route): %v", err)
 	}
 	routeRaw, _ := json.Marshal(routeAny)
-	if !strings.Contains(string(routeRaw), `"selected_model":"review-model"`) || !strings.Contains(string(routeRaw), `"reason":"session_override"`) {
+	if !strings.Contains(string(routeRaw), `"selected_model":"review-model"`) || !strings.Contains(string(routeRaw), `"reason":"session_override"`) || !strings.Contains(string(routeRaw), `"llm_route_key":"openai|https://api.example.test|review-model"`) || !strings.Contains(string(routeRaw), `"openai_replay_state_available":true`) {
 		t.Fatalf("expected session override routing, got %s", string(routeRaw))
 	}
 

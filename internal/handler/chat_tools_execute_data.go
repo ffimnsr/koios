@@ -91,6 +91,37 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			"count":       len(history),
 			"messages":    history,
 		}, nil
+	case "session.status":
+		var args struct {
+			SessionKey string `json:"session_key"`
+			RunID      string `json:"run_id"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		targetSessionKey := peerID
+		resolvedRunID := ""
+		if strings.TrimSpace(args.RunID) != "" {
+			if h.subRuntime == nil {
+				return nil, fmt.Errorf("sub-sessions are not enabled")
+			}
+			rec, ok := h.subRuntime.Get(strings.TrimSpace(args.RunID))
+			if !ok || rec.PeerID != peerID {
+				return nil, fmt.Errorf("run %s not found", args.RunID)
+			}
+			targetSessionKey = rec.SessionKey
+			resolvedRunID = rec.ID
+		} else if k := strings.TrimSpace(args.SessionKey); k != "" {
+			if k != peerID && !strings.HasPrefix(k, peerID+"::") {
+				return nil, fmt.Errorf("session_key %q is not accessible to peer %q", k, peerID)
+			}
+			targetSessionKey = k
+		}
+		policy := h.store.Policy(targetSessionKey)
+		historyCount := len(h.store.Get(targetSessionKey).History())
+		return h.sessionStatusPayload(ctx, peerID, targetSessionKey, resolvedRunID, policy, historyCount), nil
 	case "bookmark.create":
 		var args struct {
 			Title            string   `json:"title"`

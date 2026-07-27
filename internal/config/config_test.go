@@ -322,9 +322,32 @@ func TestValidateAcceptsAllSupportedLLMProviders(t *testing.T) {
 		cfg := Default()
 		cfg.Provider = provider
 		cfg.ModelProfiles = []ModelProfile{{Name: "default", Provider: provider, Model: "test-model"}}
+		if provider == "openai-compatible" {
+			cfg.BaseURL = "https://compat.example.test/v1"
+			cfg.ModelProfiles[0].BaseURL = "https://compat.example.test/v1"
+		}
 		if err := validate(cfg); err != nil {
 			t.Fatalf("validate(%q): %v", provider, err)
 		}
+	}
+}
+
+func TestValidateRejectsGenericOpenAICompatibleProviderWithoutBaseURL(t *testing.T) {
+	cfg := Default()
+	cfg.Provider = "openai-compatible"
+	cfg.ModelProfiles = []ModelProfile{{Name: "default", Provider: "openai-compatible", Model: "test-model", BaseURL: "https://compat.example.test/v1"}}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "llm.base_url") {
+		t.Fatalf("expected llm.base_url validation error, got %v", err)
+	}
+}
+
+func TestValidateRejectsGenericOpenAICompatibleProfileWithoutBaseURL(t *testing.T) {
+	cfg := Default()
+	cfg.ModelProfiles = []ModelProfile{{Name: "default", Provider: "openai-compatible", Model: "test-model"}}
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "llm.profiles[0].base_url") {
+		t.Fatalf("expected llm.profiles[0].base_url validation error, got %v", err)
 	}
 }
 

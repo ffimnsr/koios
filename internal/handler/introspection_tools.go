@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/provider"
 	"github.com/ffimnsr/koios/internal/runledger"
+	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -1104,13 +1106,106 @@ func (h *Handler) modelCapabilitiesPayload(model, providerName string) map[strin
 	}
 }
 
+func sessionRouteStatusPayload(policy session.SessionPolicy) map[string]any {
+	return map[string]any{
+		"llm_route_key": policy.LLMRouteKey,
+		"llm_provider":  policy.LLMProvider,
+		"llm_model":     policy.LLMModel,
+		"provider_owned_state": map[string]any{
+			"openai_previous_response_id":   policy.OpenAIPreviousResponseID,
+			"openai_covered_messages":       policy.OpenAICoveredMessages,
+			"openai_covered_messages_hash":  policy.OpenAICoveredMessagesHash,
+			"openai_replay_state_available": strings.TrimSpace(policy.OpenAIPreviousResponseID) != "",
+		},
+	}
+}
+
+func (h *Handler) resolveSessionModelStatus(ctx context.Context, peerID string, policy session.SessionPolicy) map[string]any {
+	modelOverride := strings.TrimSpace(policy.ModelOverride)
+	providerProfile := strings.TrimSpace(policy.ProviderProfile)
+	resolvedModel, info, viaProfile := h.resolveModelInfo(modelOverride)
+	providerName := info.Provider
+	if providerName == "" {
+		providerName = h.modelCatalog.Provider
+	}
+	baseURL := firstNonEmpty(info.BaseURL, h.modelCatalog.BaseURL)
+	matchedProfile := ""
+	reason := "default"
+	if modelOverride != "" {
+		reason = "model_override"
+		if viaProfile {
+			matchedProfile = info.Name
+		}
+	}
+	if providerProfile != "" && h.peerLLMStore != nil && strings.TrimSpace(peerID) != "" {
+		if p, err := h.peerLLMStore.Get(ctx, peerID, providerProfile); err == nil && p != nil {
+			providerName = p.Provider
+			baseURL = p.BaseURL
+			matchedProfile = providerProfile
+			if modelOverride != "" {
+				resolvedModel = modelOverride
+				reason = "provider_profile+model_override"
+			} else {
+				resolvedModel = strings.TrimSpace(p.DefaultModel)
+				if resolvedModel == "" {
+					resolvedModel = providerProfile
+				}
+				reason = "provider_profile"
+			}
+		} else if modelOverride == "" {
+			reason = "provider_profile_fallback"
+		}
+	}
+	return map[string]any{
+		"model_override":   modelOverride,
+		"provider_profile": providerProfile,
+		"selected_model":   resolvedModel,
+		"matched_profile":  matchedProfile,
+		"provider":         providerName,
+		"base_url":         baseURL,
+		"reason":           reason,
+		"capabilities":     h.modelCapabilitiesPayload(resolvedModel, providerName),
+		"default_model":    h.model,
+		"default_profile":  h.modelCatalog.DefaultProfile,
+		"fallback_models":  append([]string(nil), h.modelCatalog.FallbackModels...),
+	}
+}
+
+func (h *Handler) sessionStatusPayload(ctx context.Context, peerID, sessionKey, runID string, policy session.SessionPolicy, historyCount int) map[string]any {
+	payload := map[string]any{
+		"peer_id":              peerID,
+		"session_key":          sessionKey,
+		"message_count":        historyCount,
+		"reply_back":           policy.ReplyBack,
+		"usage_mode":           usageModeLabel(policy.UsageMode),
+		"active_profile":       policy.ActiveProfile,
+		"browser_profile":      policy.BrowserProfile,
+		"queue_mode":           firstNonEmpty(policy.QueueMode, agent.QueueModeSteer),
+		"think_level":          firstNonEmpty(policy.ThinkLevel, "off"),
+		"reasoning_visibility": firstNonEmpty(policy.ReasoningVisibility, "off"),
+		"block_stream":         policy.BlockStream,
+		"stream_chunk_chars":   policy.StreamChunkChars,
+		"stream_coalesce_ms":   policy.StreamCoalesceMS,
+		"session_kind":         policy.SessionKind,
+		"model":                h.resolveSessionModelStatus(ctx, peerID, policy),
+		"session_route":        sessionRouteStatusPayload(policy),
+	}
+	if strings.TrimSpace(runID) != "" {
+		payload["run_id"] = strings.TrimSpace(runID)
+	}
+	return payload
+}
+
 func (h *Handler) modelCapabilities(ctx context.Context, peerID, model, sessionKey string) (map[string]any, error) {
 	if strings.TrimSpace(sessionKey) != "" && !sessionKeyOwnedByPeer(peerID, sessionKey) {
 		return nil, fmt.Errorf("session_key must belong to this peer")
 	}
 	requested := strings.TrimSpace(model)
+	var policy session.SessionPolicy
+	if strings.TrimSpace(sessionKey) != "" {
+		policy = h.store.Policy(sessionKey)
+	}
 	if requested == "" && strings.TrimSpace(sessionKey) != "" {
-		policy := h.store.Policy(sessionKey)
 		requested = strings.TrimSpace(policy.ModelOverride)
 		// If no model override, check provider_profile for a BYOK default.
 		if requested == "" {
@@ -1141,12 +1236,16 @@ func (h *Handler) modelCapabilities(ctx context.Context, peerID, model, sessionK
 		}
 	}
 
-	return map[string]any{
+	result := map[string]any{
 		"requested_model": requested,
 		"resolved_model":  resolvedModel,
 		"matched_profile": matchedProfile,
 		"capabilities":    h.modelCapabilitiesPayload(resolvedModel, providerName),
-	}, nil
+	}
+	if strings.TrimSpace(sessionKey) != "" {
+		result["session_route"] = sessionRouteStatusPayload(policy)
+	}
+	return result, nil
 }
 
 func (h *Handler) lightweightWordThreshold() int {
@@ -1195,6 +1294,7 @@ func (h *Handler) routeModel(peerID, text, requestedModel, sessionKey string) (m
 		"base_url":                   firstNonEmpty(info.BaseURL, h.modelCatalog.BaseURL),
 		"reason":                     reason,
 		"can_apply_session_override": true,
+		"session_route":              sessionRouteStatusPayload(policy),
 		"routing_policy": map[string]any{
 			"default_model":              h.model,
 			"default_profile":            h.modelCatalog.DefaultProfile,

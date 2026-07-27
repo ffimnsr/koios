@@ -194,6 +194,16 @@ func openAIProviderInspection(name string) ProviderInspection {
 		inspection.UsageMode = "provider_key_metadata"
 		inspection.UsageEndpoint = "/v1/auth/key"
 		inspection.SupportsUsage = true
+	case "openai-compatible":
+		inspection.Family = "openai_compatible_generic"
+		inspection.Interface = "openai_compatible"
+		inspection.CatalogMode = "openai_compatible_catalog"
+		inspection.Notes = []string{"Generic OpenAI-compatible provider uses the legacy /v1/chat/completions and /v1/models surface and requires an explicit base_url"}
+	case "opencode-go":
+		inspection.Family = "opencode_go"
+		inspection.Interface = "openai_compatible"
+		inspection.CatalogMode = "openai_compatible_catalog"
+		inspection.Notes = []string{"OpenCode Go exposes a documented /v1/chat/completions and /v1/models surface for its curated open-model subscription"}
 	case "nvidia":
 		inspection.Family = "nvidia_nim"
 		inspection.Interface = "openai_compatible"

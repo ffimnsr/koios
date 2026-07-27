@@ -1792,6 +1792,16 @@ func TestExecuteTool_SessionPatchUpdatesPolicy(t *testing.T) {
 		AgentCoord:   agent.NewCoordinator(rt),
 		SubRuntime:   subrt,
 	})
+	if err := store.SetPolicy("alice::sender::bob", session.SessionPolicy{
+		LLMRouteKey:               "openai|https://api.example.test|test-model",
+		LLMProvider:               "openai",
+		LLMModel:                  "test-model",
+		OpenAIPreviousResponseID:  "resp_prev",
+		OpenAICoveredMessages:     3,
+		OpenAICoveredMessagesHash: "hash_prev",
+	}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
 
 	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
 		Name:      "session.patch",
@@ -1801,9 +1811,17 @@ func TestExecuteTool_SessionPatchUpdatesPolicy(t *testing.T) {
 		t.Fatalf("ExecuteTool(session.patch session_key): %v", err)
 	}
 	var patchRes struct {
-		OK         bool   `json:"ok"`
-		SessionKey string `json:"session_key"`
-		ReplyBack  bool   `json:"reply_back"`
+		OK           bool   `json:"ok"`
+		SessionKey   string `json:"session_key"`
+		ReplyBack    bool   `json:"reply_back"`
+		SessionRoute struct {
+			LLMRouteKey        string `json:"llm_route_key"`
+			LLMProvider        string `json:"llm_provider"`
+			LLMModel           string `json:"llm_model"`
+			ProviderOwnedState struct {
+				OpenAIReplayStateAvailable bool `json:"openai_replay_state_available"`
+			} `json:"provider_owned_state"`
+		} `json:"session_route"`
 	}
 	raw, _ := json.Marshal(result)
 	if err := json.Unmarshal(raw, &patchRes); err != nil {
@@ -1812,8 +1830,88 @@ func TestExecuteTool_SessionPatchUpdatesPolicy(t *testing.T) {
 	if !patchRes.OK || patchRes.SessionKey != "alice::sender::bob" || !patchRes.ReplyBack {
 		t.Fatalf("unexpected session.patch result: %#v", patchRes)
 	}
+	if patchRes.SessionRoute.LLMRouteKey != "openai|https://api.example.test|test-model" || patchRes.SessionRoute.LLMProvider != "openai" || patchRes.SessionRoute.LLMModel != "test-model" || !patchRes.SessionRoute.ProviderOwnedState.OpenAIReplayStateAvailable {
+		t.Fatalf("expected session route payload in session.patch result, got %#v", patchRes.SessionRoute)
+	}
 	if !store.Policy("alice::sender::bob").ReplyBack {
 		t.Fatal("expected patched reply_back policy on target session")
+	}
+}
+
+func TestExecuteTool_SessionStatus(t *testing.T) {
+	store := session.New(20)
+	if err := store.SetPolicy("alice::sender::bob", session.SessionPolicy{
+		ModelOverride:             "review",
+		LLMRouteKey:               "openai|https://api.example.test|review-model",
+		LLMProvider:               "openai",
+		LLMModel:                  "review-model",
+		OpenAIPreviousResponseID:  "resp_prev",
+		OpenAICoveredMessages:     3,
+		OpenAICoveredMessagesHash: "hash_prev",
+		ReplyBack:                 true,
+	}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	store.Append("alice::sender::bob", types.Message{Role: "user", Content: "hello"})
+	store.Append("alice::sender::bob", types.Message{Role: "assistant", Content: "hi"})
+	prov := &stubProvider{}
+	rt := agent.NewRuntime(store, prov, "test-model", 5*time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:        "test-model",
+		Timeout:      5 * time.Second,
+		AgentRuntime: rt,
+		AgentCoord:   agent.NewCoordinator(rt),
+		ModelCatalog: handler.ModelCatalog{
+			Provider:       "openai",
+			BaseURL:        "https://api.example.test",
+			DefaultProfile: "default",
+			Profiles: []handler.ModelProfileInfo{{
+				Name:     "review",
+				Provider: "anthropic",
+				Model:    "review-model",
+				BaseURL:  "https://anthropic.example.test",
+			}},
+		},
+	})
+
+	result, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{
+		Name:      "session.status",
+		Arguments: json.RawMessage(`{"session_key":"alice::sender::bob"}`),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool(session.status): %v", err)
+	}
+	var statusRes struct {
+		SessionKey   string `json:"session_key"`
+		MessageCount int    `json:"message_count"`
+		ReplyBack    bool   `json:"reply_back"`
+		Model        struct {
+			ModelOverride string `json:"model_override"`
+			SelectedModel string `json:"selected_model"`
+			Provider      string `json:"provider"`
+			Reason        string `json:"reason"`
+		} `json:"model"`
+		SessionRoute struct {
+			LLMRouteKey        string `json:"llm_route_key"`
+			LLMProvider        string `json:"llm_provider"`
+			LLMModel           string `json:"llm_model"`
+			ProviderOwnedState struct {
+				OpenAIReplayStateAvailable bool `json:"openai_replay_state_available"`
+			} `json:"provider_owned_state"`
+		} `json:"session_route"`
+	}
+	raw, _ := json.Marshal(result)
+	if err := json.Unmarshal(raw, &statusRes); err != nil {
+		t.Fatalf("unmarshal session.status result: %v", err)
+	}
+	if statusRes.SessionKey != "alice::sender::bob" || statusRes.MessageCount != 2 || !statusRes.ReplyBack {
+		t.Fatalf("unexpected session.status result: %#v", statusRes)
+	}
+	if statusRes.Model.ModelOverride != "review" || statusRes.Model.SelectedModel != "review-model" || statusRes.Model.Provider != "anthropic" || statusRes.Model.Reason != "model_override" {
+		t.Fatalf("unexpected model status payload: %#v", statusRes.Model)
+	}
+	if statusRes.SessionRoute.LLMRouteKey != "openai|https://api.example.test|review-model" || statusRes.SessionRoute.LLMProvider != "openai" || statusRes.SessionRoute.LLMModel != "review-model" || !statusRes.SessionRoute.ProviderOwnedState.OpenAIReplayStateAvailable {
+		t.Fatalf("unexpected session route payload: %#v", statusRes.SessionRoute)
 	}
 }
 

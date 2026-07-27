@@ -120,6 +120,36 @@ func New(cfg *config.Config) (Provider, error) {
 			hooks:       openAICompatibleHooks("openrouter"),
 		}, nil
 
+	case "openai-compatible":
+		base := strings.TrimSpace(cfg.BaseURL)
+		if base == "" {
+			return nil, fmt.Errorf("provider %q requires base_url", cfg.Provider)
+		}
+		return &openAIProvider{
+			client:      client,
+			selector:    selector,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("openai-compatible"),
+		}, nil
+
+	case "opencode-go":
+		// OpenCode Go exposes a documented OpenAI-compatible /v1/chat/completions
+		// and /v1/models surface for its curated open-model catalog.
+		base := cfg.BaseURL
+		if base == "" {
+			base = "https://opencode.ai/zen/go"
+		}
+		return &openAIProvider{
+			client:      client,
+			selector:    selector,
+			baseURL:     stripV1(base),
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
+			hooks:       openAICompatibleHooks("opencode-go"),
+		}, nil
+
 	case "anthropic":
 		base := cfg.BaseURL
 		if base == "" {

@@ -45,6 +45,8 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 		h.rpcBriefGenerate(ctx, wsc, req)
 	case "session.history":
 		h.rpcSessionHistory(ctx, wsc, req)
+	case "session.status":
+		h.rpcSessionStatus(ctx, wsc, req)
 	case "session.reset":
 		h.rpcSessionReset(ctx, wsc, req)
 	case "session.patch":
@@ -878,6 +880,7 @@ func (h *Handler) serverCapabilities(peerID string) map[string]any {
 		"chat",
 		"brief.generate",
 		"session.history",
+		"session.status",
 		"session.reset",
 	}
 	if caps["presence"] {

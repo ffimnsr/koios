@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/ffimnsr/koios/internal/config"
@@ -13,6 +14,10 @@ import (
 
 type capabilityProvider interface {
 	Capabilities(model string) types.ProviderCapabilities
+}
+
+type handoffIdentityProvider interface {
+	HandoffIdentity(model string) string
 }
 
 // modelEntry is one entry in the routing provider's registry.
@@ -95,6 +100,11 @@ func (rp *RoutingProvider) Capabilities(model string) types.ProviderCapabilities
 	return types.ProviderCapabilities{}
 }
 
+func (rp *RoutingProvider) HandoffIdentity(model string) string {
+	prov, resolvedModel := rp.ForModel(model)
+	return providerHandoffIdentity(prov, resolvedModel)
+}
+
 // ProfileNames returns the list of registered profile names.
 func (rp *RoutingProvider) ProfileNames() []string {
 	names := make([]string, 0, len(rp.profiles))
@@ -108,9 +118,12 @@ func (rp *RoutingProvider) ProfileNames() []string {
 func (rp *RoutingProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
 	chain := rp.buildChain(req)
 	var lastErr error
+	ownerIdentity := ""
+	if len(chain) > 0 {
+		ownerIdentity = providerHandoffIdentity(chain[0].prov, chain[0].model)
+	}
 	for _, entry := range chain {
-		r := cloneRequest(req)
-		r.Model = entry.model
+		r := cloneRequestForAttempt(req, entry, ownerIdentity)
 		resp, err := entry.prov.Complete(ctx, r)
 		if err == nil {
 			return resp, nil
@@ -134,8 +147,9 @@ func (rp *RoutingProvider) CompleteStream(ctx context.Context, req *types.ChatRe
 
 	// First attempt: stream with the chosen model.
 	first := chain[0]
+	ownerIdentity := providerHandoffIdentity(first.prov, first.model)
 	if !providerSupportsStreaming(first.prov, first.model) {
-		resp, err := first.prov.Complete(ctx, cloneRequestWithModel(req, first.model))
+		resp, err := first.prov.Complete(ctx, cloneRequestForAttempt(req, first, ownerIdentity))
 		if err != nil {
 			return "", err
 		}
@@ -151,8 +165,7 @@ func (rp *RoutingProvider) CompleteStream(ctx context.Context, req *types.ChatRe
 		}
 		return text, nil
 	}
-	r := cloneRequest(req)
-	r.Model = first.model
+	r := cloneRequestForAttempt(req, first, ownerIdentity)
 	text, err := first.prov.CompleteStream(ctx, r, w)
 	if err == nil {
 		return text, nil
@@ -163,8 +176,7 @@ func (rp *RoutingProvider) CompleteStream(ctx context.Context, req *types.ChatRe
 
 	// Fallback attempts: non-streaming to avoid writing partial SSE output.
 	for _, entry := range chain[1:] {
-		r := cloneRequest(req)
-		r.Model = entry.model
+		r := cloneRequestForAttempt(req, entry, ownerIdentity)
 		resp, ferr := entry.prov.Complete(ctx, r)
 		if ferr == nil {
 			if len(resp.Choices) == 0 {
@@ -203,7 +215,8 @@ func (rp *RoutingProvider) buildChain(req *types.ChatRequest) []modelEntry {
 	}
 
 	chain := []modelEntry{first}
-	chain = append(chain, rp.fallbacks...)
+	fallbacks := rp.rankFallbacks(req, first)
+	chain = append(chain, fallbacks...)
 	return chain
 }
 
@@ -252,6 +265,88 @@ func cloneRequestWithModel(req *types.ChatRequest, model string) *types.ChatRequ
 	cp := cloneRequest(req)
 	cp.Model = model
 	return cp
+}
+
+func cloneRequestForAttempt(req *types.ChatRequest, entry modelEntry, ownerIdentity string) *types.ChatRequest {
+	cp := cloneRequestWithModel(req, entry.model)
+	if ownerIdentity != "" && providerHandoffIdentity(entry.prov, entry.model) != ownerIdentity {
+		cp.OpenAIServerCompaction = nil
+		cp.OpenAIConversationState = nil
+		cp.AnthropicServerCompaction = nil
+	}
+	return cp
+}
+
+func providerCaps(prov Provider, model string) types.ProviderCapabilities {
+	if caps, ok := prov.(capabilityProvider); ok {
+		return caps.Capabilities(model)
+	}
+	return types.ProviderCapabilities{}
+}
+
+func providerName(prov Provider, model string) string {
+	return strings.TrimSpace(providerCaps(prov, model).Name)
+}
+
+func providerHandoffIdentity(prov Provider, model string) string {
+	if handoff, ok := prov.(handoffIdentityProvider); ok {
+		return strings.TrimSpace(handoff.HandoffIdentity(model))
+	}
+	name := providerName(prov, model)
+	model = strings.TrimSpace(model)
+	if name == "" && model == "" {
+		return ""
+	}
+	return name + "|" + model
+}
+
+func providerSupportsNativeTools(prov Provider, model string) bool {
+	pc := providerCaps(prov, model)
+	if pc.SupportsNativeTools {
+		return true
+	}
+	return pc.Name == ""
+}
+
+func (rp *RoutingProvider) rankFallbacks(req *types.ChatRequest, first modelEntry) []modelEntry {
+	ownerIdentity := providerHandoffIdentity(first.prov, first.model)
+	entries := make([]modelEntry, 0, len(rp.fallbacks))
+	seen := map[string]struct{}{}
+	if ownerIdentity != "" {
+		seen[ownerIdentity] = struct{}{}
+	}
+	for _, entry := range rp.fallbacks {
+		identity := providerHandoffIdentity(entry.prov, entry.model)
+		if identity != "" {
+			if _, ok := seen[identity]; ok {
+				continue
+			}
+			seen[identity] = struct{}{}
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) < 2 || req == nil {
+		return entries
+	}
+	firstProvider := providerName(first.prov, first.model)
+	sort.SliceStable(entries, func(i, j int) bool {
+		return fallbackScore(req, entries[i], firstProvider) > fallbackScore(req, entries[j], firstProvider)
+	})
+	return entries
+}
+
+func fallbackScore(req *types.ChatRequest, entry modelEntry, firstProvider string) int {
+	score := 0
+	if req != nil && req.Stream && providerSupportsStreaming(entry.prov, entry.model) {
+		score += 4
+	}
+	if req != nil && len(req.Tools) > 0 && providerSupportsNativeTools(entry.prov, entry.model) {
+		score += 4
+	}
+	if firstProvider != "" && providerName(entry.prov, entry.model) == firstProvider {
+		score += 2
+	}
+	return score
 }
 
 func providerSupportsStreaming(prov Provider, model string) bool {

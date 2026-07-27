@@ -178,6 +178,10 @@ type providerCapabilities interface {
 	Capabilities(model string) types.ProviderCapabilities
 }
 
+type providerHandoff interface {
+	HandoffIdentity(model string) string
+}
+
 func DetectSilentReply(text string) (bool, string) {
 	trimmed := strings.TrimSpace(text)
 	for _, token := range silentReplyTokens {
@@ -828,6 +832,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		built.Request.ReasoningEffort = reasoningEffortForThinkLevel(policy.ThinkLevel)
 		built.Request.ReasoningBudget = reasoningBudgetForThinkLevel(policy.ThinkLevel)
 		built.Request.ReasoningVisibility = normalizeReasoningVisibility(policy.ReasoningVisibility)
+		rt.applyProviderHandoff(sessionKey, caps.Name, built.Request.Model, providerHandoffIdentity(rt.providerForContext(callCtx), built.Request.Model))
 		rt.applyServerCompaction(caps.Name, sessionKey, built.Request)
 		advanceStep := false
 		for attempt := 1; attempt <= rt.retry.MaxAttempts; attempt++ {
@@ -1157,6 +1162,47 @@ func messageHash(messages []types.Message) string {
 	}
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
+}
+
+func clearOpenAIConversationState(policy *session.SessionPolicy) {
+	if policy == nil {
+		return
+	}
+	policy.OpenAIPreviousResponseID = ""
+	policy.OpenAICoveredMessages = 0
+	policy.OpenAICoveredMessagesHash = ""
+}
+
+func (rt *Runtime) applyProviderHandoff(sessionKey, providerName, model, handoffKey string) {
+	if rt == nil || rt.store == nil || strings.TrimSpace(sessionKey) == "" {
+		return
+	}
+	providerName = strings.TrimSpace(providerName)
+	model = strings.TrimSpace(model)
+	handoffKey = strings.TrimSpace(handoffKey)
+	if handoffKey == "" {
+		return
+	}
+
+	policy := rt.sessionPolicy(sessionKey)
+	legacyState := strings.TrimSpace(policy.LLMRouteKey) == "" && strings.TrimSpace(policy.OpenAIPreviousResponseID) != ""
+	switched := strings.TrimSpace(policy.LLMRouteKey) != "" && policy.LLMRouteKey != handoffKey
+	if !legacyState && !switched && policy.LLMRouteKey == handoffKey && policy.LLMProvider == providerName && policy.LLMModel == model {
+		return
+	}
+	if err := rt.store.PatchPolicy(sessionKey, func(policy *session.SessionPolicy) {
+		if strings.TrimSpace(policy.OpenAIPreviousResponseID) != "" {
+			previousRouteKey := strings.TrimSpace(policy.LLMRouteKey)
+			if previousRouteKey == "" || previousRouteKey != handoffKey {
+				clearOpenAIConversationState(policy)
+			}
+		}
+		policy.LLMRouteKey = handoffKey
+		policy.LLMProvider = providerName
+		policy.LLMModel = model
+	}); err != nil {
+		slog.Warn("agent: persist provider handoff state failed", "session", sessionKey, "provider", providerName, "model", model, "err", err)
+	}
 }
 
 func (rt *Runtime) applyServerCompaction(providerName, sessionKey string, req *types.ChatRequest) {
@@ -2140,6 +2186,21 @@ func providerCapabilitiesFor(prov Provider, model string) types.ProviderCapabili
 		return caps.Capabilities(model)
 	}
 	return types.ProviderCapabilities{}
+}
+
+func providerHandoffIdentity(prov Provider, model string) string {
+	if handoff, ok := prov.(providerHandoff); ok {
+		if key := strings.TrimSpace(handoff.HandoffIdentity(model)); key != "" {
+			return key
+		}
+	}
+	caps := providerCapabilitiesFor(prov, model)
+	name := strings.TrimSpace(caps.Name)
+	model = strings.TrimSpace(model)
+	if name == "" && model == "" {
+		return ""
+	}
+	return name + "|" + model
 }
 
 func providerNameForLog(prov Provider, model string) string {

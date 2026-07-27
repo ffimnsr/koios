@@ -81,6 +81,13 @@ type SessionPolicy struct {
 	// OpenAICoveredMessagesHash hashes the covered transcript prefix so the
 	// runtime can detect when local history has diverged and fall back safely.
 	OpenAICoveredMessagesHash string `json:"openai_covered_messages_hash,omitempty"`
+	// LLMRouteKey records the resolved provider/model endpoint identity that
+	// currently owns provider-scoped conversation state for this session.
+	LLMRouteKey string `json:"llm_route_key,omitempty"`
+	// LLMProvider stores the normalized provider name for the active route.
+	LLMProvider string `json:"llm_provider,omitempty"`
+	// LLMModel stores the resolved model name for the active route.
+	LLMModel string `json:"llm_model,omitempty"`
 	// QueueMode controls how mid-run steering notes are applied.
 	// Valid values: steer | followup | collect
 	QueueMode string `json:"queue_mode,omitempty"`
@@ -1039,6 +1046,9 @@ func isZeroPolicy(p SessionPolicy) bool {
 		p.OpenAIPreviousResponseID == "" &&
 		p.OpenAICoveredMessages == 0 &&
 		p.OpenAICoveredMessagesHash == "" &&
+		p.LLMRouteKey == "" &&
+		p.LLMProvider == "" &&
+		p.LLMModel == "" &&
 		len(p.ToolsAllow) == 0 &&
 		len(p.ToolsDeny) == 0
 }

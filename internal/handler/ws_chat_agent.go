@@ -268,6 +268,19 @@ func (h *Handler) rpcSessionPatch(ctx context.Context, wsc *wsConn, req *rpcRequ
 	wsc.reply(req.ID, result)
 }
 
+func (h *Handler) rpcSessionStatus(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	args := req.Params
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	result, err := h.executeDataTool(ctx, wsc.peerID, agent.ToolCall{Name: "session.status", Arguments: args})
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	wsc.reply(req.ID, result)
+}
+
 func (h *Handler) rpcSessionHistory(_ context.Context, wsc *wsConn, req *rpcRequest) {
 	var p struct {
 		Limit      int    `json:"limit,omitempty"`

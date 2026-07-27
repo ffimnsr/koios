@@ -94,6 +94,19 @@ var toolDefs = []toolDef{
 		argHint: `{"limit":50,"session_key":"optional — must be your own peer ID or start with '<your-peer-id>::'","run_id":"optional sub-session id"}`,
 	},
 	{
+		name:        "session.status",
+		description: "Return lightweight session status for the current peer, including the active model override, resolved provider/model route, and provider-owned replay state. Optional session_key must belong to this peer, and optional run_id can target one of this peer's spawned sub-sessions.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session_key": map[string]any{"type": "string"},
+				"run_id":      map[string]any{"type": "string"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"session_key":"optional — must be your own peer ID or start with '<your-peer-id>::'","run_id":"optional sub-session id"}`,
+	},
+	{
 		name:        "skills.catalog",
 		description: "List the resolved SKILL.md catalog, including active, shadowed, and optionally blocked skills with source and metadata.",
 		parameters: mustJSONSchema(map[string]any{

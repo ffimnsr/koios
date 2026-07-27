@@ -554,8 +554,9 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			}
 		}
 		result := map[string]any{
-			"ok":          true,
-			"session_key": targetSessionKey,
+			"ok":            true,
+			"session_key":   targetSessionKey,
+			"session_route": sessionRouteStatusPayload(policy),
 		}
 		if args.ReplyBack != nil {
 			result["reply_back"] = *args.ReplyBack

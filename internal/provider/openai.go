@@ -1026,6 +1026,14 @@ func (p *openAIProvider) Capabilities(string) types.ProviderCapabilities {
 	return p.hooks.capabilities
 }
 
+func (p *openAIProvider) HandoffIdentity(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = strings.TrimSpace(p.model)
+	}
+	return p.hooks.name + "|" + strings.TrimRight(strings.TrimSpace(p.baseURL), "/") + "|" + model
+}
+
 func (p *openAIProvider) selectAPIKey(ctx context.Context, req *types.ChatRequest) (string, func(error)) {
 	if p.selector != nil {
 		return p.selector.Select(ctx, req)

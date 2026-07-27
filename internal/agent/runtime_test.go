@@ -26,9 +26,10 @@ import (
 )
 
 type stubProvider struct {
-	complete func(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error)
-	stream   func(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error)
-	caps     types.ProviderCapabilities
+	complete        func(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error)
+	stream          func(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error)
+	caps            types.ProviderCapabilities
+	handoffIdentity func(model string) string
 }
 
 type stubToolExecutor struct {
@@ -95,6 +96,13 @@ func (s *stubProvider) CompleteStream(ctx context.Context, req *types.ChatReques
 
 func (s *stubProvider) Capabilities(string) types.ProviderCapabilities {
 	return s.caps
+}
+
+func (s *stubProvider) HandoffIdentity(model string) string {
+	if s.handoffIdentity != nil {
+		return s.handoffIdentity(model)
+	}
+	return strings.TrimSpace(s.caps.Name) + "|" + strings.TrimSpace(model)
 }
 
 func mustObjectJSON(t *testing.T) json.RawMessage {
@@ -228,6 +236,93 @@ func TestRuntime_PersistsAndReusesOpenAIServerCompactionState(t *testing.T) {
 	}
 	if captured[1].OpenAIConversationState.PreviousResponseID != "resp_1" {
 		t.Fatalf("second previous response id = %q, want resp_1", captured[1].OpenAIConversationState.PreviousResponseID)
+	}
+}
+
+func TestRuntime_ClearsOpenAIConversationStateOnProviderHandoff(t *testing.T) {
+	store := session.New(20)
+	var firstCaptured []*types.ChatRequest
+	var secondCaptured []*types.ChatRequest
+	firstProvider := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			cp := *req
+			firstCaptured = append(firstCaptured, &cp)
+			return &types.ChatResponse{
+				ID:      "resp_1",
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "first"}}},
+			}, nil
+		},
+		caps: types.ProviderCapabilities{Name: "openai", SupportsStreaming: true},
+		handoffIdentity: func(model string) string {
+			return "openai|https://api.openai.com|" + strings.TrimSpace(model)
+		},
+	}
+	secondProvider := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			cp := *req
+			secondCaptured = append(secondCaptured, &cp)
+			return &types.ChatResponse{
+				ID:      "resp_2",
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "second"}}},
+			}, nil
+		},
+		caps: types.ProviderCapabilities{Name: "openai", SupportsStreaming: true},
+		handoffIdentity: func(model string) string {
+			return "openai|https://work.example.com|" + strings.TrimSpace(model)
+		},
+	}
+	currentProvider := firstProvider
+	resolver := stubProviderResolver{
+		resolve: func(_ context.Context, _, _, modelOverride string) (agent.Provider, string, error) {
+			model := strings.TrimSpace(modelOverride)
+			if model == "" {
+				model = "gpt-5"
+			}
+			return currentProvider, model, nil
+		},
+	}
+	rt := agent.NewRuntime(store, firstProvider, "gpt-5", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetProviderResolver(resolver)
+	rt.SetServerCompaction("server", 200000, 150000, false, "")
+
+	if _, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	}); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if len(firstCaptured) != 1 {
+		t.Fatalf("first captured requests = %d, want 1", len(firstCaptured))
+	}
+	if firstCaptured[0].OpenAIConversationState != nil {
+		t.Fatalf("expected first request to start fresh, got %#v", firstCaptured[0].OpenAIConversationState)
+	}
+
+	currentProvider = secondProvider
+	if _, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "continue"}},
+	}); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if len(secondCaptured) != 1 {
+		t.Fatalf("second captured requests = %d, want 1", len(secondCaptured))
+	}
+	if secondCaptured[0].OpenAIServerCompaction == nil {
+		t.Fatalf("expected second request server compaction config")
+	}
+	if secondCaptured[0].OpenAIConversationState != nil {
+		t.Fatalf("expected provider handoff to clear openai conversation state, got %#v", secondCaptured[0].OpenAIConversationState)
+	}
+
+	policy := store.Policy("peer::main")
+	if policy.LLMRouteKey != "openai|https://work.example.com|gpt-5" {
+		t.Fatalf("llm route key = %q, want work-provider handoff key", policy.LLMRouteKey)
+	}
+	if policy.OpenAIPreviousResponseID != "resp_2" {
+		t.Fatalf("previous response id after handoff = %q, want resp_2", policy.OpenAIPreviousResponseID)
 	}
 }
 
