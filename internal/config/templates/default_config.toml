@@ -136,8 +136,41 @@ daily_reset_time = ""
 prune_keep_tool_messages = 8
 
 [compaction]
+# Compaction mode:
+# - "local": Koios summarizes older conversation turns locally before a request.
+#   Use this for the broadest provider compatibility and when you want Koios to
+#   control the summary content directly.
+# - "server": ask the provider to compact conversation state on its side when
+#   supported. Currently implemented for OpenAI and Anthropic only. Local
+#   compaction is disabled in this mode, and Koios currently forces those calls
+#   to run without streaming so provider compaction state can be captured safely.
+# - "off": disable both local compaction and provider compaction requests.
+#   Use this when you want only normal context-budget/pruning behavior.
+mode = "local"
+# Used by mode = "local" only. Compacts after this many stored messages.
+# Set to 0 to disable message-count-based triggering.
 threshold = 60
+# Used by mode = "local" only. Compacts when the approximate prompt size of
+# the stored transcript reaches this many tokens. Set to 0 to disable.
+token_threshold = 0
+# Used by mode = "local" only.
 reserve = 20
+
+[compaction.openai]
+# Used by mode = "server" with an OpenAI profile. Requests server-side
+# compaction once the provider-side conversation reaches this token threshold.
+compact_threshold = 200000
+
+[compaction.anthropic]
+# Used by mode = "server" with an Anthropic profile.
+# trigger_tokens controls when Claude should compact server-side.
+trigger_tokens = 150000
+# When true, Koios stops after a compaction event instead of continuing the
+# same turn. Leave false for seamless continuation.
+pause_after_compaction = false
+# Optional provider instructions for the compaction step itself. This is useful
+# if you want to steer Claude away from tool use or preserve specific details.
+instructions = ""
 
 [memory]
 inject = false

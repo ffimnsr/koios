@@ -74,6 +74,12 @@ func loadBootstrapMessage(root, peerID string) *types.Message {
 	return nil
 }
 
+// RequestTokenCounter provides model-aware request token accounting. When nil,
+// requestctx falls back to local heuristic estimation.
+type RequestTokenCounter interface {
+	CountRequestTokens(req *types.ChatRequest) (int, error)
+}
+
 // BuildOptions describes how a model request context should be assembled.
 type BuildOptions struct {
 	Model             string
@@ -104,6 +110,10 @@ type BuildOptions struct {
 	// ExtraTokenReserve reserves additional prompt space for payloads attached
 	// after Build, such as native tool schemas.
 	ExtraTokenReserve int
+	// TokenCounter enables tokenizer-accurate counting when the caller can
+	// provide a model-aware counter. When nil, Build falls back to heuristic
+	// local estimation.
+	TokenCounter RequestTokenCounter
 	// IdentityDir is the workspace root directory. When non-empty, AGENTS.md,
 	// SOUL.md, USER.md, IDENTITY.md, and TOOLS.md are read for PeerID from
 	// peers/<peer>/, then peers/default/, and prepended to the
@@ -129,14 +139,101 @@ type BuildResult struct {
 	OverBudgetAfterTrimming   bool
 }
 
-// ValidateMessages rejects messages with roles outside the known set.
+// ValidateMessages rejects messages with unknown roles or invalid role-specific
+// shapes such as orphaned tool results, misplaced tool calls, or malformed
+// multimodal parts.
 func ValidateMessages(msgs []types.Message) error {
 	for i, m := range msgs {
-		switch m.Role {
-		case "system", "user", "assistant", "tool", "function":
-		default:
-			return fmt.Errorf("message[%d] has unknown role %q", i, m.Role)
+		if err := validateMessage(m); err != nil {
+			return fmt.Errorf("message[%d]: %w", i, err)
 		}
+	}
+	return nil
+}
+
+// ValidateSystemMessages rejects non-system messages in a system-only slice.
+func ValidateSystemMessages(msgs []types.Message) error {
+	for i, m := range msgs {
+		if err := validateMessage(m); err != nil {
+			return fmt.Errorf("system_message[%d]: %w", i, err)
+		}
+		if m.Role != "system" {
+			return fmt.Errorf("system_message[%d] must have role system, got %q", i, m.Role)
+		}
+	}
+	return nil
+}
+
+func validateMessage(m types.Message) error {
+	switch m.Role {
+	case "system", "user", "assistant", "tool", "function":
+	default:
+		return fmt.Errorf("unknown role %q", m.Role)
+	}
+	if len(m.Parts) > 0 {
+		for i, part := range m.Parts {
+			if err := validateContentPart(part); err != nil {
+				return fmt.Errorf("content part[%d]: %w", i, err)
+			}
+		}
+	}
+	if strings.TrimSpace(m.ToolCallID) != "" && m.Role != "tool" && m.Role != "function" {
+		return fmt.Errorf("role %q must not set tool_call_id", m.Role)
+	}
+	if len(m.ToolCalls) > 0 {
+		if m.Role != "assistant" {
+			return fmt.Errorf("role %q must not include tool_calls", m.Role)
+		}
+		for i, call := range m.ToolCalls {
+			if err := validateToolCall(call); err != nil {
+				return fmt.Errorf("tool_call[%d]: %w", i, err)
+			}
+		}
+	}
+	switch m.Role {
+	case "system", "user":
+		if strings.TrimSpace(m.ToolCallID) != "" {
+			return fmt.Errorf("role %q must not set tool_call_id", m.Role)
+		}
+	case "tool", "function":
+		if strings.TrimSpace(m.ToolCallID) == "" {
+			return fmt.Errorf("role %q requires tool_call_id", m.Role)
+		}
+		if len(m.ToolCalls) > 0 {
+			return fmt.Errorf("role %q must not include tool_calls", m.Role)
+		}
+	}
+	return nil
+}
+
+func validateContentPart(part types.ContentPart) error {
+	switch strings.TrimSpace(part.Type) {
+	case "text":
+		if strings.TrimSpace(part.Text) == "" {
+			return fmt.Errorf("text part requires text")
+		}
+	case "image_url":
+		if part.ImageURL == nil || strings.TrimSpace(part.ImageURL.URL) == "" {
+			return fmt.Errorf("image_url part requires image_url.url")
+		}
+	default:
+		return fmt.Errorf("unsupported part type %q", part.Type)
+	}
+	return nil
+}
+
+func validateToolCall(call types.ToolCall) error {
+	if strings.TrimSpace(call.ID) == "" {
+		return fmt.Errorf("id is required")
+	}
+	if t := strings.TrimSpace(call.Type); t != "" && t != "function" {
+		return fmt.Errorf("unsupported type %q", call.Type)
+	}
+	if strings.TrimSpace(call.Function.Name) == "" {
+		return fmt.Errorf("function.name is required")
+	}
+	if args := strings.TrimSpace(call.Function.Arguments); args != "" && !json.Valid([]byte(args)) {
+		return fmt.Errorf("function.arguments must be valid JSON")
 	}
 	return nil
 }
@@ -161,13 +258,16 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	if err := ValidateMessages(opts.Messages); err != nil {
 		return nil, err
 	}
+	if err := ValidateMessages(opts.History); err != nil {
+		return nil, fmt.Errorf("invalid history: %w", err)
+	}
 	sysMessages, turnMessages := SplitMessages(opts.Messages)
 	// Prepend identity files so they anchor every request.
 	if identityMsgs := LoadIdentityMessages(opts.IdentityDir, opts.PeerID); len(identityMsgs) > 0 {
 		sysMessages = append(append([]types.Message(nil), identityMsgs...), sysMessages...)
 	}
 	if len(opts.ExtraSystem) > 0 {
-		if err := ValidateMessages(opts.ExtraSystem); err != nil {
+		if err := ValidateSystemMessages(opts.ExtraSystem); err != nil {
 			return nil, err
 		}
 		sysMessages = append(append([]types.Message(nil), opts.ExtraSystem...), sysMessages...)
@@ -244,12 +344,13 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 				continue
 			}
 			extraPrefs, extraPrefHits, err := injectPreferences(ctx, opts.MemoryStore, ns, preferenceLimit)
-			if err == nil && extraPrefs != "" {
-				mergeInjected(extraPrefs, extraPrefHits)
+			if err != nil {
+				return nil, fmt.Errorf("inject namespace preferences for %q: %w", ns, err)
 			}
+			mergeInjected(extraPrefs, extraPrefHits)
 			extra, extraHits, err := injectMemory(ctx, opts.MemoryStore, ns, turnMessages[len(turnMessages)-1].Content, opts.MemoryTopK)
 			if err != nil {
-				continue // namespace misses are non-fatal
+				return nil, fmt.Errorf("inject namespace memory for %q: %w", ns, err)
 			}
 			mergeInjected(extra, extraHits)
 		}
@@ -283,7 +384,7 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		budget = 256
 	}
 	for opts.MaxPromptTokens > 0 {
-		tokens, bytes := EstimateRequestTokens(request)
+		tokens, bytes := EstimateRequestTokensWithCounter(opts.TokenCounter, request)
 		if tokens <= budget {
 			result.EstimatedPromptTokens = tokens
 			result.EstimatedPromptBytes = bytes
@@ -324,7 +425,7 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		request.Messages = buildMessages()
 	}
 	if result.EstimatedPromptTokens == 0 && result.EstimatedPromptBytes == 0 {
-		result.EstimatedPromptTokens, result.EstimatedPromptBytes = EstimateRequestTokens(request)
+		result.EstimatedPromptTokens, result.EstimatedPromptBytes = EstimateRequestTokensWithCounter(opts.TokenCounter, request)
 	}
 	result.Request = request
 	return result, nil
@@ -394,24 +495,40 @@ func injectRecentMemory(ctx context.Context, store *memory.Store, peerID string,
 // buildContext assembles the full message slice that will be sent to the LLM:
 // system messages first, then stored non-system history, then the new turn messages.
 func EstimateRequestTokens(req *types.ChatRequest) (tokens int, bytes int) {
+	return EstimateRequestTokensWithCounter(nil, req)
+}
+
+// EstimateRequestTokensWithCounter uses a caller-provided model-aware token
+// counter when available and falls back to local heuristic estimation when it
+// is not.
+func EstimateRequestTokensWithCounter(counter RequestTokenCounter, req *types.ChatRequest) (tokens int, bytes int) {
 	if req == nil {
 		return 0, 0
 	}
+	bytes = estimateRequestBytes(req)
+	if bytes <= 0 {
+		return 0, 0
+	}
+	if counter != nil {
+		if counted, err := counter.CountRequestTokens(req); err == nil && counted > 0 {
+			return counted, bytes
+		}
+	}
+	tokens = max((bytes+3)/4, 1)
+	return tokens, bytes
+}
+
+func estimateRequestBytes(req *types.ChatRequest) int {
 	payload, err := json.Marshal(req)
 	if err != nil {
-		bytes = estimateMessagesBytes(req.Messages)
+		bytes := estimateMessagesBytes(req.Messages)
 		bytes += len(req.Model) + 64
 		for _, tool := range req.Tools {
 			bytes += estimateToolBytes(tool)
 		}
-	} else {
-		bytes = len(payload)
+		return bytes
 	}
-	if bytes <= 0 {
-		return 0, 0
-	}
-	tokens = max((bytes+3)/4, 1)
-	return tokens, bytes
+	return len(payload)
 }
 
 func estimateMessagesBytes(msgs []types.Message) int {

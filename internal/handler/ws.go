@@ -249,6 +249,11 @@ type Handler struct {
 	toolResultStore         *toolresults.Store
 	memTopK                 int
 	memInject               bool
+	memLCMWindow            int
+	memNamespaces           []string
+	pruneToolMessages       int
+	maxContextTokens        int
+	promptReserveTokens     int
 	identityDir             string
 	hbRunner                *heartbeat.Runner
 	hbConfigStore           *heartbeat.ConfigStore
@@ -345,6 +350,11 @@ type HandlerOptions struct {
 	ToolResultStore     *toolresults.Store
 	MemTopK             int
 	MemInject           bool
+	MemoryLCMWindow     int
+	MemoryNamespaces    []string
+	PruneToolMessages   int
+	MaxContextTokens    int
+	PromptReserveTokens int
 	HBRunner            *heartbeat.Runner
 	HBConfigStore       *heartbeat.ConfigStore
 	HBDefaultEvery      time.Duration
@@ -413,6 +423,18 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 	if topK <= 0 {
 		topK = 3
 	}
+	pruneToolMessages := opts.PruneToolMessages
+	if pruneToolMessages < 0 {
+		pruneToolMessages = 0
+	}
+	maxContextTokens := opts.MaxContextTokens
+	if maxContextTokens < 0 {
+		maxContextTokens = 0
+	}
+	promptReserveTokens := opts.PromptReserveTokens
+	if promptReserveTokens < 0 {
+		promptReserveTokens = 0
+	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
@@ -445,6 +467,11 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		toolResultStore:         opts.ToolResultStore,
 		memTopK:                 topK,
 		memInject:               opts.MemInject,
+		memLCMWindow:            opts.MemoryLCMWindow,
+		memNamespaces:           append([]string(nil), opts.MemoryNamespaces...),
+		pruneToolMessages:       pruneToolMessages,
+		maxContextTokens:        maxContextTokens,
+		promptReserveTokens:     promptReserveTokens,
 		identityDir:             opts.WorkspaceRoot,
 		hbRunner:                opts.HBRunner,
 		hbConfigStore:           opts.HBConfigStore,

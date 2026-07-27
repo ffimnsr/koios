@@ -19,6 +19,14 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg.LLMMaxToolResultChars = 2048
 	cfg.AgentMaxSteps = 120
 	cfg.AgentRetryStatusCodes = []int{429, 500, 503}
+	cfg.CompactMode = "server"
+	cfg.CompactTokenThreshold = 12345
+	cfg.OpenAIServerCompaction = OpenAIServerCompactionConfig{CompactThreshold: 210000}
+	cfg.AnthropicServerCompaction = AnthropicServerCompactionConfig{
+		TriggerTokens:        175000,
+		PauseAfterCompaction: true,
+		Instructions:         "summarize code decisions only",
+	}
 	cfg.ToolsAllow = []string{"read", "write"}
 	cfg.ToolsDeny = []string{"exec"}
 	cfg.ExtensionDirs = []string{"./extensions-extra", "/opt/koios/extensions"}
@@ -166,6 +174,14 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 		`api_key = "tavily-secret"`,
 		`base_url = "https://api.tavily.com/search"`,
 		`default_timeout = "22s"`,
+		`mode = "server"`,
+		`token_threshold = 12345`,
+		`[compaction.openai]`,
+		`compact_threshold = 210000`,
+		`[compaction.anthropic]`,
+		`trigger_tokens = 175000`,
+		`pause_after_compaction = true`,
+		`instructions = "summarize code decisions only"`,
 		`[tools.browser_run]`,
 		`enabled = true`,
 		`account_id = "account-123"`,
@@ -195,6 +211,18 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	}
 	if loaded.LLMIdleTimeout != 42*time.Second {
 		t.Fatalf("unexpected llm.idle_timeout after round-trip: %s", loaded.LLMIdleTimeout)
+	}
+	if loaded.CompactMode != "server" {
+		t.Fatalf("unexpected compaction.mode after round-trip: %q", loaded.CompactMode)
+	}
+	if loaded.CompactTokenThreshold != 12345 {
+		t.Fatalf("unexpected compaction.token_threshold after round-trip: %d", loaded.CompactTokenThreshold)
+	}
+	if loaded.OpenAIServerCompaction.CompactThreshold != 210000 {
+		t.Fatalf("unexpected compaction.openai.compact_threshold after round-trip: %d", loaded.OpenAIServerCompaction.CompactThreshold)
+	}
+	if loaded.AnthropicServerCompaction.TriggerTokens != 175000 || !loaded.AnthropicServerCompaction.PauseAfterCompaction || loaded.AnthropicServerCompaction.Instructions != "summarize code decisions only" {
+		t.Fatalf("unexpected anthropic server compaction after round-trip: %#v", loaded.AnthropicServerCompaction)
 	}
 	if loaded.LLMContextWindowTokens != 65536 || loaded.LLMPromptReserveTokens != 8192 || loaded.LLMMaxToolDefinitions != 12 || loaded.LLMMaxToolResultChars != 2048 {
 		t.Fatalf("unexpected llm budgeting fields after round-trip: %#v", loaded)
@@ -277,6 +305,15 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	}
 	if loaded.Telegram.PollTimeout != 45*time.Second {
 		t.Fatalf("unexpected telegram flags after round-trip: %#v", loaded.Telegram)
+	}
+}
+
+func TestValidateRejectsNegativeCompactionTokenThreshold(t *testing.T) {
+	cfg := Default()
+	cfg.CompactTokenThreshold = -1
+	err := validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "compaction.token_threshold") {
+		t.Fatalf("expected compaction.token_threshold validation error, got %v", err)
 	}
 }
 

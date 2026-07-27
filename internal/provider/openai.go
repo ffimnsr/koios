@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,21 +52,28 @@ type geminiThinkingConfig struct {
 }
 
 type openAIResponsesRequest struct {
-	Model           string                     `json:"model"`
-	Input           []openAIResponsesInputItem `json:"input,omitempty"`
-	Tools           []types.Tool               `json:"tools,omitempty"`
-	ToolChoice      any                        `json:"tool_choice,omitempty"`
-	Stream          bool                       `json:"stream,omitempty"`
-	MaxOutputTokens int                        `json:"max_output_tokens,omitempty"`
-	Temperature     *float64                   `json:"temperature,omitempty"`
-	TopP            *float64                   `json:"top_p,omitempty"`
-	User            string                     `json:"user,omitempty"`
-	Reasoning       *openAIResponsesReasoning  `json:"reasoning,omitempty"`
+	Model              string                        `json:"model"`
+	Input              []openAIResponsesInputItem    `json:"input,omitempty"`
+	Tools              []types.Tool                  `json:"tools,omitempty"`
+	ToolChoice         any                           `json:"tool_choice,omitempty"`
+	Stream             bool                          `json:"stream,omitempty"`
+	MaxOutputTokens    int                           `json:"max_output_tokens,omitempty"`
+	Temperature        *float64                      `json:"temperature,omitempty"`
+	TopP               *float64                      `json:"top_p,omitempty"`
+	User               string                        `json:"user,omitempty"`
+	Reasoning          *openAIResponsesReasoning     `json:"reasoning,omitempty"`
+	PreviousResponseID string                        `json:"previous_response_id,omitempty"`
+	ContextManagement  []openAIResponsesContextEntry `json:"context_management,omitempty"`
 }
 
 type openAIResponsesReasoning struct {
 	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary,omitempty"`
+}
+
+type openAIResponsesContextEntry struct {
+	Type             string `json:"type"`
+	CompactThreshold int    `json:"compact_threshold,omitempty"`
 }
 
 type openAIResponsesInputItem struct {
@@ -131,16 +140,28 @@ func marshalOpenAIWireRequest(providerName string, req *types.ChatRequest) ([]by
 }
 
 func marshalOpenAIResponsesRequest(req *types.ChatRequest) ([]byte, error) {
+	input := buildOpenAIResponsesInput(req.Messages)
+	previousResponseID := ""
+	if state := req.OpenAIConversationState; state != nil && strings.TrimSpace(state.PreviousResponseID) != "" && state.CoveredMessages > 0 && state.CoveredMessages <= len(req.Messages) {
+		if openAIConversationMessagesHash(req.Messages[:state.CoveredMessages]) == strings.TrimSpace(state.CoveredMessagesHash) {
+			input = buildOpenAIResponsesInput(req.Messages[state.CoveredMessages:])
+			previousResponseID = strings.TrimSpace(state.PreviousResponseID)
+		}
+	}
 	wire := openAIResponsesRequest{
-		Model:           req.Model,
-		Input:           buildOpenAIResponsesInput(req.Messages),
-		Tools:           req.Tools,
-		ToolChoice:      req.ToolChoice,
-		Stream:          req.Stream,
-		MaxOutputTokens: req.MaxTokens,
-		Temperature:     req.Temperature,
-		TopP:            req.TopP,
-		User:            req.User,
+		Model:              req.Model,
+		Input:              input,
+		Tools:              req.Tools,
+		ToolChoice:         req.ToolChoice,
+		Stream:             req.Stream,
+		MaxOutputTokens:    req.MaxTokens,
+		Temperature:        req.Temperature,
+		TopP:               req.TopP,
+		User:               req.User,
+		PreviousResponseID: previousResponseID,
+	}
+	if req.OpenAIServerCompaction != nil && req.OpenAIServerCompaction.CompactThreshold > 0 {
+		wire.ContextManagement = []openAIResponsesContextEntry{{Type: "compaction", CompactThreshold: req.OpenAIServerCompaction.CompactThreshold}}
 	}
 	if reasoningEnabled(req) {
 		wire.Reasoning = &openAIResponsesReasoning{Effort: req.ReasoningEffort}
@@ -319,7 +340,19 @@ func shouldUseOpenAIResponses(req *types.ChatRequest, providerName string) bool 
 	if providerName != "openai" || req == nil {
 		return false
 	}
-	return reasoningEnabled(req) || len(req.Tools) > 0
+	return reasoningEnabled(req) || len(req.Tools) > 0 || req.OpenAIServerCompaction != nil
+}
+
+func openAIConversationMessagesHash(messages []types.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	body, err := json.Marshal(messages)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 func chatTemplateThinkingKwargs(enabled bool) map[string]any {

@@ -445,3 +445,77 @@ func TestBuild_SkipsBootstrapWhenHistoryPresent(t *testing.T) {
 		}
 	}
 }
+
+type stubTokenCounter struct {
+	tokens int
+}
+
+func (s stubTokenCounter) CountRequestTokens(*types.ChatRequest) (int, error) {
+	return s.tokens, nil
+}
+
+func TestBuild_UsesProvidedTokenCounter(t *testing.T) {
+	built, err := Build(context.Background(), BuildOptions{
+		Model:           "m",
+		Messages:        []types.Message{{Role: "user", Content: "hello"}},
+		MaxPromptTokens: 100,
+		TokenCounter:    stubTokenCounter{tokens: 42},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if built.EstimatedPromptTokens != 42 {
+		t.Fatalf("EstimatedPromptTokens = %d, want 42", built.EstimatedPromptTokens)
+	}
+}
+
+func TestBuild_RejectsUserMessageWithToolCalls(t *testing.T) {
+	_, err := Build(context.Background(), BuildOptions{
+		Model: "m",
+		Messages: []types.Message{{
+			Role: "user",
+			ToolCalls: []types.ToolCall{{
+				ID:       "call-1",
+				Type:     "function",
+				Function: types.ToolCallFunctionRef{Name: "time.now", Arguments: `{}`},
+			}},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must not include tool_calls") {
+		t.Fatalf("expected tool_calls validation error, got %v", err)
+	}
+}
+
+func TestBuild_RejectsToolMessageWithoutToolCallID(t *testing.T) {
+	_, err := Build(context.Background(), BuildOptions{
+		Model:    "m",
+		Messages: []types.Message{{Role: "tool", Content: "result"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires tool_call_id") {
+		t.Fatalf("expected tool_call_id validation error, got %v", err)
+	}
+}
+
+func TestBuild_RejectsInvalidMultipartContent(t *testing.T) {
+	_, err := Build(context.Background(), BuildOptions{
+		Model: "m",
+		Messages: []types.Message{{
+			Role:  "user",
+			Parts: []types.ContentPart{{Type: "image_url"}},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "image_url part requires image_url.url") {
+		t.Fatalf("expected multipart validation error, got %v", err)
+	}
+}
+
+func TestBuild_RejectsNonSystemExtraSystemMessages(t *testing.T) {
+	_, err := Build(context.Background(), BuildOptions{
+		Model:       "m",
+		Messages:    []types.Message{{Role: "user", Content: "hello"}},
+		ExtraSystem: []types.Message{{Role: "user", Content: "not actually system"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must have role system") {
+		t.Fatalf("expected system-only validation error, got %v", err)
+	}
+}

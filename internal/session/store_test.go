@@ -347,6 +347,95 @@ func TestStore_CompactionFlushesMemoryBeforeCompactor(t *testing.T) {
 	}
 }
 
+func TestStore_CompactionRejectsEmptySummary(t *testing.T) {
+	comp := &stubCompactor{summary: "   "}
+	st := session.NewWithOptions(session.Options{
+		MaxMessages:      100,
+		CompactThreshold: 4,
+		CompactReserve:   1,
+		Compactor:        comp,
+	})
+	for i := range 4 {
+		st.Append("peer", types.Message{Role: "user", Content: fmt.Sprintf("m%d", i)})
+	}
+	h := st.Get("peer").History()
+	if len(h) != 4 {
+		t.Fatalf("expected full history to remain after invalid summary, got %d", len(h))
+	}
+	if h[0].Role == "system" && strings.Contains(h[0].Content, "<summary>") {
+		t.Fatalf("expected invalid summary not to be applied, got %#v", h[0])
+	}
+}
+
+func TestStore_CompactionTriggersOnTokenThreshold(t *testing.T) {
+	comp := &stubCompactor{summary: "token compacted history"}
+	st := session.NewWithOptions(session.Options{
+		MaxMessages:           100,
+		CompactThreshold:      0,
+		CompactTokenThreshold: 20,
+		CompactReserve:        1,
+		Compactor:             comp,
+	})
+	st.Append("peer",
+		types.Message{Role: "user", Content: strings.Repeat("x", 80)},
+		types.Message{Role: "assistant", Content: strings.Repeat("y", 80)},
+	)
+	h := st.Get("peer").History()
+	if len(h) != 2 {
+		t.Fatalf("expected compaction to keep 1 summary + 1 reserve, got %d", len(h))
+	}
+	if h[0].Role != "system" || !strings.Contains(h[0].Content, "token compacted history") {
+		t.Fatalf("expected token-threshold compaction summary, got %#v", h[0])
+	}
+	if comp.calls != 1 {
+		t.Fatalf("expected 1 compactor call, got %d", comp.calls)
+	}
+}
+
+func TestStore_CompactionDoesNotBlockSessionReads(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	comp := &stubCompactor{summary: "checkpoint"}
+	comp.onCompact = func() {
+		close(started)
+		<-release
+	}
+	st := session.NewWithOptions(session.Options{
+		MaxMessages:      100,
+		CompactThreshold: 100,
+		CompactReserve:   1,
+		Compactor:        comp,
+	})
+	for i := range 4 {
+		st.Append("peer", types.Message{Role: "user", Content: fmt.Sprintf("m%d", i)})
+	}
+	reportCh := make(chan session.CompactionReport, 1)
+	go func() {
+		reportCh <- st.CompactNow(context.Background(), "peer")
+	}()
+	<-started
+
+	done := make(chan []types.Message, 1)
+	go func() {
+		done <- st.Get("peer").History()
+	}()
+
+	select {
+	case hist := <-done:
+		if len(hist) != 4 {
+			t.Fatalf("history length during compaction = %d, want 4", len(hist))
+		}
+	case <-time.After(500 * time.Millisecond):
+		close(release)
+		t.Fatal("History blocked while compaction LLM call was in progress")
+	}
+	close(release)
+	report := <-reportCh
+	if !report.Compacted {
+		t.Fatalf("expected manual compaction to succeed, got %#v", report)
+	}
+}
+
 func TestStore_IdleResetOnGet(t *testing.T) {
 	dir := t.TempDir()
 	st := session.NewWithOptions(session.Options{

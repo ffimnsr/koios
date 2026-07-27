@@ -89,7 +89,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Memory flush before compaction
 	- Research notes: OpenClaw has an explicit memory-flush-before-compaction concept in config, which is the strongest direct reference. PicoClaw's compaction stack focuses on summarization and threshold management rather than a preflush memory hook. IronClaw leans more toward move-to-workspace or summarize/truncate strategies than a distinct memory-flush phase.
 	- References: OpenClaw `docs/gateway/configuration-reference.md`, `src/config/schema.help.ts`; PicoClaw `pkg/seahorse/short_compaction.go`; IronClaw `src/agent/context_monitor.rs`, `src/agent/CLAUDE.md`.
-- [-] Server-side compaction strategies where supported by providers (DON'T IMPLEMENT No need for now)
+- [x] Server-side compaction strategies where supported by providers
 	- Research notes: OpenClaw explicitly documents pluggable compaction providers and calls out provider-specific/server-side compaction options, so it is the clearest blueprint. PicoClaw compaction is engine-owned and provider-agnostic in the current tree. IronClaw also owns compaction in the runtime rather than delegating it to a provider backend.
 	- References: OpenClaw `docs/concepts/compaction.md`, `docs/gateway/configuration-reference.md`, `src/config/types.agent-defaults.ts`; PicoClaw `pkg/agent/context_manager.go`, `pkg/seahorse/short_engine.go`; IronClaw `src/agent/compaction.rs`, `crates/ironclaw_engine/src/executor/compaction.rs`.
 - [x] LLM idle timeout handling
@@ -369,7 +369,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Notes: Koios now supports `[skills.overrides.<id>]` config overrides for enablement, display metadata, agent targeting, trust, and skill-owned slash commands, including round-trip encoding in generated config templates.
 	- Research notes: OpenClaw has the clearest user-facing config story for skill overrides today. PicoClaw also exposes install/import/update management surfaces that can carry override settings. IronClaw's config-backed skills system is the best reference if Koios wants per-skill structured overrides in persistent config.
 	- References: OpenClaw `docs/tools/skills-config.md`, `src/agents/skills.ts`; PicoClaw `pkg/skills/loader.go`, `web/backend/api/skills.go`; IronClaw `src/config/skills.rs`, `src/skills/mod.rs`.
-- [ ] Skill-local env and API key injection
+- [-] Skill-local env and API key injection
 	- Research notes: IronClaw is the strongest architectural reference here because its extension/tool auth model and secrets plumbing are already explicit and typed. OpenClaw also has a strong plugin/skill runtime with secrets and setup surfaces. PicoClaw is useful for practical installer/UI flows, but less explicit about per-skill secret injection than the other two.
 	- References: OpenClaw `docs/tools/creating-skills.md`, `docs/plugins/sdk-overview.md`; PicoClaw `pkg/tools/skills_install.go`, `web/backend/api/skills.go`; IronClaw `src/tools/wasm/capabilities_schema.rs`, `src/bridge/auth_manager.rs`, `src/cli/tool.rs`.
 - [x] Installer metadata for skills
@@ -392,7 +392,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 	- Notes: Koios now loads bundled skills from `internal/skills/bundled`, and the daemon ships with built-in bundled skill content plus bundled command definitions.
 	- Research notes: All three repos support this idea in some form. OpenClaw has bundled skills plus onboarding helpers, PicoClaw exposes built-in/global/workspace skills in its launcher, and IronClaw explicitly distinguishes bundled skills in config and docs.
 	- References: OpenClaw `src/commands/onboard-skills.ts`, `docs/tools/skills.md`; PicoClaw `web/frontend/src/components/agent/skills/*`, `pkg/skills/loader.go`; IronClaw `src/config/skills.rs`, `docs/capabilities/skills.mdx`.
-- [ ] Skills registry search (ClawHub API integration)
+- [-] Skills registry search (ClawHub API integration)
 	- Research notes: PicoClaw is actually the clearest visible implementation reference because it already has registry search/install UX end to end. OpenClaw is also strong here through its managed-skill and hub-oriented flows. IronClaw has the right catalog architecture, but the current search surfaced less of a public registry UX than PicoClaw.
 	- References: OpenClaw `ui/src/ui/views/skills.ts`, `src/cli/skills-cli.ts`; PicoClaw `pkg/skills/clawhub_registry.go`, `web/frontend/src/components/agent/hub/*`; IronClaw `crates/ironclaw_skills/src/catalog.rs`, `src/cli/skills.rs`.
 - [x] Skill install gating + confirmation flow
@@ -844,19 +844,18 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Message chunking/splitting per-channel limits
 	- Research notes: OpenClaw has the clearest cross-channel treatment with per-channel `textChunkLimit`, `chunkMode`, and streaming modes. PicoClaw has some channel max-length defaults and per-channel settings, but less visible centralized chunk-policy machinery. IronClaw did not show an equally explicit cross-channel chunking subsystem in the current search.
 	- References: OpenClaw `docs/gateway/configuration-reference.md` (Slack, WhatsApp, Mattermost), `src/config/types.queue.ts`; PicoClaw `pkg/config/defaults.go`; IronClaw `src/tools/builtin/message.rs` for outbound target abstraction, but no obvious chunk-policy equivalent found in current repo search.
-
 - [x] Peer-linked BYOK LLM provider profiles with request-time provider resolution
-- Research notes: OpenClaw, PicoClaw, and IronClaw all point toward long-term solution being profile- and auth-manager-based rather than single global provider config. PicoClaw and IronClaw are strongest references for multiple auth profiles and typed credential ownership. OpenClaw is strongest reference for runtime provider compatibility, model/provider routing, and user-facing provider switching. Koios already has global provider routing plus per-session `model_override` and `browser_profile`, so missing long-term piece is peer-scoped encrypted provider profiles exposed by API and resolved at request time.
-- Suggested Koios shape:
-	1. Add peer-scoped encrypted provider-profile store separate from generic preferences so API keys never live in plaintext preference rows.
-	2. Expose peer API/RPC methods such as `peer.llm_provider.set`, `peer.llm_provider.get`, `peer.llm_provider.list`, `peer.llm_provider.delete`, `peer.llm_provider.test`, and `peer.llm_provider.activate`.
-	3. Persist peer default provider-profile link separately from secret material, then extend `session.patch` with `provider_profile` so sessions can temporarily override peer default.
-	4. Refactor runtime/provider path so provider selection happens per request using `peer_id`, `session_key`, `provider_profile`, and `model_override`, instead of single startup-global provider only.
-	5. Keep current global `[llm]` config as fallback/default path when peer has no linked BYOK profile.
-	6. Reuse existing provider compatibility layer for OpenAI-compatible, Anthropic, Gemini, OpenRouter, NIM, Ollama, vLLM, and LiteLLM endpoints.
-	7. Add redaction, masked previews, cross-peer isolation checks, and provider-profile test endpoints so secrets never leak into logs, transcripts, run records, or artifacts.
-	8. Add introspection so `model.list` or equivalent surfaces global models plus peer-linked provider profiles available to current peer.
-- References: OpenClaw `docs/providers/index.md`, `docs/providers/models.md`, `src/agents/provider-attribution.ts`, `src/auto-reply/reply/agent-runner.ts`; PicoClaw `docs/ANTIGRAVITY_AUTH.md`, `docs/providers.md`, `web/frontend/src/components/credentials/credentials-page.tsx`, `pkg/providers/factory_provider.go`; IronClaw `src/bridge/auth_manager.rs`, `src/llm/registry.rs`, `src/llm/mod.rs`, `docs/capabilities/llm-providers.md`.
+  - Research notes: OpenClaw, PicoClaw, and IronClaw all point toward long-term solution being profile- and auth-manager-based rather than single global provider config. PicoClaw and IronClaw are strongest references for multiple auth profiles and typed credential ownership. OpenClaw is strongest reference for runtime provider compatibility, model/provider routing, and user-facing provider switching. Koios already has global provider routing plus per-session `model_override` and `browser_profile`, so missing long-term piece is peer-scoped encrypted provider profiles exposed by API and resolved at request time.
+    - Suggested Koios shape:
+  	1. Add peer-scoped encrypted provider-profile store separate from generic preferences so API keys never live in plaintext preference rows.
+  	2. Expose peer API/RPC methods such as `peer.llm_provider.set`, `peer.llm_provider.get`, `peer.llm_provider.list`, `peer.llm_provider.delete`, `peer.llm_provider.test`, and `peer.llm_provider.activate`.
+  	3. Persist peer default provider-profile link separately from secret material, then extend `session.patch` with `provider_profile` so sessions can temporarily override peer default.
+  	4. Refactor runtime/provider path so provider selection happens per request using `peer_id`, `session_key`, `provider_profile`, and `model_override`, instead of single startup-global provider only.
+  	5. Keep current global `[llm]` config as fallback/default path when peer has no linked BYOK profile.
+  	6. Reuse existing provider compatibility layer for OpenAI-compatible, Anthropic, Gemini, OpenRouter, NIM, Ollama, vLLM, and LiteLLM endpoints.
+  	7. Add redaction, masked previews, cross-peer isolation checks, and provider-profile test endpoints so secrets never leak into logs, transcripts, run records, or artifacts.
+  	8. Add introspection so `model.list` or equivalent surfaces global models plus peer-linked provider profiles available to current peer.
+  - References: OpenClaw `docs/providers/index.md`, `docs/providers/models.md`, `src/agents/provider-attribution.ts`, `src/auto-reply/reply/agent-runner.ts`; PicoClaw `docs/ANTIGRAVITY_AUTH.md`, `docs/providers.md`, `web/frontend/src/components/credentials/credentials-page.tsx`, `pkg/providers/factory_provider.go`; IronClaw `src/bridge/auth_manager.rs`, `src/llm/registry.rs`, `src/llm/mod.rs`, `docs/capabilities/llm-providers.md`.
 - [x] Shared cross-channel `message` tool for outbound messages
 	- Research notes: This is one of the clearer parity items. OpenClaw exposes a channel-agnostic outbound message surface via its CLI and channel action adapters. PicoClaw already has a shared `message` tool with per-round send tracking. IronClaw also has a built-in cross-channel `message` tool that can target Slack, Telegram, Signal, and other transports.
 	- References: OpenClaw `docs/cli/message.md`, `extensions/telegram/src/channel-actions.ts`; PicoClaw `pkg/tools/message.go`; IronClaw `src/tools/builtin/message.rs`.

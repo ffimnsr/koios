@@ -3,7 +3,8 @@ that preserves all information needed to continue work seamlessly. Optimize for 
 ability to continue working, not human readability.
 
 <analysis-instructions>
-Before generating your summary, analyze the transcript in <think>...</think> tags:
+Analyze the transcript privately before writing the summary.
+Do not output your analysis or chain-of-thought.
 1. What did the user originally request? (Exact phrasing)
 2. What actions succeeded? What failed and why?
 3. Did the user correct or redirect the assistant at any point?

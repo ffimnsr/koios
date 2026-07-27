@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ffimnsr/koios/internal/config"
 )
 
 func TestAcquireGatewayLock_Success(t *testing.T) {
@@ -56,5 +58,71 @@ func TestReleaseGatewayLock_RemovesFile(t *testing.T) {
 
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Error("lock file should be removed after release")
+	}
+}
+
+func TestLocalCompactionEnabled(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{
+			name: "nil config",
+			cfg:  nil,
+			want: false,
+		},
+		{
+			name: "off mode",
+			cfg: &config.Config{
+				CompactMode:           "off",
+				CompactThreshold:      10,
+				CompactTokenThreshold: 1000,
+			},
+			want: false,
+		},
+		{
+			name: "server mode",
+			cfg: &config.Config{
+				CompactMode:           "server",
+				CompactThreshold:      10,
+				CompactTokenThreshold: 1000,
+			},
+			want: false,
+		},
+		{
+			name: "local message threshold",
+			cfg: &config.Config{
+				CompactMode:      "local",
+				CompactThreshold: 10,
+			},
+			want: true,
+		},
+		{
+			name: "local token threshold only",
+			cfg: &config.Config{
+				CompactMode:           "local",
+				CompactThreshold:      0,
+				CompactTokenThreshold: 1000,
+			},
+			want: true,
+		},
+		{
+			name: "local no thresholds",
+			cfg: &config.Config{
+				CompactMode:           "local",
+				CompactThreshold:      0,
+				CompactTokenThreshold: 0,
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := localCompactionEnabled(tc.cfg); got != tc.want {
+				t.Fatalf("localCompactionEnabled() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

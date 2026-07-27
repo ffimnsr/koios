@@ -42,12 +42,64 @@ Key sections:
 - `koios hide-secret` emits encrypted blobs for secret-valued fields such as `api_key` and `api_keys`; new blobs stay readable across container or hostname changes when same Koios config directory is preserved
 - `[session]`, `[compaction]`, `[memory]` for context and storage behavior
 - `session.prune_keep_tool_messages` prunes older tool chatter from active request context without compacting the whole session
+- `compaction.mode` chooses between Koios-managed summaries (`local`), provider-managed compaction where supported (`server`), or disabling compaction (`off`)
 - `session.retention`, `session.max_entries`, `session.idle_reset_after`, and `session.daily_reset_time` control session cleanup and auto-reset
 - `[cron]`, `[heartbeat]`, `[agent]` for scheduler and agent runtime settings (`agent.max_steps` defaults chat/agent runs to `80` unless overridden per request)
 - `[tools]` chat-tool profiles, allow/deny lists, and exec approval settings
 - `[mcp]` startup MCP servers for stdio/http/sse transports; useful when extending the Koios container with bundled MCP binaries
 - `[channels.telegram]` for Telegram delivery, DM policy, and optional inbox routing into an owner peer
 - `[workspace]` agent sandbox storage (`root`, `per_agent`, `max_file_bytes`)
+
+---
+
+## Compaction modes
+
+Koios supports three compaction modes under `[compaction]`:
+
+- `local` — Koios summarizes older turns itself before sending the next request. Choose this when you want predictable provider-agnostic behavior. This mode uses `compaction.threshold`, optional `compaction.token_threshold`, and `compaction.reserve`.
+- `server` — Koios asks the provider to compact conversation state on the provider side. Choose this when your active profile supports native server-side compaction and you want the provider to own the conversation state. Currently implemented for `openai` and `anthropic` profiles only. In this mode, local compaction is disabled, and Koios currently forces those requests to run without streaming so compaction state can be tracked safely.
+- `off` — disables both local compaction and provider compaction requests. Choose this when you want only normal pruning and context-budget behavior.
+
+Examples:
+
+```toml
+# Default: Koios-managed compaction
+[compaction]
+mode = "local"
+threshold = 60
+# Optional approximate token-based trigger for local compaction.
+# Leave 0 to disable and rely on message count only.
+token_threshold = 0
+reserve = 20
+```
+
+```toml
+# OpenAI server-side compaction
+[compaction]
+mode = "server"
+
+[compaction.openai]
+compact_threshold = 200000
+```
+
+```toml
+# Anthropic server-side compaction
+[compaction]
+mode = "server"
+
+[compaction.anthropic]
+trigger_tokens = 150000
+pause_after_compaction = false
+# Optional: steer Claude's compaction step.
+# Useful if you want it to avoid tool calls while summarizing.
+instructions = ""
+```
+
+```toml
+# Disable compaction entirely
+[compaction]
+mode = "off"
+```
 
 ---
 

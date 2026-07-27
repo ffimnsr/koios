@@ -13,11 +13,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -25,6 +27,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/redact"
+	"github.com/ffimnsr/koios/internal/requestctx"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -69,6 +72,15 @@ type SessionPolicy struct {
 	// ProviderProfile selects the BYOK LLM provider profile for this session.
 	// Empty falls back to the peer default or gateway global provider.
 	ProviderProfile string `json:"provider_profile,omitempty"`
+	// OpenAIPreviousResponseID stores the most recent OpenAI Responses API
+	// response ID for append-only multi-turn replay.
+	OpenAIPreviousResponseID string `json:"openai_previous_response_id,omitempty"`
+	// OpenAICoveredMessages tracks how many transcript messages are already
+	// represented by OpenAIPreviousResponseID on the provider side.
+	OpenAICoveredMessages int `json:"openai_covered_messages,omitempty"`
+	// OpenAICoveredMessagesHash hashes the covered transcript prefix so the
+	// runtime can detect when local history has diverged and fall back safely.
+	OpenAICoveredMessagesHash string `json:"openai_covered_messages_hash,omitempty"`
 	// QueueMode controls how mid-run steering notes are applied.
 	// Valid values: steer | followup | collect
 	QueueMode string `json:"queue_mode,omitempty"`
@@ -135,14 +147,15 @@ type AppendEvent struct {
 // CompactionStatus describes whether a session can currently be compacted and
 // how many messages would be summarized vs retained.
 type CompactionStatus struct {
-	Enabled            bool   `json:"enabled"`
-	MemoryFlushEnabled bool   `json:"memory_flush_enabled"`
-	SessionMessages    int    `json:"session_messages"`
-	Reserve            int    `json:"reserve"`
-	CompactedMessages  int    `json:"compacted_messages"`
-	KeptMessages       int    `json:"kept_messages"`
-	Eligible           bool   `json:"eligible"`
-	Reason             string `json:"reason,omitempty"`
+	Enabled               bool   `json:"enabled"`
+	MemoryFlushEnabled    bool   `json:"memory_flush_enabled"`
+	SessionMessages       int    `json:"session_messages"`
+	EstimatedPromptTokens int    `json:"estimated_prompt_tokens"`
+	Reserve               int    `json:"reserve"`
+	CompactedMessages     int    `json:"compacted_messages"`
+	KeptMessages          int    `json:"kept_messages"`
+	Eligible              bool   `json:"eligible"`
+	Reason                string `json:"reason,omitempty"`
 }
 
 // CompactionReport captures the outcome of one compaction attempt.
@@ -153,6 +166,13 @@ type CompactionReport struct {
 	MemoryFlushError string           `json:"memory_flush_error,omitempty"`
 	SummaryChars     int              `json:"summary_chars"`
 	Error            string           `json:"error,omitempty"`
+}
+
+type compactionAttempt struct {
+	baseMessages []types.Message
+	toCompact    []types.Message
+	splitIdx     int
+	report       CompactionReport
 }
 
 // History returns a snapshot copy of the session's message slice.
@@ -168,59 +188,69 @@ func (s *Session) History() []types.Message {
 	return cp
 }
 
-// appendMsgs adds msgs, then compacts or prunes, and persists to disk.
+// appendMsgs adds msgs, prepares compaction when needed, or prunes and persists
+// immediately when no compaction pass is required.
 // Must be called with s.mu held.
-func (s *Session) appendMsgs(ctx context.Context, peerID string, maxMsgs, compactThreshold, compactReserve int, compactor Compactor, flusher CompactionMemoryFlusher, hooks *ops.Manager, msgs []types.Message) {
+func (s *Session) appendMsgs(msgs []types.Message, maxMsgs, compactThreshold, compactTokenThreshold, compactReserve int, compactorEnabled, memoryFlushEnabled bool) *compactionAttempt {
 	s.Messages = append(s.Messages, msgs...)
 	s.lastActivity = time.Now().UTC()
 
-	// Compaction path: LLM summarises old turns when threshold is reached.
-	if compactor != nil && compactThreshold > 0 && len(s.Messages) >= compactThreshold {
-		if report := s.compact(ctx, peerID, compactor, flusher, hooks, compactReserve); report.Compacted {
-			return // compact called rewriteFile; nothing more to do
-		}
-		// Compaction failed — fall through to naive pruning + file append.
-	}
-
-	// Naive pruning: drop oldest non-system messages to stay within cap.
-	if maxMsgs > 0 && len(s.Messages) > maxMsgs {
-		sysEnd := 0
-		for sysEnd < len(s.Messages) && s.Messages[sysEnd].Role == "system" {
-			sysEnd++
-		}
-		excess := len(s.Messages) - maxMsgs
-		cutEnd := min(sysEnd+excess, len(s.Messages))
-		s.Messages = append(s.Messages[:sysEnd], s.Messages[cutEnd:]...)
-	}
-
-	// Append only the new messages to the journal file.
 	entries := make([]journalEntry, len(msgs))
 	for i := range msgs {
 		m := msgs[i]
 		entries[i] = journalEntry{Type: "msg", Message: &m}
 	}
+
+	// Compaction path: snapshot the work under lock, then execute it later
+	// without blocking the session on a slow LLM call.
+	if compactorEnabled && shouldCompactLocked(s.Messages, compactThreshold, compactTokenThreshold) {
+		attempt := s.prepareCompactionLocked(compactReserve, compactorEnabled, memoryFlushEnabled)
+		s.writeEntries(entries)
+		return attempt
+	}
+
+	pruned := s.pruneToMaxLocked(maxMsgs)
+	if pruned {
+		s.rewriteFile()
+		return nil
+	}
+
+	// Append only the new messages to the journal file.
 	s.writeEntries(entries)
+	return nil
 }
 
-// compact flushes the soon-to-be-compacted transcript to memory, calls the
-// Compactor to summarise old messages, updates s.Messages, and rewrites the
-// session file.
-// Must be called with s.mu held.
-func (s *Session) compact(ctx context.Context, peerID string, compactor Compactor, flusher CompactionMemoryFlusher, hooks *ops.Manager, reserve int) CompactionReport {
-	report := CompactionReport{Status: buildCompactionStatus(len(s.Messages), reserve, compactor != nil, flusher != nil)}
+func (s *Session) prepareCompactionLocked(reserve int, enabled, memoryFlushEnabled bool) *compactionAttempt {
+	tokens, _ := requestctx.EstimateRequestTokens(&types.ChatRequest{Messages: s.Messages})
+	report := CompactionReport{Status: buildCompactionStatus(len(s.Messages), tokens, reserve, enabled, memoryFlushEnabled)}
+	if !report.Status.Eligible || !report.Status.Enabled {
+		return nil
+	}
+	splitIdx := report.Status.CompactedMessages
+	base := cloneMessages(s.Messages)
+	toCompact := cloneMessages(s.Messages[:splitIdx])
+	return &compactionAttempt{
+		baseMessages: base,
+		toCompact:    toCompact,
+		splitIdx:     splitIdx,
+		report:       report,
+	}
+}
+
+func (s *Session) executeCompaction(ctx context.Context, peerID string, attempt *compactionAttempt, compactor Compactor, flusher CompactionMemoryFlusher, hooks *ops.Manager) CompactionReport {
+	if attempt == nil {
+		return CompactionReport{}
+	}
+	report := attempt.report
 	if !report.Status.Eligible || !report.Status.Enabled {
 		return report
 	}
-	splitIdx := report.Status.CompactedMessages
-	toCompact := make([]types.Message, splitIdx)
-	copy(toCompact, s.Messages[:splitIdx])
-	kept := s.Messages[splitIdx:]
 	if hooks != nil {
 		if err := hooks.Emit(ctx, ops.Event{
 			Name:   ops.HookBeforeCompaction,
 			PeerID: peerID,
 			Data: map[string]any{
-				"messages": len(toCompact),
+				"messages": len(attempt.toCompact),
 				"reserve":  report.Status.Reserve,
 			},
 		}); err != nil {
@@ -230,7 +260,7 @@ func (s *Session) compact(ctx context.Context, peerID string, compactor Compacto
 		}
 	}
 	if flusher != nil {
-		if err := flusher.FlushCompaction(ctx, peerID, toCompact); err != nil {
+		if err := flusher.FlushCompaction(ctx, peerID, attempt.toCompact); err != nil {
 			report.MemoryFlushError = err.Error()
 			slog.Warn("session compaction memory flush failed", "peer", peerID, "err", err)
 		} else {
@@ -238,19 +268,22 @@ func (s *Session) compact(ctx context.Context, peerID string, compactor Compacto
 		}
 	}
 
-	summary, err := compactor.Compact(ctx, toCompact)
+	summary, err := compactor.Compact(ctx, attempt.toCompact)
 	if err != nil {
-		slog.Warn("session compaction failed, keeping full history", "err", err)
+		slog.Warn("session compaction failed, keeping full history", "peer", peerID, "err", err)
 		report.Error = err.Error()
 		return report
 	}
-
-	checkpoint := types.Message{
-		Role:    "system",
-		Content: "<summary>" + summary + "</summary>",
+	summary, err = normalizeCompactionSummary(summary)
+	if err != nil {
+		slog.Warn("session compaction produced unusable summary", "peer", peerID, "err", err)
+		report.Error = err.Error()
+		return report
 	}
-	s.Messages = append([]types.Message{checkpoint}, kept...)
-	s.rewriteFile()
+	if !s.applyCompactionAttemptLocked(attempt, summary) {
+		report.Error = "session changed during compaction; skipped applying summary"
+		return report
+	}
 	report.Compacted = true
 	report.SummaryChars = len(summary)
 	if hooks != nil {
@@ -259,7 +292,7 @@ func (s *Session) compact(ctx context.Context, peerID string, compactor Compacto
 			PeerID: peerID,
 			Data: map[string]any{
 				"summary_chars": len(summary),
-				"kept_messages": len(kept),
+				"kept_messages": len(attempt.baseMessages) - attempt.splitIdx,
 			},
 		}); err != nil {
 			slog.Warn("session post-compaction hook failed", "peer", peerID, "err", err)
@@ -268,11 +301,97 @@ func (s *Session) compact(ctx context.Context, peerID string, compactor Compacto
 	return report
 }
 
-func buildCompactionStatus(totalMessages, reserve int, enabled, memoryFlushEnabled bool) CompactionStatus {
+func (s *Session) applyCompactionAttemptLocked(attempt *compactionAttempt, summary string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if attempt == nil || !hasMessagePrefix(s.Messages, attempt.baseMessages) {
+		return false
+	}
+	suffix := cloneMessages(s.Messages[len(attempt.baseMessages):])
+	checkpoint := types.Message{
+		Role:    "system",
+		Content: "<summary>" + summary + "</summary>",
+	}
+	next := make([]types.Message, 0, 1+len(attempt.baseMessages)-attempt.splitIdx+len(suffix))
+	next = append(next, checkpoint)
+	next = append(next, cloneMessages(attempt.baseMessages[attempt.splitIdx:])...)
+	next = append(next, suffix...)
+	s.Messages = next
+	s.rewriteFile()
+	return true
+}
+
+func pruneReportAfterFailedCompaction(s *Session, maxMsgs int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pruneToMaxLocked(maxMsgs) {
+		s.rewriteFile()
+	}
+}
+
+func (s *Session) pruneToMaxLocked(maxMsgs int) bool {
+	if maxMsgs <= 0 || len(s.Messages) <= maxMsgs {
+		return false
+	}
+	sysEnd := 0
+	for sysEnd < len(s.Messages) && s.Messages[sysEnd].Role == "system" {
+		sysEnd++
+	}
+	excess := len(s.Messages) - maxMsgs
+	cutEnd := min(sysEnd+excess, len(s.Messages))
+	before := len(s.Messages)
+	s.Messages = append(s.Messages[:sysEnd], s.Messages[cutEnd:]...)
+	return len(s.Messages) != before
+}
+
+func hasMessagePrefix(messages, prefix []types.Message) bool {
+	if len(prefix) > len(messages) {
+		return false
+	}
+	for i := range prefix {
+		if !reflect.DeepEqual(messages[i], prefix[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func shouldCompactLocked(messages []types.Message, compactThreshold, compactTokenThreshold int) bool {
+	if compactThreshold > 0 && len(messages) >= compactThreshold {
+		return true
+	}
+	if compactTokenThreshold > 0 {
+		tokens, _ := requestctx.EstimateRequestTokens(&types.ChatRequest{Messages: messages})
+		return tokens >= compactTokenThreshold
+	}
+	return false
+}
+
+func normalizeCompactionSummary(summary string) (string, error) {
+	trimmed := strings.TrimSpace(summary)
+	if trimmed == "" {
+		return "", fmt.Errorf("compaction summary is empty")
+	}
+	if strings.HasPrefix(trimmed, "<summary>") && strings.HasSuffix(trimmed, "</summary>") {
+		trimmed = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "<summary>"), "</summary>"))
+	}
+	if trimmed == "" {
+		return "", fmt.Errorf("compaction summary is empty")
+	}
+	for _, sentinel := range []string{"NO_REPLY", "SILENT_REPLY", "SILENT_REPLY_TOKEN"} {
+		if strings.EqualFold(trimmed, sentinel) {
+			return "", fmt.Errorf("compaction summary returned silent reply token %q", trimmed)
+		}
+	}
+	return trimmed, nil
+}
+
+func buildCompactionStatus(totalMessages, estimatedPromptTokens, reserve int, enabled, memoryFlushEnabled bool) CompactionStatus {
 	status := CompactionStatus{
-		Enabled:            enabled,
-		MemoryFlushEnabled: memoryFlushEnabled,
-		SessionMessages:    totalMessages,
+		Enabled:               enabled,
+		MemoryFlushEnabled:    memoryFlushEnabled,
+		SessionMessages:       totalMessages,
+		EstimatedPromptTokens: estimatedPromptTokens,
 	}
 	if reserve <= 0 || reserve >= totalMessages {
 		reserve = totalMessages / 2
@@ -444,8 +563,12 @@ type Options struct {
 	// CompactThreshold messages accumulate.
 	Compactor Compactor
 	// CompactThreshold is the number of stored messages that triggers compaction.
-	// 0 disables compaction.
+	// 0 disables message-count-based compaction.
 	CompactThreshold int
+	// CompactTokenThreshold is the approximate prompt token budget that triggers
+	// compaction based on requestctx.EstimateRequestTokens. 0 disables token-
+	// based compaction.
+	CompactTokenThreshold int
 	// CompactReserve is the number of most-recent messages kept verbatim after
 	// compaction. Defaults to 20 when a Compactor is set.
 	CompactReserve int
@@ -478,25 +601,26 @@ type Options struct {
 
 // Store maps peer IDs to their isolated sessions.
 type Store struct {
-	mu               sync.RWMutex
-	peers            map[string]*Session
-	maxMsgs          int
-	sessionDir       string
-	compactor        Compactor
-	compactThreshold int
-	compactReserve   int
-	memoryFlusher    CompactionMemoryFlusher
-	hooks            *ops.Manager
-	retention        time.Duration
-	maxEntries       int
-	idleResetAfter   time.Duration
-	idlePruneAfter   time.Duration
-	idlePruneKeep    int
-	dailyResetMins   int
-	policies         map[string]SessionPolicy
-	policyPath       string
-	subscribers      map[string]map[uint64]func(AppendEvent)
-	nextSubID        uint64
+	mu                    sync.RWMutex
+	peers                 map[string]*Session
+	maxMsgs               int
+	sessionDir            string
+	compactor             Compactor
+	compactThreshold      int
+	compactTokenThreshold int
+	compactReserve        int
+	memoryFlusher         CompactionMemoryFlusher
+	hooks                 *ops.Manager
+	retention             time.Duration
+	maxEntries            int
+	idleResetAfter        time.Duration
+	idlePruneAfter        time.Duration
+	idlePruneKeep         int
+	dailyResetMins        int
+	policies              map[string]SessionPolicy
+	policyPath            string
+	subscribers           map[string]map[uint64]func(AppendEvent)
+	nextSubID             uint64
 }
 
 // CompactionMemoryFlusher persists the to-be-compacted turns before they are
@@ -526,22 +650,23 @@ func NewWithOptions(opts Options) *Store {
 		opts.CompactReserve = 20
 	}
 	st := &Store{
-		peers:            make(map[string]*Session),
-		maxMsgs:          opts.MaxMessages,
-		sessionDir:       opts.SessionDir,
-		compactor:        opts.Compactor,
-		compactThreshold: opts.CompactThreshold,
-		compactReserve:   opts.CompactReserve,
-		memoryFlusher:    opts.CompactionMemoryFlusher,
-		hooks:            opts.Hooks,
-		retention:        opts.SessionRetention,
-		maxEntries:       opts.SessionMaxEntries,
-		idleResetAfter:   opts.IdleResetAfter,
-		idlePruneAfter:   opts.IdlePruneAfter,
-		idlePruneKeep:    opts.IdlePruneKeep,
-		dailyResetMins:   -1,
-		policies:         make(map[string]SessionPolicy),
-		subscribers:      make(map[string]map[uint64]func(AppendEvent)),
+		peers:                 make(map[string]*Session),
+		maxMsgs:               opts.MaxMessages,
+		sessionDir:            opts.SessionDir,
+		compactor:             opts.Compactor,
+		compactThreshold:      opts.CompactThreshold,
+		compactTokenThreshold: opts.CompactTokenThreshold,
+		compactReserve:        opts.CompactReserve,
+		memoryFlusher:         opts.CompactionMemoryFlusher,
+		hooks:                 opts.Hooks,
+		retention:             opts.SessionRetention,
+		maxEntries:            opts.SessionMaxEntries,
+		idleResetAfter:        opts.IdleResetAfter,
+		idlePruneAfter:        opts.IdlePruneAfter,
+		idlePruneKeep:         opts.IdlePruneKeep,
+		dailyResetMins:        -1,
+		policies:              make(map[string]SessionPolicy),
+		subscribers:           make(map[string]map[uint64]func(AppendEvent)),
 	}
 	if opts.DailyResetEnabled {
 		st.dailyResetMins = opts.DailyResetMinutes
@@ -611,10 +736,25 @@ func (st *Store) AppendCtxWithSource(ctx context.Context, peerID, source string,
 		return
 	}
 	msgs = redact.Messages(msgs)
+	st.mu.RLock()
+	maxMsgs := st.maxMsgs
+	compactThreshold := st.compactThreshold
+	compactTokenThreshold := st.compactTokenThreshold
+	compactReserve := st.compactReserve
+	compactor := st.compactor
+	flusher := st.memoryFlusher
+	hooks := st.hooks
+	st.mu.RUnlock()
 	sess := st.Get(peerID)
 	sess.mu.Lock()
-	sess.appendMsgs(ctx, peerID, st.maxMsgs, st.compactThreshold, st.compactReserve, st.compactor, st.memoryFlusher, st.hooks, msgs)
+	attempt := sess.appendMsgs(msgs, maxMsgs, compactThreshold, compactTokenThreshold, compactReserve, compactor != nil, flusher != nil)
 	sess.mu.Unlock()
+	if attempt != nil && compactor != nil {
+		report := sess.executeCompaction(ctx, peerID, attempt, compactor, flusher, hooks)
+		if !report.Compacted {
+			pruneReportAfterFailedCompaction(sess, maxMsgs)
+		}
+	}
 	st.notifyAppend(AppendEvent{
 		PeerID:   peerID,
 		Source:   source,
@@ -896,6 +1036,9 @@ func isZeroPolicy(p SessionPolicy) bool {
 		p.SessionKind == "" &&
 		!p.ElevatedBash &&
 		p.ProviderProfile == "" &&
+		p.OpenAIPreviousResponseID == "" &&
+		p.OpenAICoveredMessages == 0 &&
+		p.OpenAICoveredMessagesHash == "" &&
 		len(p.ToolsAllow) == 0 &&
 		len(p.ToolsDeny) == 0
 }
@@ -1007,7 +1150,8 @@ func (st *Store) CompactionStatus(peerID string) CompactionStatus {
 	sess := st.Get(peerID)
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	return buildCompactionStatus(len(sess.Messages), reserve, compactorEnabled, memoryFlushEnabled)
+	tokens, _ := requestctx.EstimateRequestTokens(&types.ChatRequest{Messages: sess.Messages})
+	return buildCompactionStatus(len(sess.Messages), tokens, reserve, compactorEnabled, memoryFlushEnabled)
 }
 
 // CompactNow forces immediate compaction for peerID if a compactor is
@@ -1021,8 +1165,9 @@ func (st *Store) CompactNow(ctx context.Context, peerID string) CompactionReport
 	st.mu.RUnlock()
 	sess := st.Get(peerID)
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	return sess.compact(ctx, peerID, compactor, flusher, hooks, reserve)
+	attempt := sess.prepareCompactionLocked(reserve, compactor != nil, flusher != nil)
+	sess.mu.Unlock()
+	return sess.executeCompaction(ctx, peerID, attempt, compactor, flusher, hooks)
 }
 
 func (st *Store) deleteSession(peerID string) bool {

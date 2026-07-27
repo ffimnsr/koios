@@ -187,6 +187,63 @@ func TestOpenAICompleteUsesResponsesToolReplay(t *testing.T) {
 	}
 }
 
+func TestOpenAICompleteUsesPreviousResponseIDForAppendOnlyServerCompaction(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"resp_next","object":"response","created_at":1,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`)
+	}))
+	defer server.Close()
+
+	p := &openAIProvider{
+		client:      server.Client(),
+		apiKey:      "test-key",
+		baseURL:     server.URL,
+		model:       "gpt-5",
+		idleTimeout: time.Second,
+		hooks:       openAICompatibleHooks("openai"),
+	}
+
+	_, err := p.Complete(context.Background(), &types.ChatRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "hi"},
+			{Role: "user", Content: "continue"},
+		},
+		OpenAIServerCompaction: &types.OpenAIServerCompaction{CompactThreshold: 200000},
+		OpenAIConversationState: &types.OpenAIConversationState{
+			PreviousResponseID:  "resp_prev",
+			CoveredMessages:     2,
+			CoveredMessagesHash: openAIConversationMessagesHash([]types.Message{{Role: "user", Content: "hello"}, {Role: "assistant", Content: "hi"}}),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := requestBody["previous_response_id"]; got != "resp_prev" {
+		t.Fatalf("previous_response_id = %#v, want resp_prev", got)
+	}
+	cm, ok := requestBody["context_management"].([]any)
+	if !ok || len(cm) != 1 {
+		t.Fatalf("context_management = %#v, want one entry", requestBody["context_management"])
+	}
+	entry, ok := cm[0].(map[string]any)
+	if !ok || entry["type"] != "compaction" || entry["compact_threshold"] != float64(200000) {
+		t.Fatalf("unexpected context_management entry: %#v", cm[0])
+	}
+	input, ok := requestBody["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("input = %#v, want one delta item", requestBody["input"])
+	}
+	msg, ok := input[0].(map[string]any)
+	if !ok || msg["type"] != "message" || msg["role"] != "user" {
+		t.Fatalf("unexpected delta item: %#v", input[0])
+	}
+}
+
 func TestOpenAICompleteFallsBackToChatCompletionsWithoutReasoningOrTools(t *testing.T) {
 	var requestPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -859,6 +916,73 @@ func TestGeminiToolReplayHasThoughtSignature(t *testing.T) {
 	}
 	if !geminiToolReplayHasThoughtSignature(json.RawMessage(`[{"type":"functionCall","id":"call_1","name":"peer.llm_provider.list","args":{},"thought_signature":"sig_1"}]`)) {
 		t.Fatal("expected Gemini functionCall replay with thought_signature to be preserved")
+	}
+}
+
+func TestAnthropicCompleteIncludesServerCompactionAndPreservesCompactionBlocks(t *testing.T) {
+	var requestBody map[string]any
+	var betaHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		betaHeader = r.Header.Get("anthropic-beta")
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_compact","type":"message","role":"assistant","content":[{"type":"compaction","content":"summary"},{"type":"text","text":"hello"}],"usage":{"input_tokens":10,"output_tokens":4}}`)
+	}))
+	defer server.Close()
+
+	p := &anthropicProvider{
+		client:      server.Client(),
+		apiKey:      "test-key",
+		baseURL:     server.URL,
+		model:       "claude-sonnet-5",
+		idleTimeout: time.Second,
+		hooks:       anthropicHooks(),
+	}
+
+	resp, err := p.Complete(context.Background(), &types.ChatRequest{
+		Messages: []types.Message{{
+			Role:       "assistant",
+			Content:    "hello",
+			RawContent: json.RawMessage(`[{"type":"compaction","content":"summary"},{"type":"text","text":"hello"}]`),
+		}},
+		AnthropicServerCompaction: &types.AnthropicServerCompaction{
+			TriggerTokens:        150000,
+			PauseAfterCompaction: true,
+			Instructions:         "text only",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if betaHeader != "compact-2026-01-12" {
+		t.Fatalf("anthropic-beta = %q, want compact-2026-01-12", betaHeader)
+	}
+	ctxMgmt, ok := requestBody["context_management"].(map[string]any)
+	if !ok {
+		t.Fatalf("context_management = %#v, want object", requestBody["context_management"])
+	}
+	edits, ok := ctxMgmt["edits"].([]any)
+	if !ok || len(edits) != 1 {
+		t.Fatalf("edits = %#v, want one entry", ctxMgmt["edits"])
+	}
+	edit, ok := edits[0].(map[string]any)
+	if !ok || edit["type"] != "compact_20260112" {
+		t.Fatalf("unexpected compaction edit: %#v", edits[0])
+	}
+	if got := edit["pause_after_compaction"]; got != true {
+		t.Fatalf("pause_after_compaction = %#v, want true", got)
+	}
+	trigger, ok := edit["trigger"].(map[string]any)
+	if !ok || trigger["type"] != "input_tokens" || trigger["value"] != float64(150000) {
+		t.Fatalf("unexpected trigger: %#v", edit["trigger"])
+	}
+	if resp.Choices[0].Message.Content != "hello" {
+		t.Fatalf("message content = %q, want hello", resp.Choices[0].Message.Content)
+	}
+	if !strings.Contains(string(resp.Choices[0].Message.RawContent), `"type":"compaction"`) {
+		t.Fatalf("expected raw content to preserve compaction block, got %s", string(resp.Choices[0].Message.RawContent))
 	}
 }
 

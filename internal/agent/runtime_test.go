@@ -169,6 +169,68 @@ func TestRuntime_UsesConfiguredDefaultMaxStepsWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestRuntime_PersistsAndReusesOpenAIServerCompactionState(t *testing.T) {
+	store := session.New(20)
+	var captured []*types.ChatRequest
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			cp := *req
+			captured = append(captured, &cp)
+			id := "resp_1"
+			text := "first"
+			if len(captured) == 2 {
+				id = "resp_2"
+				text = "second"
+			}
+			return &types.ChatResponse{
+				ID:      id,
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: text}}},
+			}, nil
+		},
+		caps: types.ProviderCapabilities{Name: "openai", SupportsStreaming: true},
+	}
+	rt := agent.NewRuntime(store, prov, "gpt-5", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetServerCompaction("server", 200000, 150000, false, "")
+
+	if _, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	}); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	policy := store.Policy("peer::main")
+	if policy.OpenAIPreviousResponseID != "resp_1" {
+		t.Fatalf("previous response id = %q, want resp_1", policy.OpenAIPreviousResponseID)
+	}
+	if policy.OpenAICoveredMessages != 3 {
+		t.Fatalf("covered messages = %d, want 3", policy.OpenAICoveredMessages)
+	}
+
+	if _, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "continue"}},
+	}); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if len(captured) != 2 {
+		t.Fatalf("captured requests = %d, want 2", len(captured))
+	}
+	if captured[0].OpenAIServerCompaction == nil || captured[0].OpenAIConversationState != nil {
+		t.Fatalf("unexpected first request compaction state: %#v", captured[0])
+	}
+	if captured[1].OpenAIServerCompaction == nil {
+		t.Fatalf("expected second request server compaction config")
+	}
+	if captured[1].OpenAIConversationState == nil {
+		t.Fatalf("expected second request previous response state")
+	}
+	if captured[1].OpenAIConversationState.PreviousResponseID != "resp_1" {
+		t.Fatalf("second previous response id = %q, want resp_1", captured[1].OpenAIConversationState.PreviousResponseID)
+	}
+}
+
 func TestRuntime_RetriesTransientFailures(t *testing.T) {
 	store := session.New(20)
 	attempts := 0

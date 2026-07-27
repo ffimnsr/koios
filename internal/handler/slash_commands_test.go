@@ -463,12 +463,24 @@ func TestSlashStatus(t *testing.T) {
 	if !strings.Contains(text, "Model") {
 		t.Errorf("expected 'Model' in /status output, got: %s", text)
 	}
+	if !strings.Contains(text, "Estimated session prompt tokens:") {
+		t.Errorf("expected estimated session prompt tokens in /status output, got: %s", text)
+	}
 	// The result must also carry a machine-readable "status" field.
 	var result struct {
 		Status json.RawMessage `json:"status"`
 	}
 	if err := json.Unmarshal(msg.Result, &result); err != nil || len(result.Status) == 0 {
 		t.Errorf("expected status field in result, got result: %s", msg.Result)
+	}
+	var statusPayload struct {
+		EstimatedPromptTokens int `json:"estimated_prompt_tokens"`
+	}
+	if err := json.Unmarshal(result.Status, &statusPayload); err != nil {
+		t.Fatalf("unmarshal status payload: %v", err)
+	}
+	if statusPayload.EstimatedPromptTokens < 0 {
+		t.Fatalf("expected non-negative estimated_prompt_tokens, got %#v", statusPayload)
 	}
 }
 
@@ -576,8 +588,22 @@ func TestSlashCompact_Status(t *testing.T) {
 	if !strings.Contains(text, "Eligible now: yes") {
 		t.Fatalf("expected eligible compaction status, got: %s", text)
 	}
+	if !strings.Contains(text, "Estimated session prompt tokens:") {
+		t.Fatalf("expected estimated session prompt tokens in compaction status, got: %s", text)
+	}
 	if !strings.Contains(text, "Memory flush before compaction: on") {
 		t.Fatalf("expected memory flush status, got: %s", text)
+	}
+	var result struct {
+		Compaction struct {
+			EstimatedPromptTokens int `json:"estimated_prompt_tokens"`
+		} `json:"compaction"`
+	}
+	if err := json.Unmarshal(msg.Result, &result); err != nil {
+		t.Fatalf("unmarshal compact status result: %v", err)
+	}
+	if result.Compaction.EstimatedPromptTokens <= 0 {
+		t.Fatalf("expected positive estimated_prompt_tokens in compaction status payload, got %#v", result.Compaction)
 	}
 }
 

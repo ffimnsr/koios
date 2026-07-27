@@ -46,6 +46,7 @@ import (
 	"github.com/ffimnsr/koios/internal/briefing"
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/memory"
+	"github.com/ffimnsr/koios/internal/requestctx"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/skills"
 	"github.com/ffimnsr/koios/internal/tasks"
@@ -495,6 +496,7 @@ type slashStatusView struct {
 	providerProfileName     string
 	resolvedProviderProfile string
 	histLen                 int
+	histPromptTokens        int
 }
 
 func (h *Handler) slashStatus(ctx context.Context, wsc *wsConn, req *rpcRequest) {
@@ -505,6 +507,7 @@ func (h *Handler) slashStatus(ctx context.Context, wsc *wsConn, req *rpcRequest)
 	fmt.Fprintf(&sb, "Model: %s\n", view.model)
 	fmt.Fprintf(&sb, "Provider: %s\n", view.resolvedProviderName)
 	fmt.Fprintf(&sb, "Session messages: %d\n", view.histLen)
+	fmt.Fprintf(&sb, "Estimated session prompt tokens: %d\n", view.histPromptTokens)
 	h.appendSlashStatusPolicyLines(&sb, policy, view)
 	h.appendSlashStatusUsageLines(&sb, wsc.peerID)
 
@@ -553,7 +556,9 @@ func (h *Handler) resolveSlashStatusView(ctx context.Context, peerID string, pol
 		view.resolvedProviderProfile = info.Name
 	}
 	if sess := h.store.Get(peerID); sess != nil {
-		view.histLen = len(sess.History())
+		history := sess.History()
+		view.histLen = len(history)
+		view.histPromptTokens, _ = requestctx.EstimateRequestTokens(&types.ChatRequest{Messages: history})
 	}
 	return view
 }
@@ -630,6 +635,7 @@ func (h *Handler) slashStatusPayload(policy session.SessionPolicy, view slashSta
 		"model":                     view.model,
 		"provider":                  view.resolvedProviderName,
 		"session_messages":          view.histLen,
+		"estimated_prompt_tokens":   view.histPromptTokens,
 		"active_profile":            policy.ActiveProfile,
 		"resolved_profile":          view.resolvedProfileName,
 		"provider_profile":          view.providerProfileName,
@@ -887,6 +893,7 @@ func renderCompactionStatus(status session.CompactionStatus) string {
 	}
 	fmt.Fprintf(&sb, "Compaction: %s\n", state)
 	fmt.Fprintf(&sb, "Session messages: %d\n", status.SessionMessages)
+	fmt.Fprintf(&sb, "Estimated session prompt tokens: %d\n", status.EstimatedPromptTokens)
 	fmt.Fprintf(&sb, "Eligible now: %s\n", eligible)
 	fmt.Fprintf(&sb, "Would compact: %d\n", status.CompactedMessages)
 	fmt.Fprintf(&sb, "Would keep: %d\n", status.KeptMessages)

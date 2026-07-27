@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +34,11 @@ import (
 type Provider interface {
 	Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error)
 	CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error)
+}
+
+func requestTokenCounterForProvider(provider Provider) requestctx.RequestTokenCounter {
+	counter, _ := provider.(requestctx.RequestTokenCounter)
+	return counter
 }
 
 // ProviderResolver resolves which provider backend to use for a peer/session.
@@ -297,29 +304,34 @@ type toolNameNormalizer interface {
 // Runtime executes agent turns against a provider while managing session
 // scoping, persistence, compaction, and retries.
 type Runtime struct {
-	store               *session.Store
-	prov                Provider
-	model               string
-	resolver            ProviderResolver
-	retry               RetryPolicy
-	defaultTimeout      time.Duration
-	globalKey           string
-	memStore            *memory.Store
-	taskStore           *tasks.Store
-	memTopK             int
-	memInject           bool
-	memLCMWindow        int
-	memNamespaces       []string
-	pruneToolMessages   int
-	standingManager     *standing.Manager
-	skillManager        *skills.Manager
-	hooks               *ops.Manager
-	identityDir         string
-	maxContextTokens    int
-	promptReserveTokens int
-	maxToolDefinitions  int
-	maxToolResultChars  int
-	defaultMaxSteps     int
+	store                           *session.Store
+	prov                            Provider
+	model                           string
+	resolver                        ProviderResolver
+	retry                           RetryPolicy
+	defaultTimeout                  time.Duration
+	globalKey                       string
+	memStore                        *memory.Store
+	taskStore                       *tasks.Store
+	memTopK                         int
+	memInject                       bool
+	memLCMWindow                    int
+	memNamespaces                   []string
+	pruneToolMessages               int
+	standingManager                 *standing.Manager
+	skillManager                    *skills.Manager
+	hooks                           *ops.Manager
+	identityDir                     string
+	maxContextTokens                int
+	promptReserveTokens             int
+	maxToolDefinitions              int
+	maxToolResultChars              int
+	defaultMaxSteps                 int
+	serverCompactionMode            string
+	openAICompactionThreshold       int
+	anthropicCompactionTrigger      int
+	anthropicPauseAfterCompaction   bool
+	anthropicCompactionInstructions string
 
 	steeringMu     sync.Mutex
 	steeringQueues map[string][]string // sessionKey → pending user messages
@@ -539,19 +551,34 @@ func NewRuntime(store *session.Store, prov Provider, model string, timeout time.
 		timeout = 2 * time.Minute
 	}
 	return &Runtime{
-		store:               store,
-		prov:                prov,
-		model:               model,
-		retry:               retry,
-		defaultTimeout:      timeout,
-		globalKey:           "__global__",
-		maxContextTokens:    32000,
-		promptReserveTokens: 4000,
-		maxToolDefinitions:  24,
-		maxToolResultChars:  4000,
-		defaultMaxSteps:     80,
-		pruneToolMessages:   8,
+		store:                store,
+		prov:                 prov,
+		model:                model,
+		retry:                retry,
+		defaultTimeout:       timeout,
+		globalKey:            "__global__",
+		maxContextTokens:     32000,
+		promptReserveTokens:  4000,
+		maxToolDefinitions:   24,
+		maxToolResultChars:   4000,
+		defaultMaxSteps:      80,
+		pruneToolMessages:    8,
+		serverCompactionMode: "local",
 	}
+}
+
+func (rt *Runtime) SetServerCompaction(mode string, openAIThreshold, anthropicTrigger int, anthropicPause bool, anthropicInstructions string) {
+	if rt == nil {
+		return
+	}
+	rt.serverCompactionMode = strings.TrimSpace(mode)
+	if rt.serverCompactionMode == "" {
+		rt.serverCompactionMode = "local"
+	}
+	rt.openAICompactionThreshold = openAIThreshold
+	rt.anthropicCompactionTrigger = anthropicTrigger
+	rt.anthropicPauseAfterCompaction = anthropicPause
+	rt.anthropicCompactionInstructions = strings.TrimSpace(anthropicInstructions)
 }
 
 // SetDefaultMaxSteps configures the default step budget used when a run omits MaxSteps.
@@ -683,7 +710,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		}
 
 		history := rt.store.Get(sessionKey).History()
+		history, _ = rt.repairTranscriptMessages(history)
 		stepMessages := append([]types.Message(nil), workingMessages...)
+		stepMessages, _ = rt.repairTranscriptMessages(stepMessages)
 		selectedTools := rt.toolDefinitionsForRun(reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile, stepMessages)
 		if reqCopy.ToolExecutor != nil {
 			if toolPrompt := strings.TrimSpace(rt.toolPromptForRun(reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile, stepMessages)); toolPrompt != "" {
@@ -707,10 +736,12 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		if reqCopy.MaxTokens > 0 {
 			reserveTokens = reqCopy.MaxTokens
 		}
-		caps := providerCapabilitiesFor(rt.providerForContext(callCtx), reqCopy.Model)
+		contextProvider := rt.providerForContext(callCtx)
+		tokenCounter := requestTokenCounterForProvider(contextProvider)
+		caps := providerCapabilitiesFor(contextProvider, reqCopy.Model)
 		toolReserveTokens := 0
 		if len(selectedTools) > 0 && (caps.SupportsNativeTools || caps.Name == "") {
-			toolReserveTokens, _ = requestctx.EstimateRequestTokens(&types.ChatRequest{Model: reqCopy.Model, Tools: selectedTools})
+			toolReserveTokens, _ = requestctx.EstimateRequestTokensWithCounter(tokenCounter, &types.ChatRequest{Model: reqCopy.Model, Tools: selectedTools})
 		}
 		built, err := requestctx.Build(callCtx, requestctx.BuildOptions{
 			Model:                 reqCopy.Model,
@@ -728,6 +759,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			MaxPromptTokens:       rt.maxContextTokens,
 			ResponseReserveTokens: reserveTokens,
 			ExtraTokenReserve:     toolReserveTokens,
+			TokenCounter:          tokenCounter,
 			IdentityDir:           rt.identityDir,
 			PeerID:                reqCopy.PeerID,
 		})
@@ -796,6 +828,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		built.Request.ReasoningEffort = reasoningEffortForThinkLevel(policy.ThinkLevel)
 		built.Request.ReasoningBudget = reasoningBudgetForThinkLevel(policy.ThinkLevel)
 		built.Request.ReasoningVisibility = normalizeReasoningVisibility(policy.ReasoningVisibility)
+		rt.applyServerCompaction(caps.Name, sessionKey, built.Request)
 		advanceStep := false
 		for attempt := 1; attempt <= rt.retry.MaxAttempts; attempt++ {
 			result.Attempts = attempt
@@ -858,6 +891,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				}
 			}
 			if err == nil {
+				rt.persistOpenAIConversationState(sessionKey, &invokeReq, resp)
 				assistantText, resp, suppressed, token := suppressSilentReply(assistantText, resp)
 				if suppressed {
 					result.SuppressedReply = true
@@ -1111,6 +1145,73 @@ func eventMessages(data map[string]any, key string) ([]types.Message, bool) {
 		return nil, false
 	}
 	return msgs, true
+}
+
+func messageHash(messages []types.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	body, err := json.Marshal(messages)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func (rt *Runtime) applyServerCompaction(providerName, sessionKey string, req *types.ChatRequest) {
+	if rt == nil || req == nil || strings.TrimSpace(rt.serverCompactionMode) != "server" {
+		return
+	}
+	policy := rt.sessionPolicy(sessionKey)
+	switch strings.TrimSpace(providerName) {
+	case "openai":
+		if rt.openAICompactionThreshold <= 0 {
+			return
+		}
+		req.OpenAIServerCompaction = &types.OpenAIServerCompaction{CompactThreshold: rt.openAICompactionThreshold}
+		if strings.TrimSpace(policy.OpenAIPreviousResponseID) == "" || policy.OpenAICoveredMessages <= 0 || policy.OpenAICoveredMessages > len(req.Messages) {
+			return
+		}
+		req.OpenAIConversationState = &types.OpenAIConversationState{
+			PreviousResponseID:  strings.TrimSpace(policy.OpenAIPreviousResponseID),
+			CoveredMessages:     policy.OpenAICoveredMessages,
+			CoveredMessagesHash: strings.TrimSpace(policy.OpenAICoveredMessagesHash),
+		}
+	case "anthropic":
+		if rt.anthropicCompactionTrigger <= 0 {
+			return
+		}
+		req.AnthropicServerCompaction = &types.AnthropicServerCompaction{
+			TriggerTokens:        rt.anthropicCompactionTrigger,
+			PauseAfterCompaction: rt.anthropicPauseAfterCompaction,
+			Instructions:         rt.anthropicCompactionInstructions,
+		}
+	}
+	if req.OpenAIServerCompaction != nil || req.AnthropicServerCompaction != nil {
+		req.Stream = false
+	}
+}
+
+func (rt *Runtime) persistOpenAIConversationState(sessionKey string, req *types.ChatRequest, resp *types.ChatResponse) {
+	if rt == nil || strings.TrimSpace(sessionKey) == "" || req == nil || req.OpenAIServerCompaction == nil || resp == nil {
+		return
+	}
+	if strings.TrimSpace(resp.ID) == "" || len(resp.Choices) == 0 {
+		return
+	}
+	assistantMsg, ok := assistantMessage(resp.Choices[0].Message.Content, resp)
+	if !ok {
+		return
+	}
+	covered := append(append([]types.Message(nil), req.Messages...), assistantMsg)
+	if err := rt.store.PatchPolicy(sessionKey, func(policy *session.SessionPolicy) {
+		policy.OpenAIPreviousResponseID = strings.TrimSpace(resp.ID)
+		policy.OpenAICoveredMessages = len(covered)
+		policy.OpenAICoveredMessagesHash = messageHash(covered)
+	}); err != nil {
+		slog.Warn("agent: persist openai conversation state failed", "session", sessionKey, "err", err)
+	}
 }
 
 func assistantMessage(assistantText string, resp *types.ChatResponse) (types.Message, bool) {

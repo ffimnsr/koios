@@ -110,6 +110,13 @@ func buildCompactionMemoryCheckpoint(messages []types.Message) string {
 	return strings.TrimSpace(sb.String())
 }
 
+func localCompactionEnabled(cfg *config.Config) bool {
+	if cfg == nil || cfg.CompactMode != "local" {
+		return false
+	}
+	return cfg.CompactThreshold > 0 || cfg.CompactTokenThreshold > 0
+}
+
 func discoveredExtensions(cfg *config.Config) ([]extensions.DiscoveredManifest, error) {
 	manifests, err := extensions.Discover(cfg.ExtensionSearchPaths())
 	if err != nil {
@@ -176,17 +183,22 @@ func RunGateway(build BuildInfo) error {
 		return err
 	}
 	storeOpts := session.Options{
-		MaxMessages:       cfg.MaxSessionMessages,
-		SessionDir:        cfg.SessionDir(),
-		SessionRetention:  cfg.SessionRetention,
-		SessionMaxEntries: cfg.SessionMaxEntries,
-		IdleResetAfter:    cfg.SessionIdleResetAfter,
-		IdlePruneAfter:    cfg.SessionIdlePruneAfter,
-		IdlePruneKeep:     cfg.SessionIdlePruneKeep,
-		DailyResetMinutes: dailyResetMinutes,
-		DailyResetEnabled: dailyResetMinutes >= 0,
-		CompactThreshold:  cfg.CompactThreshold,
-		CompactReserve:    cfg.CompactReserve,
+		MaxMessages:           cfg.MaxSessionMessages,
+		SessionDir:            cfg.SessionDir(),
+		SessionRetention:      cfg.SessionRetention,
+		SessionMaxEntries:     cfg.SessionMaxEntries,
+		IdleResetAfter:        cfg.SessionIdleResetAfter,
+		IdlePruneAfter:        cfg.SessionIdlePruneAfter,
+		IdlePruneKeep:         cfg.SessionIdlePruneKeep,
+		DailyResetMinutes:     dailyResetMinutes,
+		DailyResetEnabled:     dailyResetMinutes >= 0,
+		CompactThreshold:      cfg.CompactThreshold,
+		CompactTokenThreshold: cfg.CompactTokenThreshold,
+		CompactReserve:        cfg.CompactReserve,
+	}
+	if cfg.CompactMode != "local" {
+		storeOpts.CompactThreshold = 0
+		storeOpts.CompactTokenThreshold = 0
 	}
 	hooks := ops.NewManager(cfg.HookTimeout, cfg.HookFailClosed)
 	if cfg.HookWebhookURL != "" {
@@ -204,7 +216,7 @@ func RunGateway(build BuildInfo) error {
 		hooks.RegisterInterceptor(ops.HookBeforeLLM, 100, ops.HTTPWebhookInterceptor(cfg.HookInterceptorURL, cfg.HookWebhookSecret, nil))
 	}
 	storeOpts.Hooks = hooks
-	if cfg.CompactThreshold > 0 {
+	if localCompactionEnabled(cfg) {
 		storeOpts.Compactor = session.NewLLMCompactor(prov, cfg.Model)
 	}
 	var memStore *memory.Store
@@ -322,6 +334,13 @@ func RunGateway(build BuildInfo) error {
 		StatusCodes:    cfg.AgentRetryStatusCodes,
 	})
 	agentRuntime.SetDefaultMaxSteps(cfg.AgentMaxSteps)
+	agentRuntime.SetServerCompaction(
+		cfg.CompactMode,
+		cfg.OpenAIServerCompaction.CompactThreshold,
+		cfg.AnthropicServerCompaction.TriggerTokens,
+		cfg.AnthropicServerCompaction.PauseAfterCompaction,
+		cfg.AnthropicServerCompaction.Instructions,
+	)
 	agentRuntime.SetHooks(hooks)
 	agentRuntime.SetContextBudget(cfg.LLMContextWindowTokens, cfg.LLMPromptReserveTokens, cfg.LLMMaxToolDefinitions, cfg.LLMMaxToolResultChars)
 	agentRuntime.EnableMemory(memStore, cfg.MemoryInject, cfg.MemoryTopK)
@@ -500,34 +519,39 @@ func RunGateway(build BuildInfo) error {
 				return profiles
 			}(),
 		},
-		Timeout:         cfg.RequestTimeout,
-		MemStore:        memStore,
-		TaskStore:       taskStore,
-		BookmarkStore:   bookmarkStore,
-		CalendarStore:   calendarStore,
-		NoteStore:       noteStore,
-		ScratchpadStore: scratchpadStore,
-		PlanStore:       planStore,
-		ProjectStore:    projectStore,
-		ArtifactStore:   artifactStore,
-		DecisionStore:   decisionStore,
-		PreferenceStore: preferenceStore,
-		ReminderStore:   reminderStore,
-		ToolResultStore: toolResultStore,
-		MemTopK:         cfg.MemoryTopK,
-		MemInject:       cfg.MemoryInject,
-		HBRunner:        hbRunner,
-		HBConfigStore:   hbConfigStore,
-		HBDefaultEvery:  cfg.HeartbeatEvery,
-		StandingManager: standingMgr,
-		SkillManager:    skillMgr,
-		AgentRuntime:    agentRuntime,
-		AgentCoord:      agentCoord,
-		SubRuntime:      subRuntime,
-		JobStore:        jobStore,
-		Sched:           sched,
-		AllowedOrigins:  cfg.AllowedOrigins,
-		OwnerPeerIDs:    cfg.OwnerPeerIDs,
+		Timeout:             cfg.RequestTimeout,
+		MemStore:            memStore,
+		TaskStore:           taskStore,
+		BookmarkStore:       bookmarkStore,
+		CalendarStore:       calendarStore,
+		NoteStore:           noteStore,
+		ScratchpadStore:     scratchpadStore,
+		PlanStore:           planStore,
+		ProjectStore:        projectStore,
+		ArtifactStore:       artifactStore,
+		DecisionStore:       decisionStore,
+		PreferenceStore:     preferenceStore,
+		ReminderStore:       reminderStore,
+		ToolResultStore:     toolResultStore,
+		MemTopK:             cfg.MemoryTopK,
+		MemInject:           cfg.MemoryInject,
+		MemoryLCMWindow:     cfg.MemoryLCMWindow,
+		MemoryNamespaces:    append([]string(nil), cfg.MemoryNamespaces...),
+		PruneToolMessages:   cfg.SessionPruneKeepToolMessages,
+		MaxContextTokens:    cfg.LLMContextWindowTokens,
+		PromptReserveTokens: cfg.LLMPromptReserveTokens,
+		HBRunner:            hbRunner,
+		HBConfigStore:       hbConfigStore,
+		HBDefaultEvery:      cfg.HeartbeatEvery,
+		StandingManager:     standingMgr,
+		SkillManager:        skillMgr,
+		AgentRuntime:        agentRuntime,
+		AgentCoord:          agentCoord,
+		SubRuntime:          subRuntime,
+		JobStore:            jobStore,
+		Sched:               sched,
+		AllowedOrigins:      cfg.AllowedOrigins,
+		OwnerPeerIDs:        cfg.OwnerPeerIDs,
 		ToolPolicy: handler.ToolPolicy{
 			Profile: cfg.ToolProfile,
 			Allow:   cfg.ToolsAllow,

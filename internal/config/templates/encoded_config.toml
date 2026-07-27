@@ -18,11 +18,7 @@ idle_prune_keep = %d
 daily_reset_time = %s
 prune_keep_tool_messages = %d
 
-[compaction]
-threshold = %d
-reserve = %d
-
-[memory]
+%s[memory]
 inject = %t
 top_k = %d
 

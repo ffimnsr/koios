@@ -22,6 +22,7 @@ var (
 
 func requestBuilder(ctx context.Context, h *Handler, peerID string, messages, history []types.Message, stream bool) (*types.ChatRequest, error) {
 	var extraSystem []types.Message
+	counter, _ := h.provider.(requestctx.RequestTokenCounter)
 	if h.standingManager != nil {
 		msg, err := h.standingManager.SystemMessage(peerID)
 		if err != nil {
@@ -32,17 +33,23 @@ func requestBuilder(ctx context.Context, h *Handler, peerID string, messages, hi
 		}
 	}
 	built, err := requestctx.Build(ctx, requestctx.BuildOptions{
-		Model:        h.model,
-		Messages:     messages,
-		History:      history,
-		Stream:       stream,
-		ExtraSystem:  extraSystem,
-		MemoryStore:  h.memStore,
-		MemoryTopK:   h.memTopK,
-		MemoryInject: h.memInject,
-		MemoryPeerID: peerID,
-		IdentityDir:  h.identityDir,
-		PeerID:       peerID,
+		Model:                 h.model,
+		Messages:              messages,
+		History:               history,
+		Stream:                stream,
+		ExtraSystem:           extraSystem,
+		PruneToolMessages:     h.pruneToolMessages,
+		MemoryStore:           h.memStore,
+		MemoryTopK:            h.memTopK,
+		MemoryInject:          h.memInject,
+		MemoryPeerID:          peerID,
+		MemoryLCMWindow:       h.memLCMWindow,
+		MemoryNamespaces:      h.memNamespaces,
+		MaxPromptTokens:       h.maxContextTokens,
+		ResponseReserveTokens: h.promptReserveTokens,
+		TokenCounter:          counter,
+		IdentityDir:           h.identityDir,
+		PeerID:                peerID,
 	})
 	if err != nil {
 		return nil, err

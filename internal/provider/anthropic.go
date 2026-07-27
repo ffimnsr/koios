@@ -45,13 +45,14 @@ func (p *anthropicProvider) selectAPIKey(ctx context.Context, req *types.ChatReq
 // — Anthropic request/response types ——————————————————————————————————————————
 
 type anthropicRequest struct {
-	Model     string                 `json:"model"`
-	MaxTokens int                    `json:"max_tokens"`
-	Messages  []anthropicMessage     `json:"messages"`
-	System    string                 `json:"system,omitempty"`
-	Tools     []anthropicTool        `json:"tools,omitempty"`
-	Stream    bool                   `json:"stream,omitempty"`
-	Thinking  *anthropicThinkingMode `json:"thinking,omitempty"`
+	Model             string                      `json:"model"`
+	MaxTokens         int                         `json:"max_tokens"`
+	Messages          []anthropicMessage          `json:"messages"`
+	System            string                      `json:"system,omitempty"`
+	Tools             []anthropicTool             `json:"tools,omitempty"`
+	Stream            bool                        `json:"stream,omitempty"`
+	Thinking          *anthropicThinkingMode      `json:"thinking,omitempty"`
+	ContextManagement *anthropicContextManagement `json:"context_management,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -70,6 +71,22 @@ type anthropicThinkingMode struct {
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
+type anthropicContextManagement struct {
+	Edits []anthropicContextEdit `json:"edits,omitempty"`
+}
+
+type anthropicContextEdit struct {
+	Type                 string                   `json:"type"`
+	Trigger              *anthropicCompactTrigger `json:"trigger,omitempty"`
+	PauseAfterCompaction bool                     `json:"pause_after_compaction,omitempty"`
+	Instructions         string                   `json:"instructions,omitempty"`
+}
+
+type anthropicCompactTrigger struct {
+	Type  string `json:"type"`
+	Value int    `json:"value"`
+}
+
 type anthropicResponse struct {
 	ID      string                  `json:"id"`
 	Type    string                  `json:"type"`
@@ -82,6 +99,7 @@ type anthropicResponse struct {
 type anthropicContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	Content   *string         `json:"content,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
 	ID        string          `json:"id,omitempty"`
@@ -130,6 +148,29 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 					Text:      m.Content,
 				}},
 			})
+		} else if m.Role == "assistant" && len(m.RawContent) > 0 {
+			var blocks []anthropicContentBlock
+			if err := json.Unmarshal(m.RawContent, &blocks); err == nil && len(blocks) > 0 {
+				msgs = append(msgs, anthropicMessage{Role: m.Role, Content: blocks})
+				continue
+			}
+			if len(m.ToolCalls) == 0 {
+				msgs = append(msgs, anthropicMessage{Role: m.Role, Content: m.Content})
+				continue
+			}
+			blocks = make([]anthropicContentBlock, 0, len(m.ToolCalls)+1)
+			if m.Content != "" {
+				blocks = append(blocks, anthropicContentBlock{Type: "text", Text: m.Content})
+			}
+			for _, tc := range m.ToolCalls {
+				blocks = append(blocks, anthropicContentBlock{
+					Type:  "tool_use",
+					ID:    tc.ID,
+					Name:  tc.Function.Name,
+					Input: json.RawMessage(tc.Function.Arguments),
+				})
+			}
+			msgs = append(msgs, anthropicMessage{Role: m.Role, Content: blocks})
 		} else if m.Role == "assistant" && len(m.ToolCalls) > 0 {
 			blocks := make([]anthropicContentBlock, 0, len(m.ToolCalls)+1)
 			if m.Content != "" {
@@ -209,6 +250,15 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 			BudgetTokens: req.ReasoningBudget,
 		}
 	}
+	if req.AnthropicServerCompaction != nil {
+		edit := anthropicContextEdit{Type: "compact_20260112"}
+		if req.AnthropicServerCompaction.TriggerTokens > 0 {
+			edit.Trigger = &anthropicCompactTrigger{Type: "input_tokens", Value: req.AnthropicServerCompaction.TriggerTokens}
+		}
+		edit.PauseAfterCompaction = req.AnthropicServerCompaction.PauseAfterCompaction
+		edit.Instructions = strings.TrimSpace(req.AnthropicServerCompaction.Instructions)
+		request.ContextManagement = &anthropicContextManagement{Edits: []anthropicContextEdit{edit}}
+	}
 	return request
 }
 
@@ -217,12 +267,16 @@ func toOpenAIResponse(ar *anthropicResponse) *types.ChatResponse {
 	var content strings.Builder
 	var toolCalls []types.ToolCall
 	var reasoning []types.ReasoningBlock
+	rawContent, _ := json.Marshal(ar.Content)
 	for _, block := range ar.Content {
 		if block.Type == "text" {
 			content.WriteString(block.Text)
 		}
 		if block.Type == "thinking" && strings.TrimSpace(block.Thinking) != "" {
 			reasoning = append(reasoning, types.ReasoningBlock{Provider: "anthropic", Type: "summary", Text: block.Thinking})
+		}
+		if block.Type == "compaction" && block.Content != nil && strings.TrimSpace(*block.Content) != "" {
+			continue
 		}
 		if block.Type == "tool_use" {
 			toolCalls = append(toolCalls, types.ToolCall{
@@ -242,8 +296,13 @@ func toOpenAIResponse(ar *anthropicResponse) *types.ChatResponse {
 		Created: time.Now().Unix(),
 		Choices: []types.ChatChoice{
 			{
-				Index:        0,
-				Message:      types.Message{Role: "assistant", Content: content.String(), ToolCalls: toolCalls},
+				Index: 0,
+				Message: types.Message{
+					Role:       "assistant",
+					Content:    content.String(),
+					RawContent: rawContent,
+					ToolCalls:  toolCalls,
+				},
 				FinishReason: "stop",
 			},
 		},
@@ -278,7 +337,7 @@ func (p *anthropicProvider) Complete(ctx context.Context, req *types.ChatRequest
 	}
 	apiKey, report := p.selectAPIKey(ctx, req)
 	defer func() { report(err) }()
-	p.setHeaders(httpReq, apiKey)
+	p.setHeaders(httpReq, apiKey, req)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -326,7 +385,7 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 	}
 	apiKey, report := p.selectAPIKey(streamCtx, req)
 	defer func() { report(err) }()
-	p.setHeaders(httpReq, apiKey)
+	p.setHeaders(httpReq, apiKey, req)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -436,8 +495,11 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 }
 
 // setHeaders applies the Anthropic-specific authentication and version headers.
-func (p *anthropicProvider) setHeaders(r *http.Request, apiKey string) {
+func (p *anthropicProvider) setHeaders(r *http.Request, apiKey string, req *types.ChatRequest) {
 	p.hooks.applyHeaders(r, apiKey)
+	if req != nil && req.AnthropicServerCompaction != nil {
+		r.Header.Set("anthropic-beta", "compact-2026-01-12")
+	}
 }
 
 // isDataURI reports whether s is a base64 data URI (data:<mime>;base64,<data>).

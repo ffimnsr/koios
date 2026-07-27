@@ -123,22 +123,41 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 }
 
 // ChatRequest is the OpenAI-compatible /v1/chat/completions request body.
+type OpenAIServerCompaction struct {
+	CompactThreshold int
+}
+
+type OpenAIConversationState struct {
+	PreviousResponseID  string
+	CoveredMessages     int
+	CoveredMessagesHash string
+}
+
+type AnthropicServerCompaction struct {
+	TriggerTokens        int
+	PauseAfterCompaction bool
+	Instructions         string
+}
+
 type ChatRequest struct {
-	Model               string          `json:"model"` // set by the handler; ignored if supplied by the caller
-	Messages            []Message       `json:"messages"`
-	Tools               []Tool          `json:"tools,omitempty"`
-	ToolChoice          any             `json:"tool_choice,omitempty"`
-	Stream              bool            `json:"stream"`
-	MaxTokens           int             `json:"max_tokens,omitempty"`
-	Temperature         *float64        `json:"temperature,omitempty"`
-	TopP                *float64        `json:"top_p,omitempty"`
-	FrequencyPenalty    *float64        `json:"frequency_penalty,omitempty"`
-	PresencePenalty     *float64        `json:"presence_penalty,omitempty"`
-	Stop                json.RawMessage `json:"stop,omitempty"`
-	User                string          `json:"user,omitempty"`
-	ReasoningEffort     string          `json:"-"`
-	ReasoningBudget     int             `json:"-"`
-	ReasoningVisibility string          `json:"-"`
+	Model                     string                     `json:"model"` // set by the handler; ignored if supplied by the caller
+	Messages                  []Message                  `json:"messages"`
+	Tools                     []Tool                     `json:"tools,omitempty"`
+	ToolChoice                any                        `json:"tool_choice,omitempty"`
+	Stream                    bool                       `json:"stream"`
+	MaxTokens                 int                        `json:"max_tokens,omitempty"`
+	Temperature               *float64                   `json:"temperature,omitempty"`
+	TopP                      *float64                   `json:"top_p,omitempty"`
+	FrequencyPenalty          *float64                   `json:"frequency_penalty,omitempty"`
+	PresencePenalty           *float64                   `json:"presence_penalty,omitempty"`
+	Stop                      json.RawMessage            `json:"stop,omitempty"`
+	User                      string                     `json:"user,omitempty"`
+	ReasoningEffort           string                     `json:"-"`
+	ReasoningBudget           int                        `json:"-"`
+	ReasoningVisibility       string                     `json:"-"`
+	OpenAIServerCompaction    *OpenAIServerCompaction    `json:"-"`
+	OpenAIConversationState   *OpenAIConversationState   `json:"-"`
+	AnthropicServerCompaction *AnthropicServerCompaction `json:"-"`
 }
 
 // ChatChoice is one completion candidate.

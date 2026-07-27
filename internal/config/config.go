@@ -201,6 +201,19 @@ func SupportedWebSearchProvidersHint() string {
 	return strings.Join(supportedWebSearchProviders, ", ")
 }
 
+func normalizeCompactionMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "local":
+		return "local"
+	case "server":
+		return "server"
+	case "off", "disabled", "none":
+		return "off"
+	default:
+		return ""
+	}
+}
+
 type WebSearchProviderConfig struct {
 	APIKey         string `toml:"api_key"`
 	BaseURL        string `toml:"base_url"`
@@ -219,6 +232,16 @@ type BrowserRunConfig struct {
 	APIToken       string
 	BaseURL        string
 	DefaultTimeout time.Duration
+}
+
+type OpenAIServerCompactionConfig struct {
+	CompactThreshold int
+}
+
+type AnthropicServerCompactionConfig struct {
+	TriggerTokens        int
+	PauseAfterCompaction bool
+	Instructions         string
 }
 
 // ModelProfile describes a named LLM model endpoint that can be referenced
@@ -420,8 +443,12 @@ type Config struct {
 	SessionIdlePruneAfter        time.Duration
 	SessionIdlePruneKeep         int
 	SessionDailyResetTime        string
+	CompactMode                  string
 	CompactThreshold             int
+	CompactTokenThreshold        int
 	CompactReserve               int
+	OpenAIServerCompaction       OpenAIServerCompactionConfig
+	AnthropicServerCompaction    AnthropicServerCompactionConfig
 	MemoryEmbedEnabled           bool
 	MemoryEmbedModel             string
 	MemoryInject                 bool
@@ -630,8 +657,18 @@ type fileConfig struct {
 		PruneKeepToolMessages *int   `toml:"prune_keep_tool_messages"`
 	} `toml:"session"`
 	Compaction struct {
-		Threshold *int `toml:"threshold"`
-		Reserve   *int `toml:"reserve"`
+		Mode           string `toml:"mode"`
+		Threshold      *int   `toml:"threshold"`
+		TokenThreshold *int   `toml:"token_threshold"`
+		Reserve        *int   `toml:"reserve"`
+		OpenAI         struct {
+			CompactThreshold *int `toml:"compact_threshold"`
+		} `toml:"openai"`
+		Anthropic struct {
+			TriggerTokens        *int   `toml:"trigger_tokens"`
+			PauseAfterCompaction *bool  `toml:"pause_after_compaction"`
+			Instructions         string `toml:"instructions"`
+		} `toml:"anthropic"`
 	} `toml:"compaction"`
 	Memory struct {
 		Embed struct {
@@ -771,16 +808,26 @@ func Default() *Config {
 		Browser: BrowserConfig{
 			Profiles: nil,
 		},
-		MaxSessionMessages:            100,
-		RequestTimeout:                2 * time.Minute,
-		SessionRetention:              0,
-		SessionMaxEntries:             0,
-		SessionIdleResetAfter:         0,
-		SessionIdlePruneAfter:         0,
-		SessionIdlePruneKeep:          0,
-		SessionDailyResetTime:         "",
-		CompactThreshold:              60,
-		CompactReserve:                20,
+		MaxSessionMessages:    100,
+		RequestTimeout:        2 * time.Minute,
+		SessionRetention:      0,
+		SessionMaxEntries:     0,
+		SessionIdleResetAfter: 0,
+		SessionIdlePruneAfter: 0,
+		SessionIdlePruneKeep:  0,
+		SessionDailyResetTime: "",
+		CompactMode:           "local",
+		CompactThreshold:      60,
+		CompactTokenThreshold: 0,
+		CompactReserve:        20,
+		OpenAIServerCompaction: OpenAIServerCompactionConfig{
+			CompactThreshold: 200000,
+		},
+		AnthropicServerCompaction: AnthropicServerCompactionConfig{
+			TriggerTokens:        150000,
+			PauseAfterCompaction: false,
+			Instructions:         "",
+		},
 		MemoryEmbedEnabled:            false,
 		MemoryEmbedModel:              "text-embedding-3-small",
 		MemoryInject:                  false,
@@ -974,6 +1021,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 	browserSection := encodeBrowserSection(cfg)
 	webSearchSection := encodeWebSearchSection(cfg, includeAPIKey)
 	browserRunSection := encodeBrowserRunSection(cfg, includeAPIKey)
+	compactionSection := encodeCompactionSection(cfg)
 	hooksSection := encodeHooksSection(cfg)
 	channelsSection := encodeChannelsSection(cfg)
 	skillOverridesSection := encodeSkillOverridesSection(cfg)
@@ -993,8 +1041,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		cfg.SessionIdlePruneKeep,
 		strconv.Quote(cfg.SessionDailyResetTime),
 		cfg.SessionPruneKeepToolMessages,
-		cfg.CompactThreshold,
-		cfg.CompactReserve,
+		compactionSection,
 		cfg.MemoryInject,
 		cfg.MemoryTopK,
 		cfg.MemoryEmbedEnabled,
@@ -1060,6 +1107,25 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		}(),
 		cfg.MonitorMaxRestarts,
 	)
+}
+
+func encodeCompactionSection(cfg *Config) string {
+	if cfg == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[compaction]\n")
+	fmt.Fprintf(&b, "mode = %s\n", strconv.Quote(normalizeCompactionMode(cfg.CompactMode)))
+	fmt.Fprintf(&b, "threshold = %d\n", cfg.CompactThreshold)
+	fmt.Fprintf(&b, "token_threshold = %d\n", cfg.CompactTokenThreshold)
+	fmt.Fprintf(&b, "reserve = %d\n\n", cfg.CompactReserve)
+	b.WriteString("[compaction.openai]\n")
+	fmt.Fprintf(&b, "compact_threshold = %d\n\n", cfg.OpenAIServerCompaction.CompactThreshold)
+	b.WriteString("[compaction.anthropic]\n")
+	fmt.Fprintf(&b, "trigger_tokens = %d\n", cfg.AnthropicServerCompaction.TriggerTokens)
+	fmt.Fprintf(&b, "pause_after_compaction = %t\n", cfg.AnthropicServerCompaction.PauseAfterCompaction)
+	fmt.Fprintf(&b, "instructions = %s\n\n", strconv.Quote(cfg.AnthropicServerCompaction.Instructions))
+	return b.String()
 }
 
 func encodeWebSearchSection(cfg *Config, includeAPIKey bool) string {
@@ -1676,11 +1742,29 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 		dst.SessionPruneKeepToolMessages = *src.Session.PruneKeepToolMessages
 	}
 
+	if strings.TrimSpace(src.Compaction.Mode) != "" {
+		dst.CompactMode = normalizeCompactionMode(src.Compaction.Mode)
+	}
 	if src.Compaction.Threshold != nil && *src.Compaction.Threshold >= 0 {
 		dst.CompactThreshold = *src.Compaction.Threshold
 	}
+	if src.Compaction.TokenThreshold != nil && *src.Compaction.TokenThreshold >= 0 {
+		dst.CompactTokenThreshold = *src.Compaction.TokenThreshold
+	}
 	if src.Compaction.Reserve != nil && *src.Compaction.Reserve > 0 {
 		dst.CompactReserve = *src.Compaction.Reserve
+	}
+	if src.Compaction.OpenAI.CompactThreshold != nil && *src.Compaction.OpenAI.CompactThreshold > 0 {
+		dst.OpenAIServerCompaction.CompactThreshold = *src.Compaction.OpenAI.CompactThreshold
+	}
+	if src.Compaction.Anthropic.TriggerTokens != nil && *src.Compaction.Anthropic.TriggerTokens > 0 {
+		dst.AnthropicServerCompaction.TriggerTokens = *src.Compaction.Anthropic.TriggerTokens
+	}
+	if src.Compaction.Anthropic.PauseAfterCompaction != nil {
+		dst.AnthropicServerCompaction.PauseAfterCompaction = *src.Compaction.Anthropic.PauseAfterCompaction
+	}
+	if strings.TrimSpace(src.Compaction.Anthropic.Instructions) != "" {
+		dst.AnthropicServerCompaction.Instructions = strings.TrimSpace(src.Compaction.Anthropic.Instructions)
 	}
 
 	if src.Memory.Embed.Enabled != nil {
@@ -2309,6 +2393,26 @@ func ParseDailyResetMinutes(raw string) (int, error) {
 func validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.DefaultProfile) == "" {
 		return fmt.Errorf("llm.default_profile is required")
+	}
+	mode := normalizeCompactionMode(cfg.CompactMode)
+	if mode == "" {
+		return fmt.Errorf("compaction.mode must be one of: local, server, off")
+	}
+	cfg.CompactMode = mode
+	if cfg.CompactThreshold < 0 {
+		return fmt.Errorf("compaction.threshold must be >= 0")
+	}
+	if cfg.CompactTokenThreshold < 0 {
+		return fmt.Errorf("compaction.token_threshold must be >= 0")
+	}
+	if cfg.CompactReserve < 0 {
+		return fmt.Errorf("compaction.reserve must be >= 0")
+	}
+	if cfg.OpenAIServerCompaction.CompactThreshold < 1000 {
+		return fmt.Errorf("compaction.openai.compact_threshold must be >= 1000")
+	}
+	if cfg.AnthropicServerCompaction.TriggerTokens < 50000 {
+		return fmt.Errorf("compaction.anthropic.trigger_tokens must be >= 50000")
 	}
 	if len(cfg.ModelProfiles) == 0 {
 		return fmt.Errorf("llm.profiles must contain at least one profile")
