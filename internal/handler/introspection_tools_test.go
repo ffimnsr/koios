@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/provider"
 	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/types"
@@ -18,8 +19,10 @@ import (
 )
 
 type capabilityTestProvider struct {
-	defaultCaps types.ProviderCapabilities
-	byModel     map[string]types.ProviderCapabilities
+	defaultCaps  types.ProviderCapabilities
+	byModel      map[string]types.ProviderCapabilities
+	remoteModels []map[string]any
+	usageStatus  map[string]any
 }
 
 func (p capabilityTestProvider) Complete(context.Context, *types.ChatRequest) (*types.ChatResponse, error) {
@@ -35,6 +38,80 @@ func (p capabilityTestProvider) Capabilities(model string) types.ProviderCapabil
 		return caps
 	}
 	return p.defaultCaps
+}
+
+func (p capabilityTestProvider) ListModels(context.Context) (*provider.RemoteModelCatalog, error) {
+	models := make([]provider.RemoteModel, 0, len(p.remoteModels))
+	for _, model := range p.remoteModels {
+		models = append(models, provider.RemoteModel{
+			ID:      model["id"].(string),
+			OwnedBy: firstString(model, "owned_by"),
+		})
+	}
+	return &provider.RemoteModelCatalog{
+		Provider: "openrouter",
+		BaseURL:  "https://openrouter.example.test/api",
+		Source:   "provider_api",
+		Endpoint: "/v1/models",
+		Inspection: provider.ProviderInspection{
+			Family:                 "openrouter",
+			Interface:              "openai_compatible",
+			CatalogMode:            "normalized_openai_compatible_catalog",
+			CatalogEndpoint:        "/v1/models",
+			UsageMode:              "provider_key_metadata",
+			UsageEndpoint:          "/v1/auth/key",
+			SupportsDynamicCatalog: true,
+			SupportsUsage:          true,
+		},
+		Models: models,
+		Count:  len(models),
+	}, nil
+}
+
+func (p capabilityTestProvider) UsageStatus(context.Context) (*provider.UsageQuotaStatus, error) {
+	status := &provider.UsageQuotaStatus{
+		Provider: "openrouter",
+		BaseURL:  "https://openrouter.example.test/api",
+		Source:   "provider_api",
+		Status:   firstString(p.usageStatus, "status"),
+		Endpoint: "/v1/auth/key",
+		Inspection: provider.ProviderInspection{
+			Family:                 "openrouter",
+			Interface:              "openai_compatible",
+			CatalogMode:            "normalized_openai_compatible_catalog",
+			CatalogEndpoint:        "/v1/models",
+			UsageMode:              "provider_key_metadata",
+			UsageEndpoint:          "/v1/auth/key",
+			SupportsDynamicCatalog: true,
+			SupportsUsage:          true,
+		},
+	}
+	if status.Status == "" {
+		status.Status = "ok"
+	}
+	if v, ok := p.usageStatus["usage"].(float64); ok {
+		status.Usage = v
+	}
+	if v, ok := p.usageStatus["limit"].(float64); ok {
+		status.Limit = v
+	}
+	if v, ok := p.usageStatus["remaining"].(float64); ok {
+		status.Remaining = v
+	}
+	if v, ok := p.usageStatus["label"].(string); ok {
+		status.Label = v
+	}
+	return status, nil
+}
+
+func firstString(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
 }
 
 type workflowAgentStub struct {
@@ -225,6 +302,8 @@ func TestUsageAndModelTools(t *testing.T) {
 			"fast-model":   {Name: "openai", SupportsStreaming: true, SupportsNativeTools: false, OpenAICompatibleWire: true},
 			"review-model": {Name: "anthropic", SupportsStreaming: true, SupportsNativeTools: true, RequiresMaxTokens: true},
 		},
+		remoteModels: []map[string]any{{"id": "openrouter/auto", "owned_by": "openrouter"}, {"id": "anthropic/claude-sonnet-4", "owned_by": "anthropic"}},
+		usageStatus:  map[string]any{"status": "ok", "usage": 12.5, "limit": 50.0, "remaining": 37.5, "label": "team-key"},
 	}
 	h := NewHandler(store, provider, HandlerOptions{
 		Model:      "default-model",
@@ -299,6 +378,24 @@ func TestUsageAndModelTools(t *testing.T) {
 	routeRaw, _ := json.Marshal(routeAny)
 	if !strings.Contains(string(routeRaw), `"selected_model":"review-model"`) || !strings.Contains(string(routeRaw), `"reason":"session_override"`) {
 		t.Fatalf("expected session override routing, got %s", string(routeRaw))
+	}
+
+	providerModelsAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{Name: "provider.models", Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("ExecuteTool(provider.models): %v", err)
+	}
+	providerModelsRaw, _ := json.Marshal(providerModelsAny)
+	if !strings.Contains(string(providerModelsRaw), `"openrouter/auto"`) || !strings.Contains(string(providerModelsRaw), `"dynamic":true`) || !strings.Contains(string(providerModelsRaw), `"inspection":{"family":"openrouter"`) || !strings.Contains(string(providerModelsRaw), `"catalog_endpoint":"/v1/models"`) {
+		t.Fatalf("expected remote provider catalog inspection in provider.models, got %s", string(providerModelsRaw))
+	}
+
+	providerUsageAny, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{Name: "provider.usage", Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("ExecuteTool(provider.usage): %v", err)
+	}
+	providerUsageRaw, _ := json.Marshal(providerUsageAny)
+	if !strings.Contains(string(providerUsageRaw), `"status":"ok"`) || !strings.Contains(string(providerUsageRaw), `"remaining":37.5`) || !strings.Contains(string(providerUsageRaw), `"usage_endpoint":"/v1/auth/key"`) {
+		t.Fatalf("expected provider quota inspection payload in provider.usage, got %s", string(providerUsageRaw))
 	}
 }
 

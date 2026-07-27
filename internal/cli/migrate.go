@@ -121,8 +121,9 @@ func newMigrateCommand(ctx *commandContext) *cobra.Command {
 				return nil
 			}
 
-			// Re-parse via canonical loader (already applies defaults).
-			cfg, _, err := config.LoadOptionalFromPath(state.ConfigPath)
+			// Re-parse via lenient loader so migration can repair older or partially
+			// invalid configs before rewriting them into the strict canonical schema.
+			cfg, _, err := config.LoadOptionalLenientFromPath(state.ConfigPath)
 			if err != nil {
 				return fmt.Errorf("parse config for migration: %w", err)
 			}

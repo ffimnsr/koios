@@ -3215,6 +3215,30 @@ var toolDefs = []toolDef{
 		argHint: `{}`,
 	},
 	{
+		name:        "provider.models",
+		description: "Fetch the provider-owned dynamic model catalog for the gateway provider or a named peer BYOK provider profile.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"provider_profile": map[string]any{"type": "string"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"provider_profile":"work-openrouter"}`,
+	},
+	{
+		name:        "provider.usage",
+		description: "Fetch provider-owned usage or quota status for the gateway provider or a named peer BYOK provider profile.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"provider_profile": map[string]any{"type": "string"},
+			},
+			"additionalProperties": false,
+		}),
+		argHint: `{"provider_profile":"work-openrouter"}`,
+	},
+	{
 		name:        "model.capabilities",
 		description: "Inspect provider capability metadata for the current model or a requested profile/model name.",
 		parameters: mustJSONSchema(map[string]any{

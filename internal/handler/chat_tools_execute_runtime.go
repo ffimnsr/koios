@@ -602,6 +602,26 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 		return h.usageEstimate(ctx, peerID, args.Messages, args.Text, args.SessionKey, args.Model, includeHistory, includeTools, args.ExpectedCompletionTokens)
 	case "model.list":
 		return h.listModels(ctx, peerID), nil
+	case "provider.models":
+		var args struct {
+			ProviderProfile string `json:"provider_profile"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		return h.providerModels(ctx, peerID, args.ProviderProfile)
+	case "provider.usage":
+		var args struct {
+			ProviderProfile string `json:"provider_profile"`
+		}
+		if len(call.Arguments) > 0 {
+			if err := json.Unmarshal(call.Arguments, &args); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+		}
+		return h.providerUsage(ctx, peerID, args.ProviderProfile)
 	case "model.capabilities":
 		var args struct {
 			Model      string `json:"model"`

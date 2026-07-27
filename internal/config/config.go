@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/url"
@@ -227,11 +228,11 @@ type RuntimeWebSearchProviderConfig struct {
 }
 
 type BrowserRunConfig struct {
-	Enabled        bool
-	AccountID      string
-	APIToken       string
-	BaseURL        string
-	DefaultTimeout time.Duration
+	Enabled        bool          `toml:"enabled"`
+	AccountID      string        `toml:"account_id"`
+	APIToken       string        `toml:"api_token"`
+	BaseURL        string        `toml:"base_url"`
+	DefaultTimeout time.Duration `toml:"default_timeout"`
 }
 
 type OpenAIServerCompactionConfig struct {
@@ -955,8 +956,20 @@ func Load() (*Config, error) {
 	return LoadFromPath(DefaultConfigFile)
 }
 
-// LoadOptionalFromPath parses config when present, returning defaults otherwise.
+// LoadOptionalFromPath strictly parses and validates config when present,
+// returning defaults otherwise.
 func LoadOptionalFromPath(path string) (*Config, bool, error) {
+	return loadOptionalFromPath(path, true, true)
+}
+
+// LoadOptionalLenientFromPath parses config when present without strict unknown
+// field rejection or semantic validation. It exists for repair/migration flows
+// that need to read older or partially-invalid configs before rewriting them.
+func LoadOptionalLenientFromPath(path string) (*Config, bool, error) {
+	return loadOptionalFromPath(path, false, false)
+}
+
+func loadOptionalFromPath(path string, strict bool, validateConfig bool) (*Config, bool, error) {
 	cfg := Default()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -965,19 +978,36 @@ func LoadOptionalFromPath(path string) (*Config, bool, error) {
 		}
 		return nil, false, fmt.Errorf("read config file %s: %w", path, err)
 	}
-	fileCfg := fileConfig{}
-	if err := toml.Unmarshal(data, &fileCfg); err != nil {
+	fileCfg, err := parseFileConfig(data, strict)
+	if err != nil {
 		return nil, true, fmt.Errorf("parse config file %s: %w", path, err)
 	}
-	if err := validateRawLLMKeyConfig(&fileCfg); err != nil {
+	if err := validateRawLLMKeyConfig(fileCfg); err != nil {
 		return nil, true, fmt.Errorf("parse config file %s: %w", path, err)
 	}
-	if err := decodeHiddenSecrets(cfg, &fileCfg); err != nil {
+	if err := decodeHiddenSecrets(cfg, fileCfg); err != nil {
 		return nil, true, fmt.Errorf("decode hidden secrets in config file %s: %w", path, err)
 	}
-	applyFileConfig(cfg, &fileCfg)
+	applyFileConfig(cfg, fileCfg)
 	resolveRelativePaths(cfg, filepath.Dir(path))
+	if validateConfig {
+		if err := validate(cfg); err != nil {
+			return nil, true, fmt.Errorf("validate config file %s: %w", path, err)
+		}
+	}
 	return cfg, true, nil
+}
+
+func parseFileConfig(data []byte, strict bool) (*fileConfig, error) {
+	fileCfg := &fileConfig{}
+	decoder := toml.NewDecoder(bytes.NewReader(data))
+	if strict {
+		decoder = decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(fileCfg); err != nil {
+		return nil, err
+	}
+	return fileCfg, nil
 }
 
 // LoadFromPath parses and validates a TOML config file.
@@ -988,9 +1018,6 @@ func LoadFromPath(path string) (*Config, error) {
 	}
 	if !exists {
 		return nil, fmt.Errorf("config file %s not found; run `koios init`", path)
-	}
-	if err := validate(cfg); err != nil {
-		return nil, err
 	}
 	return cfg, nil
 }

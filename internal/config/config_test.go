@@ -626,20 +626,20 @@ func TestLoadFromPathAllowsDisablingMemoryEmbeddings(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "koios.config.toml")
 	content := `
-[llm]
-default_profile = "default"
+	[llm]
+	default_profile = "default"
 
-[[llm.profiles]]
-name = "default"
-provider = "openai"
-model = "gpt-4o"
+	[[llm.profiles]]
+	name = "default"
+	provider = "openai"
+	model = "gpt-4o"
 
-[workspace]
-root = "./workspace"
+	[workspace]
+	root = "./workspace"
 
-[memory.embed]
-enabled = false
-`
+	[memory.embed]
+	enabled = false
+	`
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -649,6 +649,72 @@ enabled = false
 	}
 	if cfg.MemoryEmbedEnabled {
 		t.Fatalf("expected memory embeddings disabled, got enabled")
+	}
+}
+
+func TestLoadFromPathRejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, DefaultConfigFile)
+	content := `
+	[llm]
+	default_profile = "default"
+	unexpected = true
+
+	[[llm.profiles]]
+	name = "default"
+	provider = "openai"
+	model = "gpt-4o"
+	`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := LoadFromPath(path); err == nil || !strings.Contains(strings.ToLower(err.Error()), "unknown") {
+		t.Fatalf("expected unknown field error, got %v", err)
+	}
+}
+
+func TestLoadOptionalFromPathValidatesExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, DefaultConfigFile)
+	content := `
+	[llm]
+	default_profile = "missing"
+
+	[[llm.profiles]]
+	name = "default"
+	provider = "openai"
+	model = "gpt-4o"
+	`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, _, err := LoadOptionalFromPath(path); err == nil || !strings.Contains(err.Error(), "default_profile") {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+}
+
+func TestLoadOptionalLenientFromPathAllowsUnknownFieldsForMigration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, DefaultConfigFile)
+	content := `
+	[llm]
+	default_profile = "default"
+	unexpected = true
+
+	[[llm.profiles]]
+	name = "default"
+	provider = "openai"
+	model = "gpt-4o"
+	`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, exists, err := LoadOptionalLenientFromPath(path)
+	if err != nil {
+		t.Fatalf("LoadOptionalLenientFromPath: %v", err)
+	}
+	if !exists || cfg == nil {
+		t.Fatalf("expected lenient config load, got exists=%v cfg=%#v", exists, cfg)
 	}
 }
 

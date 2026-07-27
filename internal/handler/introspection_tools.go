@@ -8,12 +8,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/provider"
 	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
 type capabilityInspector interface {
 	Capabilities(model string) types.ProviderCapabilities
+}
+
+type remoteModelCatalogInspector interface {
+	ListModels(ctx context.Context) (*provider.RemoteModelCatalog, error)
+}
+
+type usageQuotaInspector interface {
+	UsageStatus(ctx context.Context) (*provider.UsageQuotaStatus, error)
 }
 
 func sessionKeyOwnedByPeer(peerID, sessionKey string) bool {
@@ -37,6 +46,150 @@ func (h *Handler) modelCapabilitiesFor(model string) types.ProviderCapabilities 
 		return caps.Capabilities(model)
 	}
 	return types.ProviderCapabilities{}
+}
+
+func (h *Handler) providerRuntime(ctx context.Context, peerID, providerProfile string) (any, map[string]any, error) {
+	providerProfile = strings.TrimSpace(providerProfile)
+	if providerProfile == "" {
+		return h.provider, map[string]any{
+			"scope":    "gateway",
+			"provider": h.modelCatalog.Provider,
+			"base_url": h.modelCatalog.BaseURL,
+		}, nil
+	}
+	if h.peerLLMStore == nil {
+		return nil, nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+	}
+	profile, err := h.peerLLMStore.Get(ctx, peerID, providerProfile)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !profile.Enabled {
+		return nil, nil, fmt.Errorf("provider profile %q is disabled", providerProfile)
+	}
+	cfg := provider.BuildConfigFromPeerProfile(profile, h.timeout, 5*time.Second)
+	prov, err := provider.New(cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build provider from profile %q: %w", providerProfile, err)
+	}
+	return prov, map[string]any{
+		"scope":            "peer_profile",
+		"provider_profile": providerProfile,
+		"provider":         profile.Provider,
+		"base_url":         profile.BaseURL,
+		"default_model":    profile.DefaultModel,
+	}, nil
+}
+
+func (h *Handler) providerModels(ctx context.Context, peerID, providerProfile string) (map[string]any, error) {
+	runtime, meta, err := h.providerRuntime(ctx, peerID, providerProfile)
+	if err != nil {
+		return nil, err
+	}
+	inspector, ok := runtime.(remoteModelCatalogInspector)
+	if !ok {
+		return nil, fmt.Errorf("provider does not support dynamic model catalogs")
+	}
+	catalog, err := inspector.ListModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]any{
+		"provider":   catalog.Provider,
+		"base_url":   catalog.BaseURL,
+		"source":     catalog.Source,
+		"models":     catalog.Models,
+		"count":      catalog.Count,
+		"dynamic":    true,
+		"scope":      meta["scope"],
+		"status":     "ok",
+		"catalog":    "provider_owned",
+		"inspection": catalog.Inspection,
+		"supports": map[string]any{
+			"dynamic_catalog":        catalog.Inspection.SupportsDynamicCatalog,
+			"provider_owned_catalog": true,
+			"provider_owned_usage":   catalog.Inspection.SupportsUsage,
+		},
+		"meta": meta,
+	}
+	if catalog.Endpoint != "" {
+		result["endpoint"] = catalog.Endpoint
+	}
+	if providerProfile != "" {
+		result["provider_profile"] = strings.TrimSpace(providerProfile)
+	}
+	return result, nil
+}
+
+func (h *Handler) providerUsage(ctx context.Context, peerID, providerProfile string) (map[string]any, error) {
+	runtime, meta, err := h.providerRuntime(ctx, peerID, providerProfile)
+	if err != nil {
+		return nil, err
+	}
+	inspector, ok := runtime.(usageQuotaInspector)
+	if !ok {
+		return nil, fmt.Errorf("provider does not support provider-owned usage status")
+	}
+	status, err := inspector.UsageStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]any{
+		"provider":   status.Provider,
+		"base_url":   status.BaseURL,
+		"source":     status.Source,
+		"status":     status.Status,
+		"scope":      meta["scope"],
+		"inspection": status.Inspection,
+		"supports": map[string]any{
+			"dynamic_catalog":        status.Inspection.SupportsDynamicCatalog,
+			"provider_owned_catalog": status.Inspection.SupportsDynamicCatalog,
+			"provider_owned_usage":   status.Inspection.SupportsUsage,
+		},
+		"meta": meta,
+	}
+	if status.Endpoint != "" {
+		result["endpoint"] = status.Endpoint
+	}
+	if status.Message != "" {
+		result["message"] = status.Message
+	}
+	if status.Label != "" {
+		result["label"] = status.Label
+	}
+	if status.Currency != "" {
+		result["currency"] = status.Currency
+	}
+	if status.Usage != 0 {
+		result["usage"] = status.Usage
+	}
+	if status.Limit != 0 {
+		result["limit"] = status.Limit
+	}
+	if status.Remaining != 0 {
+		result["remaining"] = status.Remaining
+	}
+	if status.Requests != 0 {
+		result["requests"] = status.Requests
+	}
+	if status.Interval != "" {
+		result["interval"] = status.Interval
+	}
+	if status.IsFreeTier != nil {
+		result["is_free_tier"] = *status.IsFreeTier
+	}
+	if providerProfile != "" {
+		result["provider_profile"] = strings.TrimSpace(providerProfile)
+	}
+	return result, nil
+}
+
+func (h *Handler) ProviderModels(ctx context.Context) (map[string]any, error) {
+	return h.providerModels(ctx, "", "")
+}
+
+func (h *Handler) ProviderUsage(ctx context.Context) (map[string]any, error) {
+	return h.providerUsage(ctx, "", "")
 }
 
 func (h *Handler) resolveModelInfo(name string) (string, ModelProfileInfo, bool) {

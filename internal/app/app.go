@@ -707,6 +707,36 @@ func RunGateway(build BuildInfo) error {
 			"totals":   totals,
 		})
 	})
+	mux.HandleFunc("GET /v1/provider/models", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		mon.TouchActivity()
+		result, err := wsHandler.ProviderModels(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(result)
+	})
+	mux.HandleFunc("GET /v1/provider/usage", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		mon.TouchActivity()
+		result, err := wsHandler.ProviderUsage(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(result)
+	})
 	mux.HandleFunc("PUT /v1/admin/log-level", func(w http.ResponseWriter, r *http.Request) {
 		mon.TouchActivity()
 		var body struct {

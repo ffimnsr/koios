@@ -204,6 +204,8 @@ var toolGroups = map[string][]string{
 		"usage.history",
 		"usage.estimate",
 		"model.list",
+		"provider.models",
+		"provider.usage",
 		"model.capabilities",
 		"model.route",
 		"code_execution",

@@ -73,6 +73,153 @@ func TestResolveRepoState(t *testing.T) {
 	}
 }
 
+func TestConfigValidateCommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(strings.Join([]string{
+		"[llm]",
+		"default_profile = \"default\"",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
+		"provider = \"openai\"",
+		"model = \"gpt-4o\"",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newConfigCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"validate", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("validate command failed: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), `"valid": true`) {
+		t.Fatalf("expected success payload, got: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"config_path"`) {
+		t.Fatalf("expected config path in payload, got: %s", out.String())
+	}
+}
+
+func TestConfigValidateCommandFailsOnInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(strings.Join([]string{
+		"[llm]",
+		"default_profile = \"default\"",
+		"unexpected = true",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
+		"provider = \"openai\"",
+		"model = \"gpt-4o\"",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newConfigCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"validate", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected validate command to fail")
+	}
+	if !strings.Contains(out.String(), `"valid": false`) {
+		t.Fatalf("expected failure payload, got: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"error"`) || !strings.Contains(strings.ToLower(out.String()), `strict mode`) {
+		t.Fatalf("expected strict validation detail, got: %s", out.String())
+	}
+}
+
+func TestConfigLintCommandReportsErrors(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(strings.Join([]string{
+		"[llm]",
+		"default_profile = \"default\"",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
+		"provider = \"bogus\"",
+		"model = \"gpt-4o\"",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newConfigCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"lint", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected lint command to fail")
+	}
+	if !strings.Contains(out.String(), `"key": "config.parse"`) {
+		t.Fatalf("expected config parse finding, got: %s", out.String())
+	}
+	if !strings.Contains(out.String(), `"errors": 1`) {
+		t.Fatalf("expected one lint error, got: %s", out.String())
+	}
+}
+
+func TestConfigLintCommandFixesRepairableConfig(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Join([]string{
+		"[llm]",
+		"default_profile = \"default\"",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
+		"provider = \"bogus\"",
+		"model = \"gpt-4o\"",
+		"",
+		"[tools]",
+		"profile = \"broken\"",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}
+	cmd := newConfigCommand(cmdCtx)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"lint", "--fix", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected lint --fix to succeed: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), `rewrote koios.config.toml with normalized settings`) {
+		t.Fatalf("expected rewrite repair note, got: %s", out.String())
+	}
+	data, err := os.ReadFile(filepath.Join(dir, config.DefaultConfigFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `provider = "openai"`) {
+		t.Fatalf("expected provider repair, got:\n%s", text)
+	}
+	if !strings.Contains(text, `profile = "full"`) {
+		t.Fatalf("expected tool profile repair, got:\n%s", text)
+	}
+}
+
 func TestSetupCreatesEnvFromSample(t *testing.T) {
 	dir := t.TempDir()
 	cmdCtx := &commandContext{build: app.BuildInfo{Version: "test"}, cwd: dir}

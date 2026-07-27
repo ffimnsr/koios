@@ -64,6 +64,7 @@ func NewRootCommand(build app.BuildInfo, runGateway runGatewayFunc) *cobra.Comma
 	root.AddCommand(newInitCommand(ctx))
 	root.AddCommand(newSetupCommand(ctx))
 	root.AddCommand(newDoctorCommand(ctx))
+	root.AddCommand(newConfigCommand(ctx))
 	root.AddCommand(newPairingCommand(ctx))
 	root.AddCommand(newSessionsCommand(ctx))
 	root.AddCommand(newBackupCommand(ctx))
@@ -246,7 +247,12 @@ func newInitCommand(ctx *commandContext) *cobra.Command {
 			if skipSetup {
 				setup = false
 			}
-			state, err := ctx.state()
+			state, err := func() (*repoState, error) {
+				if wizard {
+					return resolveDoctorState(ctx.cwdOrDefault())
+				}
+				return ctx.state()
+			}()
 			if err != nil {
 				return err
 			}

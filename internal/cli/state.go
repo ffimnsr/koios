@@ -17,6 +17,7 @@ type repoState struct {
 	ConfigExists    bool
 	Config          *config.Config
 	ConfigLoadError string
+	ConfigParsed    bool
 
 	ListenAddr               string
 	Provider                 string
@@ -78,12 +79,20 @@ func resolveRepoStateForDoctor(cwd string, allowConfigError bool) (*repoState, e
 	}
 	configPath := filepath.Join(root, config.DefaultConfigFile)
 	cfg, exists, err := config.LoadOptionalFromPath(configPath)
+	parsed := err == nil
 	if err != nil {
 		if !allowConfigError {
 			return nil, err
 		}
-		cfg = config.Default()
-		exists = fileExists(configPath)
+		if fallbackCfg, fallbackExists, fallbackErr := config.LoadOptionalLenientFromPath(configPath); fallbackErr == nil {
+			cfg = fallbackCfg
+			exists = fallbackExists
+			parsed = true
+		} else {
+			cfg = config.Default()
+			exists = fileExists(configPath)
+			parsed = false
+		}
 	}
 	if cfg == nil {
 		cfg = config.Default()
@@ -97,6 +106,7 @@ func resolveRepoStateForDoctor(cwd string, allowConfigError bool) (*repoState, e
 		ConfigExists:             exists,
 		Config:                   cfg,
 		ConfigLoadError:          errorString(err),
+		ConfigParsed:             parsed,
 		ListenAddr:               cfg.ListenAddr,
 		Provider:                 cfg.Provider,
 		APIKey:                   cfg.APIKey,

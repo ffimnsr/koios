@@ -197,7 +197,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] CLI command for exec allowlists
 	- Research notes: PicoClaw is actually the clearest visible reference here because it exposes allow/deny pattern management in config and web UI today. OpenClaw has broader sandbox policy/config surfaces. IronClaw's equivalent lives more in sandbox policies and approval defaults than in a simple allowlist UI.
 	- References: OpenClaw `docs/gateway/sandboxing.md`; PicoClaw `web/frontend/src/components/config/config-sections.tsx`, `docs/tools_configuration.md`; IronClaw `src/sandbox/config.rs`, `src/gate/approval.rs`.
-- [ ] Node-routed exec by default or per-session
+- [-] Node-routed exec by default or per-session
 	- Research notes: This appears more Koios-specific than a direct parity item. OpenClaw has host/sandbox/browser target routing, but the current search did not surface the same exec-to-node defaulting model. PicoClaw and IronClaw also did not show an obvious equivalent in the current repo searches.
 	- References: OpenClaw `docs/tools/browser.md`; PicoClaw no obvious equivalent found in current repo search; IronClaw no obvious equivalent found in current repo search.
 - [x] Browser automation (Chromium/CDP: snapshots, clicks, form fill, uploads, profiles)
@@ -473,10 +473,10 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Named and mapped hooks with payload transforms
 	- Research notes: OpenClaw is the best direct reference because its automation and plugin systems already imply named hook ownership and transformable runtime payloads. PicoClaw has simpler pre/post hook interfaces that are still useful for shaping Koios hook signatures. IronClaw's structured webhook and extension metadata are the best typed reference if Koios wants explicit transform contracts.
 	- References: OpenClaw `src/hooks/gmail.ts`, `docs/plugins/architecture.md`; PicoClaw `pkg/agent/hooks.go`; IronClaw `src/webhooks/mod.rs`, `src/extensions/mod.rs`.
-- [ ] Dedicated webhook auth token separate from gateway auth
+- [-] Dedicated webhook auth token separate from gateway auth
 	- Research notes: OpenClaw is the clearest reference because it already distinguishes gateway auth, channel auth, and webhook validation surfaces. PicoClaw has launcher/dashboard auth plus separate channel/webhook configuration patterns, which is useful for operator UX. IronClaw has explicit webhook secrets and separate gateway auth/token settings, making it the strongest secondary reference.
 	- References: OpenClaw `docs/gateway/configuration-reference.md`, `src/config/zod-schema.ts`; PicoClaw `web/backend/api/auth.go`, `docs/configuration.md`; IronClaw `src/setup/channels.rs`, `src/config/mod.rs`, `docs/drafts/setup/configuration.mdx`.
-- [ ] Gmail Pub/Sub integration for inbox-driven automation
+- [-] Gmail Pub/Sub integration for inbox-driven automation
 	- Research notes: this should cover the full Gmail watch lifecycle, not just Gmail API reads. The missing pieces are Pub/Sub topic and subscription provisioning, Gmail watch registration and renewal, callback verification, and routing inbound notifications into a Koios session or scheduled automation path.
 	- OpenClaw reference: OpenClaw has a concrete end-to-end implementation here and is the strongest blueprint for Koios. Relevant entry points include `openclaw webhooks gmail setup` and `openclaw webhooks gmail run`, the runtime config in `src/hooks/gmail.ts`, the watcher lifecycle in `src/hooks/gmail-watcher.ts`, and the docs in `docs/automation/cron-jobs.md#gmail-pubsub-integration`.
 		- https://github.com/openclaw/openclaw/blob/main/src/cli/webhooks-cli.ts
@@ -683,7 +683,7 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [ ] Agent-accessible gateway tool for runtime config and ops
 	- Research notes: OpenClaw is the clearest conceptual reference because gateway state, status, browser, pairing, and skills are already part of the same runtime family. PicoClaw provides concrete config APIs that such a tool could wrap. IronClaw is the best typed ops/API reference if Koios wants this tool to sit on top of authenticated REST/SSE endpoints.
 	- References: OpenClaw `src/commands/status.types.ts`, `src/gateway/server-methods/skills.ts`; PicoClaw `web/frontend/src/api/channels.ts`, `web/backend/api/*`; IronClaw `docs/drafts/ops/api.mdx`, `src/channels/web/CLAUDE.md`.
-- [ ] Strict config schema validation with boot refusal on invalid config
+- [x] Strict config schema validation with boot refusal on invalid config
 	- Research notes: OpenClaw is the strongest direct reference because its zod schema is pervasive and already encodes cross-field security/runtime constraints. PicoClaw validates launcher and config data, but the current tree feels more patch/apply oriented than boot-refusal strictness. IronClaw's typed config resolution is the strongest secondary reference if Koios wants startup to fail closed.
 	- References: OpenClaw `src/config/zod-schema.ts`, `src/config/zod-schema.agent-runtime.ts`; PicoClaw `web/backend/launcherconfig/config.go`, `docs/configuration.md`; IronClaw `src/config/mod.rs`, `src/config/channels.rs`, `src/config/sandbox.rs`.
 - [ ] Config include and splitting support
@@ -731,20 +731,25 @@ This file is a merged checklist for the feature gap between Koios and the refere
 ## Provider Ergonomics
 
 - [ ] Multiple auth profiles per provider
+	- Status note: Koios already ships peer-scoped BYOK LLM provider profiles with named profile selection, per-peer/session activation, encrypted storage, profile CRUD/test operations, and multi-key support inside a profile. That covers multiple LLM credential profiles, but it does not yet look like the broader provider-auth/auth-manager shape implied here (for example OAuth-backed provider auth profiles, provider-owned onboarding, or a generic credentials UX beyond the LLM BYOK path).
 	- Research notes: PicoClaw and IronClaw are the strongest references here. PicoClaw's provider auth plugin structure and credentials UI already assume multiple profiles and OAuth-backed providers. IronClaw's auth manager and tool auth flows are the strongest typed reference. OpenClaw is still useful for provider-owned onboarding and aliasing, but the current search surfaced auth-profile mechanics less explicitly than the other two.
 	- References: OpenClaw `docs/providers/index.md`, `extensions/xiaomi/onboard.ts`; PicoClaw `docs/ANTIGRAVITY_AUTH.md`, `web/frontend/src/components/credentials/credentials-page.tsx`; IronClaw `src/bridge/auth_manager.rs`, `src/cli/tool.rs`, `src/tools/wasm/capabilities_schema.rs`.
-- [ ] User-facing thinking and reasoning levels
+- [x] User-facing thinking and reasoning levels
+	- Status note: Implemented via user-facing `think`, `reasoning`/`thoughts`, `verbose`, and `trace` controls plus session policy fields and provider/runtime reasoning plumbing.
 	- Research notes: OpenClaw is the clearest direct reference because it already exposes user-facing think/trace/verbose controls. PicoClaw has thinking-level plumbing, but the current search surfaced it more in internal/provider config than polished UX. IronClaw exposes reasoning inspection and event streaming, which is a good secondary reference.
 	- References: OpenClaw `docs/tools/thinking.md`, `src/auto-reply/commands-registry.shared.ts`; PicoClaw `pkg/agent/thinking.go`, `pkg/providers/types.go`; IronClaw `src/agent/commands.rs`, `crates/ironclaw_tui/src/event.rs`.
-- [ ] Dynamic provider model catalogs
+- [x] Dynamic provider model catalogs
+	- Status: Implemented via provider-backed dynamic catalog discovery. Koios now exposes provider-owned remote model listing through `provider.models` and `GET /v1/provider/models`, with normalized provider-layer catalog plumbing for the gateway provider plus peer BYOK profiles. OpenAI-compatible providers and Anthropic now fetch `/v1/models` instead of only reporting config snapshots.
 	- Research notes: OpenClaw is the strongest direct reference because it already treats provider-owned model catalogs as first-class. PicoClaw also has broad provider/model catalog surfaces in docs and launcher UI. IronClaw is the strongest typed runtime reference if Koios wants fetched catalogs normalized through the registry.
 	- References: OpenClaw `extensions/*/provider-catalog.ts`, `docs/providers/models.md`; PicoClaw `docs/providers.md`, `web/frontend/src/routes/models.tsx`; IronClaw `src/llm/registry.rs`, `docs/capabilities/llm-providers.md`, `src/setup/wizard.rs`.
-- [ ] Provider-owned usage and quota endpoints
+- [x] Provider-owned usage and quota endpoints
+	- Status: Implemented via provider-owned usage/quota inspection surfaces. Koios now exposes `provider.usage` and `GET /v1/provider/usage`, with normalized provider-layer status plumbing for gateway and peer BYOK providers. Providers without a practical normalized upstream quota API return structured `unsupported`; OpenRouter currently returns provider-owned usage/quota metadata from `/v1/auth/key`.
 	- Research notes: OpenClaw is the clearest conceptual reference because provider attribution, usage status, and model/provider metadata are already first-class. PicoClaw has practical launcher credential/model management that could surface quotas. IronClaw's ops APIs and event streams are the best secondary reference if Koios wants structured usage endpoints.
 	- References: OpenClaw `src/agents/provider-attribution.ts`, `src/commands/status.types.ts`; PicoClaw `web/README.md`, `web/frontend/src/components/credentials/credentials-page.tsx`; IronClaw `docs/drafts/ops/api.mdx`, `crates/ironclaw_common/src/event.rs`.
-- [ ] Per-provider tool schema normalization and inspection
-	- Research notes: OpenClaw and IronClaw are the two strongest references. OpenClaw already has extensive provider compatibility handling around tools and model capabilities. IronClaw's registry and capability schemas are the strongest typed reference. PicoClaw exposes provider capability interfaces, but the current search showed less inspection UX.
-	- References: OpenClaw `src/agents/provider-attribution.ts`, `src/auto-reply/reply/agent-runner.ts`; PicoClaw `pkg/providers/types.go`, `pkg/providers/openai_compat/provider.go`; IronClaw `src/llm/registry.rs`, `src/tools/wasm/capabilities_schema.rs`.
+- [x] Per-provider tool schema normalization and inspection
+		- Status: Implemented for every built-in provider. Koios now returns normalized provider inspection metadata for `openai`, `openrouter`, `anthropic`, `nvidia`, `ollama`, `vllm`, `litellm`, and `gemini`, including provider family, interface, catalog/usage modes, upstream endpoints, support flags, and provider-specific notes. The inspection surface is exposed through `provider.models` and `provider.usage`; Gemini also uses the provider-correct compatibility catalog path (`/models` on the `.../v1beta/openai` base) instead of incorrectly forcing `/v1/models`.
+		- Research notes: OpenClaw and IronClaw are the two strongest references. OpenClaw already has extensive provider compatibility handling around tools and model capabilities. IronClaw's registry and capability schemas are the strongest typed reference. PicoClaw exposes provider capability interfaces, but the current search showed less inspection UX.
+		- References: OpenClaw `src/agents/provider-attribution.ts`, `src/auto-reply/reply/agent-runner.ts`; PicoClaw `pkg/providers/types.go`, `pkg/providers/openai_compat/provider.go`; IronClaw `src/llm/registry.rs`, `src/tools/wasm/capabilities_schema.rs`.
 - [ ] Richer provider fallback and model-switch handoff behavior
 	- Research notes: OpenClaw is the clearest direct reference because fallback chains and provider capability awareness are already part of the runtime. PicoClaw has broad provider coverage and dynamic model management, which helps on the operator side. IronClaw is the strongest secondary reference if Koios wants handoff behavior to preserve structured runtime state.
 	- References: OpenClaw `docs/gateway/configuration.md`, `src/agents/provider-attribution.ts`; PicoClaw `docs/providers.md`, `web/frontend/src/routes/models.tsx`; IronClaw `src/llm/registry.rs`, `src/config/mod.rs`.

@@ -391,7 +391,7 @@ func applyDoctorRepairs(state *repoState, force bool) ([]string, error) {
 		}
 		repairs = append(repairs, "created koios.config.toml")
 	}
-	if state.ConfigLoadError != "" {
+	if state.ConfigLoadError != "" && !state.ConfigParsed {
 		return applyDoctorBrokenConfigRepair(state, repairs, force)
 	}
 	configRepairs, err := repairDoctorConfig(state)
