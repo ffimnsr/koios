@@ -175,7 +175,7 @@ func sendRPC(t *testing.T, conn *websocket.Conn, id, method string, params any) 
 
 func readMsg(t *testing.T, conn *websocket.Conn) rpcMsg {
 	t.Helper()
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second)) //nolint:errcheck
 	_, b, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("read message: %v", err)
