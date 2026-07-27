@@ -155,6 +155,7 @@ func (r *PeerAwareResolver) resolveNamedProfile(ctx context.Context, peerID, ses
 	cfg := &config.Config{
 		Provider:       profile.Provider,
 		APIKey:         profile.APIKeyEnc,
+		APIKeys:        append([]string(nil), profile.APIKeys...),
 		BaseURL:        profile.BaseURL,
 		Model:          defaultModel,
 		RequestTimeout: r.requestTimeout,

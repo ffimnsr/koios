@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,7 +19,7 @@ func newHideSecretCommand(ctx *commandContext) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hide-secret [secret]",
 		Short: "Encrypt a config secret with local Koios key",
-		Long:  "Encrypt a secret into a hidden blob that Koios can decrypt later from koios.config.toml using a local master key stored under the user config directory. New blobs remain readable across container or hostname changes as long as the same Koios config directory is preserved. Legacy v1 blobs may still be bound to an older host/user fingerprint.\n\nWith --set <field>, the named config field is encrypted in-place. Supported fields: llm.<profile>.api_key, channels.telegram.bot_token, channels.telegram.webhook_secret, hooks.webhook_secret, hooks.webhook_token.",
+		Long:  "Encrypt a secret into a hidden blob that Koios can decrypt later from koios.config.toml using a local master key stored under the user config directory. New blobs remain readable across container or hostname changes as long as the same Koios config directory is preserved. Legacy v1 blobs may still be bound to an older host/user fingerprint.\n\nWith --set <field>, the named config field is encrypted in-place. Supported fields: llm.api_key, llm.api_keys.<index>, llm.<profile>.api_key, llm.<profile>.api_keys.<index>, channels.telegram.bot_token, channels.telegram.webhook_secret, hooks.webhook_secret, hooks.webhook_token.",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if setField != "" {
@@ -63,7 +64,7 @@ func newHideSecretCommand(ctx *commandContext) *cobra.Command {
 			}
 			payload := map[string]any{
 				"hidden_secret": hidden,
-				"config_usage":  `api_key = "` + hidden + `"`,
+				"config_usage":  `api_key = "` + hidden + `"` + "\n# or inside a multi-key ring\napi_keys = [\"" + hidden + "\"]",
 			}
 			if jsonOut {
 				emit(cmd, true, payload)
@@ -72,12 +73,13 @@ func newHideSecretCommand(ctx *commandContext) *cobra.Command {
 			fmt.Fprintln(cmd.OutOrStdout(), hidden)
 			fmt.Fprintln(cmd.OutOrStdout(), "Paste it into koios.config.toml as a quoted value, for example:")
 			fmt.Fprintf(cmd.OutOrStdout(), "api_key = %q\n", hidden)
+			fmt.Fprintf(cmd.OutOrStdout(), "# or inside a multi-key ring\napi_keys = [%q]\n", hidden)
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&stdin, "stdin", false, "read the secret from stdin")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
-	cmd.Flags().StringVar(&setField, "set", "", "encrypt and rewrite the named config field in-place (e.g. llm.default.api_key)")
+	cmd.Flags().StringVar(&setField, "set", "", "encrypt and rewrite the named config field in-place (e.g. llm.default.api_key or llm.default.api_keys.0)")
 	return cmd
 }
 
@@ -86,7 +88,10 @@ func newHideSecretCommand(ctx *commandContext) *cobra.Command {
 // and returns the hidden blob plus whether a field was actually updated.
 // Supported field paths:
 //
+//	llm.api_key
+//	llm.api_keys.<index>
 //	llm.<profile-name>.api_key
+//	llm.<profile-name>.api_keys.<index>
 //	channels.telegram.bot_token
 //	channels.telegram.webhook_secret
 //	hooks.webhook_secret
@@ -127,6 +132,19 @@ func hideSecretInConfigField(state *repoState, field, newSecret string) (hidden 
 // hidden-secrets cache key used by EncodeTOML.
 func resolveHideSecretFieldPlaintext(cfg *config.Config, field string) (plaintext, internalPath string, err error) {
 	switch {
+	case field == "llm.api_key":
+		return cfg.APIKey, config.HiddenSecretFieldPathModelProfileAPIKey(canonicalHideSecretRootProfileName(cfg)), nil
+
+	case strings.HasPrefix(field, "llm.api_keys."):
+		index, err := parseHideSecretKeyIndex(strings.TrimPrefix(field, "llm.api_keys."))
+		if err != nil {
+			return "", "", fmt.Errorf("invalid llm.api_keys index: %w", err)
+		}
+		if index >= len(cfg.APIKeys) {
+			return "", "", fmt.Errorf("llm.api_keys.%d not found in config", index)
+		}
+		return cfg.APIKeys[index], config.HiddenSecretFieldPathModelProfileAPIKeysEntry(canonicalHideSecretRootProfileName(cfg), index), nil
+
 	case strings.HasPrefix(field, "llm.") && strings.HasSuffix(field, ".api_key"):
 		profileName := strings.TrimSuffix(strings.TrimPrefix(field, "llm."), ".api_key")
 		for i := range cfg.ModelProfiles {
@@ -135,6 +153,24 @@ func resolveHideSecretFieldPlaintext(cfg *config.Config, field string) (plaintex
 					config.HiddenSecretFieldPathModelProfileAPIKey(profileName),
 					nil
 			}
+		}
+		return "", "", fmt.Errorf("LLM profile %q not found in config", profileName)
+
+	case strings.HasPrefix(field, "llm.") && strings.Contains(field, ".api_keys."):
+		profileName, index, err := parseHideSecretProfileKeyIndex(field)
+		if err != nil {
+			return "", "", err
+		}
+		for i := range cfg.ModelProfiles {
+			if cfg.ModelProfiles[i].Name != profileName {
+				continue
+			}
+			if index >= len(cfg.ModelProfiles[i].APIKeys) {
+				return "", "", fmt.Errorf("llm.%s.api_keys.%d not found in config", profileName, index)
+			}
+			return cfg.ModelProfiles[i].APIKeys[index],
+				config.HiddenSecretFieldPathModelProfileAPIKeysEntry(profileName, index),
+				nil
 		}
 		return "", "", fmt.Errorf("LLM profile %q not found in config", profileName)
 
@@ -151,7 +187,7 @@ func resolveHideSecretFieldPlaintext(cfg *config.Config, field string) (plaintex
 		return cfg.WebhookToken, field, nil
 
 	default:
-		return "", "", fmt.Errorf("unsupported field %q; supported: llm.<profile>.api_key, %s, %s, %s, %s",
+		return "", "", fmt.Errorf("unsupported field %q; supported: llm.api_key, llm.api_keys.<index>, llm.<profile>.api_key, llm.<profile>.api_keys.<index>, %s, %s, %s, %s",
 			field,
 			config.HiddenSecretPathTelegramBotToken,
 			config.HiddenSecretPathTelegramWebhookSecret,
@@ -159,6 +195,48 @@ func resolveHideSecretFieldPlaintext(cfg *config.Config, field string) (plaintex
 			config.HiddenSecretPathHooksWebhookToken,
 		)
 	}
+}
+
+func canonicalHideSecretRootProfileName(cfg *config.Config) string {
+	if cfg == nil {
+		return "default"
+	}
+	if trimmed := strings.TrimSpace(cfg.DefaultProfile); trimmed != "" {
+		return trimmed
+	}
+	for _, profile := range cfg.ModelProfiles {
+		if trimmed := strings.TrimSpace(profile.Name); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "default"
+}
+
+func parseHideSecretKeyIndex(value string) (int, error) {
+	index, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("parse index %q: %w", value, err)
+	}
+	if index < 0 {
+		return 0, fmt.Errorf("index must be >= 0")
+	}
+	return index, nil
+}
+
+func parseHideSecretProfileKeyIndex(field string) (string, int, error) {
+	rest, ok := strings.CutPrefix(field, "llm.")
+	if !ok {
+		return "", 0, fmt.Errorf("unsupported field %q", field)
+	}
+	profileName, indexPart, ok := strings.Cut(rest, ".api_keys.")
+	if !ok || strings.TrimSpace(profileName) == "" {
+		return "", 0, fmt.Errorf("unsupported field %q", field)
+	}
+	index, err := parseHideSecretKeyIndex(indexPart)
+	if err != nil {
+		return "", 0, fmt.Errorf("invalid %s index: %w", field, err)
+	}
+	return profileName, index, nil
 }
 
 func readHideSecretInput(cmd *cobra.Command, args []string, stdin bool) (string, error) {

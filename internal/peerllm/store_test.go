@@ -313,6 +313,82 @@ func TestStoreEmptyAPIKey(t *testing.T) {
 	}
 }
 
+func TestStoreKeyMutations(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	if _, err := store.Set(ctx, "alice", Input{Name: "work", Provider: "openai", APIKeys: []string{"key-a"}, DefaultModel: "gpt-4o"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := store.AddKey(ctx, "alice", "work", "key-b"); err != nil {
+		t.Fatalf("AddKey: %v", err)
+	}
+	profile, err := store.Get(ctx, "alice", "work")
+	if err != nil {
+		t.Fatalf("Get after AddKey: %v", err)
+	}
+	if len(profile.APIKeys) != 2 {
+		t.Fatalf("len(APIKeys) = %d, want 2", len(profile.APIKeys))
+	}
+	if _, err := store.ReplaceKey(ctx, "alice", "work", 1, "key-c"); err != nil {
+		t.Fatalf("ReplaceKey: %v", err)
+	}
+	profile, err = store.Get(ctx, "alice", "work")
+	if err != nil {
+		t.Fatalf("Get after ReplaceKey: %v", err)
+	}
+	if profile.APIKeys[1] != "key-c" {
+		t.Fatalf("APIKeys[1] = %q, want key-c", profile.APIKeys[1])
+	}
+	if _, err := store.RemoveKey(ctx, "alice", "work", 0); err != nil {
+		t.Fatalf("RemoveKey: %v", err)
+	}
+	profile, err = store.Get(ctx, "alice", "work")
+	if err != nil {
+		t.Fatalf("Get after RemoveKey: %v", err)
+	}
+	if len(profile.APIKeys) != 1 || profile.APIKeys[0] != "key-c" {
+		t.Fatalf("unexpected APIKeys after RemoveKey: %#v", profile.APIKeys)
+	}
+}
+
+func TestStoreRemoveLastKeyRejectedForRemoteProvider(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	if _, err := store.Set(ctx, "alice", Input{Name: "work", Provider: "openai", APIKeys: []string{"key-a"}}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := store.RemoveKey(ctx, "alice", "work", 0); err == nil {
+		t.Fatal("expected RemoveKey to reject removing last key for remote provider")
+	}
+}
+
+func TestStoreMigratesLegacySingleKeyIntoKeyList(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO peer_llm_profiles(id, peer_id, name, provider, api_key_enc, api_keys_json, base_url, default_model, enabled, created_at, updated_at)
+		VALUES ('legacy1', 'alice', 'legacy', 'openai', 'legacy-hidden', '', '', 'gpt-4o', 1, 1, 1)
+	`); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+	if err := migrate(ctx, store.db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var apiKeysJSON string
+	if err := store.db.QueryRowContext(ctx, `SELECT api_keys_json FROM peer_llm_profiles WHERE id = 'legacy1'`).Scan(&apiKeysJSON); err != nil {
+		t.Fatalf("scan api_keys_json: %v", err)
+	}
+	if !strings.Contains(apiKeysJSON, "legacy-hidden") {
+		t.Fatalf("expected migrated api_keys_json to contain legacy key, got %q", apiKeysJSON)
+	}
+}
+
 func TestStoreSetValidatesRequiredFields(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

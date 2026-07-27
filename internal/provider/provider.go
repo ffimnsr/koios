@@ -48,7 +48,9 @@ func openAICompatibleHooks(name string) transportHooks {
 		},
 		applyHeaders: func(r *http.Request, apiKey string) {
 			r.Header.Set("Content-Type", "application/json")
-			r.Header.Set("Authorization", "Bearer "+apiKey)
+			if strings.TrimSpace(apiKey) != "" {
+				r.Header.Set("Authorization", "Bearer "+apiKey)
+			}
 		},
 	}
 }
@@ -64,7 +66,9 @@ func anthropicHooks() transportHooks {
 		},
 		applyHeaders: func(r *http.Request, apiKey string) {
 			r.Header.Set("Content-Type", "application/json")
-			r.Header.Set("x-api-key", apiKey)
+			if strings.TrimSpace(apiKey) != "" {
+				r.Header.Set("x-api-key", apiKey)
+			}
 			r.Header.Set("anthropic-version", anthropicVersion)
 		},
 	}
@@ -84,6 +88,7 @@ type Provider interface {
 // New creates the Provider described by cfg.
 func New(cfg *config.Config) (Provider, error) {
 	client := &http.Client{Timeout: cfg.RequestTimeout}
+	selector := newCredentialSelector(cfg.Provider, llmAPIKeys(cfg))
 
 	switch cfg.Provider {
 	case "openai":
@@ -93,7 +98,7 @@ func New(cfg *config.Config) (Provider, error) {
 		}
 		return &openAIProvider{
 			client:      client,
-			apiKey:      cfg.APIKey,
+			selector:    selector,
 			baseURL:     stripV1(base),
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
@@ -108,7 +113,7 @@ func New(cfg *config.Config) (Provider, error) {
 		// OpenRouter exposes an OpenAI-compatible endpoint, so re-use that impl.
 		return &openAIProvider{
 			client:      client,
-			apiKey:      cfg.APIKey,
+			selector:    selector,
 			baseURL:     stripV1(base),
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
@@ -122,7 +127,7 @@ func New(cfg *config.Config) (Provider, error) {
 		}
 		return &anthropicProvider{
 			client:      client,
-			apiKey:      cfg.APIKey,
+			selector:    selector,
 			baseURL:     stripV1(base),
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
@@ -137,7 +142,7 @@ func New(cfg *config.Config) (Provider, error) {
 		}
 		return &openAIProvider{
 			client:      client,
-			apiKey:      cfg.APIKey,
+			selector:    selector,
 			baseURL:     stripV1(base),
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
@@ -153,7 +158,7 @@ func New(cfg *config.Config) (Provider, error) {
 		}
 		return &openAIProvider{
 			client:      client,
-			apiKey:      cfg.APIKey,
+			selector:    selector,
 			baseURL:     stripV1(base),
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
@@ -169,7 +174,7 @@ func New(cfg *config.Config) (Provider, error) {
 		}
 		return &openAIProvider{
 			client:      client,
-			apiKey:      cfg.APIKey,
+			selector:    selector,
 			baseURL:     stripV1(base),
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
@@ -185,7 +190,7 @@ func New(cfg *config.Config) (Provider, error) {
 		}
 		return &openAIProvider{
 			client:      client,
-			apiKey:      cfg.APIKey,
+			selector:    selector,
 			baseURL:     stripV1(base),
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
@@ -201,7 +206,7 @@ func New(cfg *config.Config) (Provider, error) {
 		}
 		return &openAIProvider{
 			client:      client,
-			apiKey:      cfg.APIKey,
+			selector:    selector,
 			baseURL:     stripV1(base),
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
@@ -261,6 +266,19 @@ func startStreamIdleWatchdog(ctx context.Context, timeout time.Duration, cancel 
 		}, func() {
 			once.Do(func() { close(stopCh) })
 		}
+}
+
+func llmAPIKeys(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	if len(cfg.APIKeys) > 0 {
+		return append([]string(nil), cfg.APIKeys...)
+	}
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return nil
+	}
+	return []string{strings.TrimSpace(cfg.APIKey)}
 }
 
 func wrapStreamReadError(ctx context.Context, err error) error {

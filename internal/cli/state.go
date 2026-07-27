@@ -21,6 +21,7 @@ type repoState struct {
 	ListenAddr               string
 	Provider                 string
 	APIKey                   string
+	APIKeys                  []string
 	Model                    string
 	BaseURL                  string
 	SessionRetention         time.Duration
@@ -99,6 +100,7 @@ func resolveRepoStateForDoctor(cwd string, allowConfigError bool) (*repoState, e
 		ListenAddr:               cfg.ListenAddr,
 		Provider:                 cfg.Provider,
 		APIKey:                   cfg.APIKey,
+		APIKeys:                  append([]string(nil), cfg.APIKeys...),
 		Model:                    cfg.Model,
 		BaseURL:                  cfg.BaseURL,
 		SessionRetention:         cfg.SessionRetention,
@@ -154,6 +156,16 @@ func (s *repoState) baseWSURL() string {
 	return "ws://" + rest
 }
 
+func countNonEmptyStrings(values []string) int {
+	count := 0
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			count++
+		}
+	}
+	return count
+}
+
 func (s *repoState) validate() []doctorFinding {
 	findings := []doctorFinding{}
 	if !s.ConfigExists {
@@ -169,8 +181,8 @@ func (s *repoState) validate() []doctorFinding {
 	if !config.IsSupportedLLMProvider(s.Provider) {
 		findings = append(findings, doctorFinding{Level: "error", Key: "llm.provider", Message: fmt.Sprintf("unsupported provider %q", s.Provider), Path: s.ConfigPath, Hint: "use one of " + config.SupportedLLMProvidersHint()})
 	}
-	if s.APIKey == "" {
-		findings = append(findings, doctorFinding{Level: "warn", Key: "llm.api_key", Message: "llm.api_key is empty", Path: s.ConfigPath, Hint: "set llm.api_key or a profile-specific api_key before using remote providers"})
+	if s.APIKey == "" && countNonEmptyStrings(s.APIKeys) == 0 {
+		findings = append(findings, doctorFinding{Level: "warn", Key: "llm.api_key", Message: "llm.api_key/api_keys are empty", Path: s.ConfigPath, Hint: "set llm.api_key, llm.api_keys, or a profile-specific api_key/api_keys before using remote providers"})
 	}
 	if s.RequestTimeout <= 0 {
 		findings = append(findings, doctorFinding{Level: "error", Key: "server.request_timeout", Message: "server.request_timeout must be > 0", Path: s.ConfigPath})

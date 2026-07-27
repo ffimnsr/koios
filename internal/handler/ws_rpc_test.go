@@ -235,6 +235,52 @@ func TestWS_CalendarAgendaLifecycle(t *testing.T) {
 	}
 }
 
+func TestWS_PeerLLMKeyMutationLifecycle(t *testing.T) {
+	store := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: t.TempDir()})
+	peerStore, err := peerllm.New(filepath.Join(t.TempDir(), "peerllm.db"))
+	if err != nil {
+		t.Fatalf("peerllm.New: %v", err)
+	}
+	defer peerStore.Close()
+	if _, err := peerStore.Set(context.Background(), "alice", peerllm.Input{
+		Name:         "My Own Model",
+		Provider:     "openai",
+		APIKeys:      []string{"sk-a"},
+		DefaultModel: "gpt-4o",
+	}); err != nil {
+		t.Fatalf("peerStore.Set: %v", err)
+	}
+
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{Model: "test-model", Timeout: 5 * time.Second, PeerLLMStore: peerStore})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	conn := dialWS(t, srv, "alice")
+
+	sendRPC(t, conn, "key-add", "peer.llm_provider.key_add", map[string]any{"name": "My Own Model", "api_key": "sk-b"})
+	msg := readUntilID(t, conn, "key-add")
+	if msg.Error != nil {
+		t.Fatalf("peer.llm_provider.key_add error: %+v", msg.Error)
+	}
+	sendRPC(t, conn, "key-replace", "peer.llm_provider.key_replace", map[string]any{"name": "My Own Model", "index": 1, "api_key": "sk-c"})
+	msg = readUntilID(t, conn, "key-replace")
+	if msg.Error != nil {
+		t.Fatalf("peer.llm_provider.key_replace error: %+v", msg.Error)
+	}
+	sendRPC(t, conn, "key-remove", "peer.llm_provider.key_remove", map[string]any{"name": "My Own Model", "index": 0})
+	msg = readUntilID(t, conn, "key-remove")
+	if msg.Error != nil {
+		t.Fatalf("peer.llm_provider.key_remove error: %+v", msg.Error)
+	}
+	profile, err := peerStore.Get(context.Background(), "alice", "My Own Model")
+	if err != nil {
+		t.Fatalf("peerStore.Get: %v", err)
+	}
+	if len(profile.APIKeys) != 1 || profile.APIKeys[0] != "sk-c" {
+		t.Fatalf("unexpected APIKeys after lifecycle: %#v", profile.APIKeys)
+	}
+}
+
 func TestWS_PeerLLMDeleteClearsDefaultAndSessionReferences(t *testing.T) {
 	store := session.NewWithOptions(session.Options{MaxMessages: 10, SessionDir: t.TempDir()})
 	prefStore, err := preferences.New(filepath.Join(t.TempDir(), "pref.db"))

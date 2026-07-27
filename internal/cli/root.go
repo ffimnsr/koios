@@ -1299,12 +1299,18 @@ func initWizard(cmd *cobra.Command, state *repoState, interactive bool) (string,
 			break
 		}
 	}
-	apiKey, err := prompt("llm.api_key (optional)", apiKeyFallback)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(apiKey) == "" {
-		apiKey = apiKeyFallback
+	apiKey := apiKeyFallback
+	if interactive {
+		fmt.Fprint(cmd.OutOrStdout(), "llm.api_key (optional; edit config later to use llm.api_keys)")
+		if apiKeyFallback != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), " [%s]", apiKeyFallback)
+		}
+		fmt.Fprint(cmd.OutOrStdout(), ": ")
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		apiKey = strings.TrimSpace(line)
 	}
 	model, err := prompt("llm.model", modelFallback)
 	if err != nil {

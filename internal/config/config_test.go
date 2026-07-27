@@ -539,6 +539,52 @@ memory_bytes = 1048576
 	}
 }
 
+func TestValidateNormalizesProfileAPIKeys(t *testing.T) {
+	cfg := Default()
+	cfg.APIKey = "root-key"
+	cfg.APIKeys = []string{"root-key"}
+	cfg.ModelProfiles = []ModelProfile{{
+		Name:     "default",
+		Provider: "openai",
+		Model:    "gpt-4o",
+		APIKeys:  []string{" key-a ", "key-b", "key-a"},
+	}}
+	if err := validate(cfg); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got, want := len(cfg.ModelProfiles[0].APIKeys), 2; got != want {
+		t.Fatalf("len(APIKeys) = %d, want %d", got, want)
+	}
+	if cfg.ModelProfiles[0].APIKeys[0] != "key-a" || cfg.ModelProfiles[0].APIKeys[1] != "key-b" {
+		t.Fatalf("unexpected normalized APIKeys: %#v", cfg.ModelProfiles[0].APIKeys)
+	}
+	if cfg.ModelProfiles[0].APIKey != "" {
+		t.Fatalf("APIKey = %q, want empty legacy single-key field for multi-key profile", cfg.ModelProfiles[0].APIKey)
+	}
+}
+
+func TestLoadFromPathRejectsMixedProfileAPIKeyFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, DefaultConfigFile)
+	content := `
+[llm]
+default_profile = "default"
+
+[[llm.profiles]]
+name = "default"
+provider = "openai"
+model = "gpt-4o"
+api_key = "key-a"
+api_keys = ["key-b"]
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if _, err := LoadFromPath(path); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected mixed key field error, got %v", err)
+	}
+}
+
 func TestLoadFromPathAllowsDisablingMemoryEmbeddings(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "koios.config.toml")

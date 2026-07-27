@@ -317,6 +317,7 @@ func buildProfileMap(cfg *config.Config) map[string]modelEntry {
 		profileCfg := &config.Config{
 			Provider:       p.Provider,
 			APIKey:         p.APIKey,
+			APIKeys:        append([]string(nil), p.APIKeys...),
 			BaseURL:        p.BaseURL,
 			Model:          p.Model,
 			LLMIdleTimeout: cfg.LLMIdleTimeout,
@@ -325,7 +326,8 @@ func buildProfileMap(cfg *config.Config) map[string]modelEntry {
 		if profileCfg.Provider == "" {
 			profileCfg.Provider = cfg.Provider
 		}
-		if profileCfg.APIKey == "" {
+		if len(profileCfg.APIKeys) == 0 && profileCfg.APIKey == "" {
+			profileCfg.APIKeys = append([]string(nil), cfg.APIKeys...)
 			profileCfg.APIKey = cfg.APIKey
 		}
 		if profileCfg.BaseURL == "" {

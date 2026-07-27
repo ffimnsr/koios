@@ -23,6 +23,7 @@ const defaultMaxTokens = 4096
 
 type anthropicProvider struct {
 	client      *http.Client
+	selector    *credentialSelector
 	apiKey      string
 	baseURL     string
 	model       string
@@ -32,6 +33,13 @@ type anthropicProvider struct {
 
 func (p *anthropicProvider) Capabilities(string) types.ProviderCapabilities {
 	return p.hooks.capabilities
+}
+
+func (p *anthropicProvider) selectAPIKey(ctx context.Context, req *types.ChatRequest) (string, func(error)) {
+	if p.selector != nil {
+		return p.selector.Select(ctx, req)
+	}
+	return strings.TrimSpace(p.apiKey), func(error) {}
 }
 
 // — Anthropic request/response types ——————————————————————————————————————————
@@ -268,7 +276,9 @@ func (p *anthropicProvider) Complete(ctx context.Context, req *types.ChatRequest
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	p.setHeaders(httpReq)
+	apiKey, report := p.selectAPIKey(ctx, req)
+	defer func() { report(err) }()
+	p.setHeaders(httpReq, apiKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -314,7 +324,9 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
-	p.setHeaders(httpReq)
+	apiKey, report := p.selectAPIKey(streamCtx, req)
+	defer func() { report(err) }()
+	p.setHeaders(httpReq, apiKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -424,8 +436,8 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 }
 
 // setHeaders applies the Anthropic-specific authentication and version headers.
-func (p *anthropicProvider) setHeaders(r *http.Request) {
-	p.hooks.applyHeaders(r, p.apiKey)
+func (p *anthropicProvider) setHeaders(r *http.Request, apiKey string) {
+	p.hooks.applyHeaders(r, apiKey)
 }
 
 // isDataURI reports whether s is a base64 data URI (data:<mime>;base64,<data>).

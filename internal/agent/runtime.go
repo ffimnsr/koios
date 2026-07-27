@@ -596,6 +596,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		return nil, fmt.Errorf("model must not be empty")
 	}
 	sessionKey := rt.sessionKey(req)
+	ctx = types.WithRequestIdentity(ctx, types.RequestIdentity{PeerID: req.PeerID, SessionKey: sessionKey})
 
 	policy := rt.sessionPolicy(sessionKey)
 
@@ -816,6 +817,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				sink.reset()
 			}
 			attemptCtx = context.WithValue(attemptCtx, contextSessionKey{}, sessionKey)
+			attemptCtx = types.WithRequestIdentity(attemptCtx, types.RequestIdentity{PeerID: reqCopy.PeerID, SessionKey: sessionKey})
 			attemptCtx = types.WithReasoningSink(attemptCtx, func(re types.ReasoningEvent) {
 				kind := EventReasoningDelta
 				if re.Kind == types.ReasoningEventSummary {

@@ -3985,7 +3985,8 @@ var toolDefs = []toolDef{
 			"properties": map[string]any{
 				"name":          map[string]any{"type": "string", "description": "Stable alias for this profile, e.g. work-openai"},
 				"provider":      map[string]any{"type": "string", "description": "Provider name: " + config.SupportedLLMProvidersHint()},
-				"api_key":       map[string]any{"type": "string", "description": "API key for the provider. Empty for local providers like ollama."},
+				"api_key":       map[string]any{"type": "string", "description": "Legacy single API key form. Do not combine with api_keys."},
+				"api_keys":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional multi-key form for load-balancing concurrent peers. Do not combine with api_key."},
 				"base_url":      map[string]any{"type": "string", "description": "Optional base URL override. Defaults to the provider standard endpoint."},
 				"default_model": map[string]any{"type": "string", "description": "Default model to use with this profile, e.g. gpt-4.1 or claude-sonnet-4-20250514."},
 				"enabled":       map[string]any{"type": "boolean", "description": "Whether this profile is active. Defaults to true."},
@@ -3993,7 +3994,69 @@ var toolDefs = []toolDef{
 			"required":             []string{"name", "provider"},
 			"additionalProperties": false,
 		}),
-		argHint:   `{"name":"work-openai","provider":"openai","api_key":"sk-...","base_url":"https://api.openai.com","default_model":"gpt-4.1"}`,
+		argHint:   `{"name":"work-openai","provider":"openai","api_keys":["sk-a","sk-b"],"base_url":"https://api.openai.com","default_model":"gpt-4.1"}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.key_add",
+		description: "Add one API key to an existing BYOK LLM provider profile.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":    map[string]any{"type": "string"},
+				"api_key": map[string]any{"type": "string", "description": "The new key to append."},
+			},
+			"required":             []string{"name", "api_key"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai","api_key":"sk-new"}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.key_remove",
+		description: "Remove one API key from an existing BYOK LLM provider profile by index.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":  map[string]any{"type": "string"},
+				"index": map[string]any{"type": "integer", "description": "Zero-based key index to remove."},
+			},
+			"required":             []string{"name", "index"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai","index":1}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.key_replace",
+		description: "Replace one API key on an existing BYOK LLM provider profile by index.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":    map[string]any{"type": "string"},
+				"index":   map[string]any{"type": "integer", "description": "Zero-based key index to replace."},
+				"api_key": map[string]any{"type": "string", "description": "Replacement key value."},
+			},
+			"required":             []string{"name", "index", "api_key"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai","index":0,"api_key":"sk-rotated"}`,
+		available: func(h *Handler) bool { return h.peerLLMStore != nil },
+	},
+	{
+		name:        "peer.llm_provider.key_rotate",
+		description: "Rotate one API key on an existing BYOK LLM provider profile by index. Currently equivalent to key_replace but with a rotation-focused name.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":    map[string]any{"type": "string"},
+				"index":   map[string]any{"type": "integer", "description": "Zero-based key index to rotate."},
+				"api_key": map[string]any{"type": "string", "description": "New key value."},
+			},
+			"required":             []string{"name", "index", "api_key"},
+			"additionalProperties": false,
+		}),
+		argHint:   `{"name":"work-openai","index":0,"api_key":"sk-rotated"}`,
 		available: func(h *Handler) bool { return h.peerLLMStore != nil },
 	},
 	{

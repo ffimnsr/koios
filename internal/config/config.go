@@ -149,6 +149,40 @@ func IsLocalLLMProvider(name string) bool {
 	return ok
 }
 
+// NormalizeLLMAPIKeys returns a stable, trimmed, deduplicated key ring from
+// either the legacy api_key field or the new api_keys field.
+func NormalizeLLMAPIKeys(apiKey string, apiKeys []string) ([]string, error) {
+	hasSingle := strings.TrimSpace(apiKey) != ""
+	normalized := make([]string, 0, len(apiKeys))
+	seen := make(map[string]struct{}, len(apiKeys))
+	for _, key := range apiKeys {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	hasMulti := len(normalized) > 0
+	if hasSingle && hasMulti {
+		trimmedSingle := strings.TrimSpace(apiKey)
+		if len(normalized) != 1 || normalized[0] != trimmedSingle {
+			return nil, fmt.Errorf("api_key and api_keys are mutually exclusive")
+		}
+		return []string{trimmedSingle}, nil
+	}
+	if hasSingle {
+		return []string{strings.TrimSpace(apiKey)}, nil
+	}
+	if !hasMulti {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
 // SupportedWebSearchProviders returns the canonical set of runtime-supported web search providers.
 func SupportedWebSearchProviders() []string {
 	providers := make([]string, len(supportedWebSearchProviders))
@@ -191,11 +225,12 @@ type BrowserRunConfig struct {
 // as a per-session override or a fallback chain entry.
 type ModelProfile struct {
 	// Name is the short identifier used in fallback_models and session overrides.
-	Name     string `toml:"name"`
-	Provider string `toml:"provider"`
-	APIKey   string `toml:"api_key"`
-	BaseURL  string `toml:"base_url"`
-	Model    string `toml:"model"`
+	Name     string   `toml:"name"`
+	Provider string   `toml:"provider"`
+	APIKey   string   `toml:"api_key"`
+	APIKeys  []string `toml:"api_keys"`
+	BaseURL  string   `toml:"base_url"`
+	Model    string   `toml:"model"`
 }
 
 // MCPServerConfig describes a single MCP (Model Context Protocol) server
@@ -343,6 +378,7 @@ type Config struct {
 	ListenAddr     string
 	Provider       string
 	APIKey         string
+	APIKeys        []string
 	Model          string
 	BaseURL        string
 	LLMIdleTimeout time.Duration
@@ -523,6 +559,11 @@ type fileConfig struct {
 	} `toml:"server"`
 	LLM struct {
 		// DefaultProfile selects a named profile as the primary LLM.
+		Provider            string         `toml:"provider"`
+		APIKey              string         `toml:"api_key"`
+		APIKeys             []string       `toml:"api_keys"`
+		BaseURL             string         `toml:"base_url"`
+		Model               string         `toml:"model"`
 		DefaultProfile      string         `toml:"default_profile"`
 		IdleTimeout         string         `toml:"idle_timeout"`
 		ContextWindowTokens *int           `toml:"context_window_tokens"`
@@ -835,6 +876,33 @@ func Default() *Config {
 	}
 }
 
+func rawLLMKeyConflict(apiKey string, apiKeys []string) bool {
+	if strings.TrimSpace(apiKey) == "" {
+		return false
+	}
+	for _, key := range apiKeys {
+		if strings.TrimSpace(key) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func validateRawLLMKeyConfig(cfg *fileConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if rawLLMKeyConflict(cfg.LLM.APIKey, cfg.LLM.APIKeys) {
+		return fmt.Errorf("llm: api_key and api_keys are mutually exclusive")
+	}
+	for i, profile := range cfg.LLM.Profiles {
+		if rawLLMKeyConflict(profile.APIKey, profile.APIKeys) {
+			return fmt.Errorf("llm.profiles[%d]: api_key and api_keys are mutually exclusive", i)
+		}
+	}
+	return nil
+}
+
 // Load reads and validates koios.config.toml from the current working directory.
 func Load() (*Config, error) {
 	return LoadFromPath(DefaultConfigFile)
@@ -852,6 +920,9 @@ func LoadOptionalFromPath(path string) (*Config, bool, error) {
 	}
 	fileCfg := fileConfig{}
 	if err := toml.Unmarshal(data, &fileCfg); err != nil {
+		return nil, true, fmt.Errorf("parse config file %s: %w", path, err)
+	}
+	if err := validateRawLLMKeyConfig(&fileCfg); err != nil {
 		return nil, true, fmt.Errorf("parse config file %s: %w", path, err)
 	}
 	if err := decodeHiddenSecrets(cfg, &fileCfg); err != nil {
@@ -1166,6 +1237,23 @@ func encodeHooksSection(cfg *Config) string {
 }
 
 // encodeLLMSection builds the canonical [llm] and [[llm.profiles]] config.
+func firstLLMAPIKey(keys []string) string {
+	for _, key := range keys {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func encodeAPIKeysLiteral(cfg *Config, profileName string, keys []string) string {
+	parts := make([]string, 0, len(keys))
+	for idx, key := range keys {
+		parts = append(parts, encodeHiddenSecretLiteral(cfg, hiddenSecretPathModelProfileAPIKeysEntry(profileName, idx), key))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
 func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 	var b strings.Builder
 	defaultProfile := strings.TrimSpace(cfg.DefaultProfile)
@@ -1178,6 +1266,7 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 			Name:     defaultProfile,
 			Provider: cfg.Provider,
 			APIKey:   cfg.APIKey,
+			APIKeys:  append([]string(nil), cfg.APIKeys...),
 			BaseURL:  cfg.BaseURL,
 			Model:    cfg.Model,
 		}}
@@ -1196,6 +1285,7 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 			Name:     defaultProfile,
 			Provider: cfg.Provider,
 			APIKey:   cfg.APIKey,
+			APIKeys:  append([]string(nil), cfg.APIKeys...),
 			BaseURL:  cfg.BaseURL,
 			Model:    cfg.Model,
 		}}, profiles...)
@@ -1203,6 +1293,7 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 	}
 	profiles[selectedIndex].Provider = cfg.Provider
 	profiles[selectedIndex].APIKey = cfg.APIKey
+	profiles[selectedIndex].APIKeys = append([]string(nil), cfg.APIKeys...)
 	profiles[selectedIndex].BaseURL = cfg.BaseURL
 	profiles[selectedIndex].Model = cfg.Model
 	b.WriteString("[llm]\n")
@@ -1224,8 +1315,12 @@ func encodeLLMSection(cfg *Config, includeAPIKey bool) string {
 		fmt.Fprintf(&b, "name = %s\n", strconv.Quote(p.Name))
 		fmt.Fprintf(&b, "provider = %s\n", strconv.Quote(p.Provider))
 		fmt.Fprintf(&b, "model = %s\n", strconv.Quote(p.Model))
-		if p.APIKey != "" || includeAPIKey {
-			fmt.Fprintf(&b, "api_key = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathModelProfileAPIKey(p.Name), p.APIKey))
+		normalizedKeys, _ := NormalizeLLMAPIKeys(p.APIKey, p.APIKeys)
+		switch {
+		case len(normalizedKeys) > 1:
+			fmt.Fprintf(&b, "api_keys = %s\n", encodeAPIKeysLiteral(cfg, p.Name, normalizedKeys))
+		case len(normalizedKeys) == 1 || includeAPIKey:
+			fmt.Fprintf(&b, "api_key = %s\n", encodeHiddenSecretLiteral(cfg, hiddenSecretPathModelProfileAPIKey(p.Name), firstLLMAPIKey(normalizedKeys)))
 		}
 		if p.BaseURL != "" {
 			fmt.Fprintf(&b, "base_url = %s\n", strconv.Quote(p.BaseURL))
@@ -1343,6 +1438,21 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 		dst.OwnerPeerIDs = src.Server.OwnerPeerIDs
 	}
 
+	if src.LLM.Provider != "" {
+		dst.Provider = strings.TrimSpace(src.LLM.Provider)
+	}
+	if src.LLM.APIKey != "" {
+		dst.APIKey = src.LLM.APIKey
+	}
+	if src.LLM.APIKeys != nil {
+		dst.APIKeys = append([]string(nil), src.LLM.APIKeys...)
+	}
+	if src.LLM.BaseURL != "" {
+		dst.BaseURL = strings.TrimSpace(src.LLM.BaseURL)
+	}
+	if src.LLM.Model != "" {
+		dst.Model = strings.TrimSpace(src.LLM.Model)
+	}
 	if src.LLM.IdleTimeout != "" {
 		if d, err := time.ParseDuration(src.LLM.IdleTimeout); err == nil {
 			dst.LLMIdleTimeout = d
@@ -1368,9 +1478,33 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.LLM.Profiles != nil {
 		dst.ModelProfiles = append([]ModelProfile(nil), src.LLM.Profiles...)
+		for i := range dst.ModelProfiles {
+			normalized, _ := NormalizeLLMAPIKeys(dst.ModelProfiles[i].APIKey, dst.ModelProfiles[i].APIKeys)
+			dst.ModelProfiles[i].APIKeys = normalized
+			if len(normalized) == 1 {
+				dst.ModelProfiles[i].APIKey = normalized[0]
+			} else {
+				dst.ModelProfiles[i].APIKey = ""
+			}
+		}
 	}
 	if src.LLM.DefaultProfile != "" {
 		dst.DefaultProfile = src.LLM.DefaultProfile
+	}
+	if len(dst.ModelProfiles) == 0 && strings.TrimSpace(dst.Provider) != "" && strings.TrimSpace(dst.Model) != "" {
+		profileName := strings.TrimSpace(dst.DefaultProfile)
+		if profileName == "" {
+			profileName = "default"
+			dst.DefaultProfile = profileName
+		}
+		dst.ModelProfiles = []ModelProfile{{
+			Name:     profileName,
+			Provider: dst.Provider,
+			APIKey:   dst.APIKey,
+			APIKeys:  append([]string(nil), dst.APIKeys...),
+			BaseURL:  dst.BaseURL,
+			Model:    dst.Model,
+		}}
 	}
 	if dst.DefaultProfile != "" {
 		for _, p := range dst.ModelProfiles {
@@ -1378,8 +1512,14 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 				if p.Provider != "" {
 					dst.Provider = p.Provider
 				}
-				if p.APIKey != "" {
-					dst.APIKey = p.APIKey
+				normalized, _ := NormalizeLLMAPIKeys(p.APIKey, p.APIKeys)
+				if len(normalized) > 0 {
+					dst.APIKeys = append([]string(nil), normalized...)
+					if len(normalized) == 1 {
+						dst.APIKey = normalized[0]
+					} else {
+						dst.APIKey = ""
+					}
 				}
 				if p.Model != "" {
 					dst.Model = p.Model
@@ -1390,6 +1530,13 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 				break
 			}
 		}
+	}
+	normalizedRootKeys, _ := NormalizeLLMAPIKeys(dst.APIKey, dst.APIKeys)
+	dst.APIKeys = normalizedRootKeys
+	if len(normalizedRootKeys) == 1 {
+		dst.APIKey = normalizedRootKeys[0]
+	} else if len(normalizedRootKeys) > 1 {
+		dst.APIKey = ""
 	}
 	if src.MCP.Servers != nil {
 		dst.MCPServers = append([]MCPServerConfig(nil), src.MCP.Servers...)
@@ -2167,7 +2314,8 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("llm.profiles must contain at least one profile")
 	}
 	selectedProfile := false
-	for i, profile := range cfg.ModelProfiles {
+	for i := range cfg.ModelProfiles {
+		profile := &cfg.ModelProfiles[i]
 		if strings.TrimSpace(profile.Name) == "" {
 			return fmt.Errorf("llm.profiles[%d].name must not be empty", i)
 		}
@@ -2180,12 +2328,32 @@ func validate(cfg *Config) error {
 		if strings.TrimSpace(profile.Model) == "" {
 			return fmt.Errorf("llm.profiles[%d].model must not be empty", i)
 		}
+		normalizedKeys, err := NormalizeLLMAPIKeys(profile.APIKey, profile.APIKeys)
+		if err != nil {
+			return fmt.Errorf("llm.profiles[%d]: %w", i, err)
+		}
+		profile.APIKeys = normalizedKeys
+		if len(normalizedKeys) == 1 {
+			profile.APIKey = normalizedKeys[0]
+		} else {
+			profile.APIKey = ""
+		}
 		if profile.Name == cfg.DefaultProfile {
 			selectedProfile = true
 		}
 	}
 	if !selectedProfile {
 		return fmt.Errorf("llm.default_profile %q must match one of llm.profiles.name", cfg.DefaultProfile)
+	}
+	normalizedRootKeys, err := NormalizeLLMAPIKeys(cfg.APIKey, cfg.APIKeys)
+	if err != nil {
+		return fmt.Errorf("llm: %w", err)
+	}
+	cfg.APIKeys = normalizedRootKeys
+	if len(normalizedRootKeys) == 1 {
+		cfg.APIKey = normalizedRootKeys[0]
+	} else if len(normalizedRootKeys) > 1 {
+		cfg.APIKey = ""
 	}
 	if cfg.Model == "" {
 		return fmt.Errorf("llm.model is required")

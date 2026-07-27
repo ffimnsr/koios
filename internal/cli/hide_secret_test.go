@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -84,6 +85,58 @@ func writeMinimalConfig(t *testing.T, dir, apiKey string) {
 	}
 }
 
+func writeMinimalMultiKeyProfileConfig(t *testing.T, dir string, apiKeys []string) {
+	t.Helper()
+	quoted := make([]string, 0, len(apiKeys))
+	for _, apiKey := range apiKeys {
+		quoted = append(quoted, strconv.Quote(apiKey))
+	}
+	toml := strings.Join([]string{
+		"[server]",
+		`listen_addr = ":9090"`,
+		"",
+		"[llm]",
+		`default_profile = "default"`,
+		"",
+		"[[llm.profiles]]",
+		`name = "default"`,
+		`provider = "openai"`,
+		`model = "gpt-4o"`,
+		`api_keys = [` + strings.Join(quoted, ", ") + `]`,
+		"",
+		"[workspace]",
+		`root = "./workspace"`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeMinimalMultiKeyRootConfig(t *testing.T, dir string, apiKeys []string) {
+	t.Helper()
+	quoted := make([]string, 0, len(apiKeys))
+	for _, apiKey := range apiKeys {
+		quoted = append(quoted, strconv.Quote(apiKey))
+	}
+	toml := strings.Join([]string{
+		"[server]",
+		`listen_addr = ":9090"`,
+		"",
+		"[llm]",
+		`provider = "openai"`,
+		`model = "gpt-4o"`,
+		`api_keys = [` + strings.Join(quoted, ", ") + `]`,
+		"",
+		"[workspace]",
+		`root = "./workspace"`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, config.DefaultConfigFile), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHideSecretSetLLMProfileAPIKey(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir := t.TempDir()
@@ -140,6 +193,77 @@ func TestHideSecretSetLLMProfileAPIKey(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "plaintext-key") {
 		t.Fatal("old plaintext key found in rewritten config")
+	}
+}
+
+func TestHideSecretSetLLMProfileAPIKeysEntry(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	writeMinimalMultiKeyProfileConfig(t, dir, []string{"plain-a", "plain-b"})
+	orig, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	cmd := NewRootCommand(app.BuildInfo{Version: "test"}, nil)
+	cmd.SetArgs([]string{"hide-secret", "--set", "llm.default.api_keys.1", "profile-rotated-secret"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfgPath := filepath.Join(dir, config.DefaultConfigFile)
+	cfg, err := config.LoadFromPath(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+	if len(cfg.ModelProfiles) != 1 {
+		t.Fatalf("expected 1 profile, got %d", len(cfg.ModelProfiles))
+	}
+	if got := cfg.ModelProfiles[0].APIKeys; len(got) != 2 || got[1] != "profile-rotated-secret" {
+		t.Fatalf("profile api_keys = %#v", got)
+	}
+
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "profile-rotated-secret") || strings.Contains(string(raw), "plain-b") {
+		t.Fatal("expected rewritten profile api_keys entry to stay hidden")
+	}
+}
+
+func TestHideSecretSetRootLLMAPIKeysEntry(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	writeMinimalMultiKeyRootConfig(t, dir, []string{"plain-a", "plain-b"})
+	orig, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	cmd := NewRootCommand(app.BuildInfo{Version: "test"}, nil)
+	cmd.SetArgs([]string{"hide-secret", "--set", "llm.api_keys.0", "root-rotated-secret"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfgPath := filepath.Join(dir, config.DefaultConfigFile)
+	cfg, err := config.LoadFromPath(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+	if got := cfg.APIKeys; len(got) != 2 || got[0] != "root-rotated-secret" {
+		t.Fatalf("root api_keys = %#v", got)
+	}
+
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "root-rotated-secret") || strings.Contains(string(raw), "plain-a") {
+		t.Fatal("expected rewritten root api_keys entry to stay hidden")
 	}
 }
 

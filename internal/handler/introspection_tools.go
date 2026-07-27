@@ -919,6 +919,7 @@ func (h *Handler) listModels(ctx context.Context, peerID string) map[string]any 
 					"base_url":       pp.BaseURL,
 					"role":           "peer_profile",
 					"has_api_key":    pp.HasAPIKey,
+					"api_key_count":  pp.APIKeyCount,
 					"api_key_masked": pp.APIKeyMasked,
 				})
 			}

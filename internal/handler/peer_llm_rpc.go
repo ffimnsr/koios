@@ -17,12 +17,13 @@ import (
 // —── peer.llm_provider.set ────────────────────────────────────────────────────
 
 type peerLLMSetParams struct {
-	Name         string `json:"name"`
-	Provider     string `json:"provider"`
-	APIKey       string `json:"api_key"`
-	BaseURL      string `json:"base_url"`
-	DefaultModel string `json:"default_model"`
-	Enabled      *bool  `json:"enabled"`
+	Name         string   `json:"name"`
+	Provider     string   `json:"provider"`
+	APIKey       string   `json:"api_key"`
+	APIKeys      []string `json:"api_keys"`
+	BaseURL      string   `json:"base_url"`
+	DefaultModel string   `json:"default_model"`
+	Enabled      *bool    `json:"enabled"`
 }
 
 func (h *Handler) rpcPeerLLMSet(ctx context.Context, wsc *wsConn, req *rpcRequest) {
@@ -35,6 +36,7 @@ func (h *Handler) rpcPeerLLMSet(ctx context.Context, wsc *wsConn, req *rpcReques
 		Name:         p.Name,
 		Provider:     p.Provider,
 		APIKey:       p.APIKey,
+		APIKeys:      append([]string(nil), p.APIKeys...),
 		BaseURL:      p.BaseURL,
 		DefaultModel: p.DefaultModel,
 		Enabled:      p.Enabled,
@@ -47,15 +49,18 @@ func (h *Handler) rpcPeerLLMSet(ctx context.Context, wsc *wsConn, req *rpcReques
 	if h.agentRuntime != nil {
 		h.agentRuntime.InvalidateProviderCache(wsc.peerID, profile.Name)
 	}
+	result := profileResultForProfile(profile)
 	wsc.reply(req.ID, map[string]any{
-		"ok":            true,
-		"id":            profile.ID,
-		"name":          profile.Name,
-		"provider":      profile.Provider,
-		"has_api_key":   profile.APIKeyEnc != "",
-		"base_url":      profile.BaseURL,
-		"default_model": profile.DefaultModel,
-		"enabled":       profile.Enabled,
+		"ok":             true,
+		"id":             profile.ID,
+		"name":           profile.Name,
+		"provider":       profile.Provider,
+		"has_api_key":    result.HasAPIKey,
+		"api_key_count":  result.APIKeyCount,
+		"api_key_masked": result.APIKeyMasked,
+		"base_url":       profile.BaseURL,
+		"default_model":  profile.DefaultModel,
+		"enabled":        profile.Enabled,
 	})
 }
 
@@ -76,18 +81,21 @@ func (h *Handler) rpcPeerLLMGet(ctx context.Context, wsc *wsConn, req *rpcReques
 		wsc.replyErr(req.ID, errCodeServer, err.Error())
 		return
 	}
+	result := profileResultForProfile(profile)
 	wsc.reply(req.ID, map[string]any{
-		"id":            profile.ID,
-		"peer_id":       profile.PeerID,
-		"name":          profile.Name,
-		"provider":      profile.Provider,
-		"has_api_key":   profile.APIKeyEnc != "",
-		"base_url":      profile.BaseURL,
-		"default_model": profile.DefaultModel,
-		"enabled":       profile.Enabled,
-		"tested_at":     profile.TestedAt,
-		"created_at":    profile.CreatedAt,
-		"updated_at":    profile.UpdatedAt,
+		"id":             profile.ID,
+		"peer_id":        profile.PeerID,
+		"name":           profile.Name,
+		"provider":       profile.Provider,
+		"has_api_key":    result.HasAPIKey,
+		"api_key_count":  result.APIKeyCount,
+		"api_key_masked": result.APIKeyMasked,
+		"base_url":       profile.BaseURL,
+		"default_model":  profile.DefaultModel,
+		"enabled":        profile.Enabled,
+		"tested_at":      profile.TestedAt,
+		"created_at":     profile.CreatedAt,
+		"updated_at":     profile.UpdatedAt,
 	})
 }
 
@@ -190,7 +198,7 @@ func (h *Handler) rpcPeerLLMTest(ctx context.Context, wsc *wsConn, req *rpcReque
 // It builds a provider from the stored profile, sends a minimal completion,
 // and reports whether the endpoint is reachable and the credentials are valid.
 func (h *Handler) testProviderConnectivity(ctx context.Context, profile *peerllm.ProviderProfile) map[string]any {
-	if profile.APIKeyEnc == "" && !isLocalProvider(profile.Provider) {
+	if len(profile.APIKeys) == 0 && !isLocalProvider(profile.Provider) {
 		return map[string]any{
 			"ok":            false,
 			"name":          profile.Name,
@@ -213,6 +221,7 @@ func (h *Handler) testProviderConnectivity(ctx context.Context, profile *peerllm
 	cfg := &config.Config{
 		Provider:       profile.Provider,
 		APIKey:         profile.APIKeyEnc,
+		APIKeys:        append([]string(nil), profile.APIKeys...),
 		BaseURL:        profile.BaseURL,
 		Model:          model,
 		RequestTimeout: 15 * time.Second,
@@ -226,7 +235,7 @@ func (h *Handler) testProviderConnectivity(ctx context.Context, profile *peerllm
 			"provider":      profile.Provider,
 			"base_url":      profile.BaseURL,
 			"default_model": model,
-			"has_api_key":   profile.APIKeyEnc != "",
+			"has_api_key":   len(profile.APIKeys) > 0,
 			"checked":       false,
 			"error":         fmt.Sprintf("build provider: %s", err),
 		}
@@ -253,7 +262,7 @@ func (h *Handler) testProviderConnectivity(ctx context.Context, profile *peerllm
 			"provider":      profile.Provider,
 			"base_url":      profile.BaseURL,
 			"default_model": model,
-			"has_api_key":   profile.APIKeyEnc != "",
+			"has_api_key":   len(profile.APIKeys) > 0,
 			"checked":       true,
 			"error":         fmt.Sprintf("upstream error: %s", err),
 			"duration_ms":   duration.Milliseconds(),
@@ -267,15 +276,151 @@ func (h *Handler) testProviderConnectivity(ctx context.Context, profile *peerllm
 		"provider":      profile.Provider,
 		"base_url":      profile.BaseURL,
 		"default_model": model,
-		"has_api_key":   profile.APIKeyEnc != "",
+		"has_api_key":   len(profile.APIKeys) > 0,
 		"checked":       true,
 		"duration_ms":   duration.Milliseconds(),
 		"response":      firstNonEmpty(resp.Choices[0].Message.Content, ""),
 	}
 }
 
+func replyPeerLLMProfileSummary(profile *peerllm.ProviderProfile) map[string]any {
+	result := profileResultForProfile(profile)
+	return map[string]any{
+		"id":             profile.ID,
+		"name":           profile.Name,
+		"provider":       profile.Provider,
+		"has_api_key":    result.HasAPIKey,
+		"api_key_count":  result.APIKeyCount,
+		"api_key_masked": result.APIKeyMasked,
+		"base_url":       profile.BaseURL,
+		"default_model":  profile.DefaultModel,
+		"enabled":        profile.Enabled,
+	}
+}
+
+func profileResultForProfile(profile *peerllm.ProviderProfile) peerllm.ProfileResult {
+	if profile == nil {
+		return peerllm.ProfileResult{}
+	}
+	masked := ""
+	if len(profile.APIKeys) > 0 {
+		key := profile.APIKeys[0]
+		if len(key) <= 8 {
+			masked = strings.Repeat("*", len(key))
+		} else {
+			masked = key[:4] + strings.Repeat("*", len(key)-8) + key[len(key)-4:]
+		}
+	}
+	return peerllm.ProfileResult{
+		HasAPIKey:    len(profile.APIKeys) > 0,
+		APIKeyCount:  len(profile.APIKeys),
+		APIKeyMasked: masked,
+	}
+}
+
 func isLocalProvider(name string) bool {
 	return config.IsLocalLLMProvider(name)
+}
+
+type peerLLMKeyAddParams struct {
+	Name   string `json:"name"`
+	APIKey string `json:"api_key"`
+}
+
+type peerLLMKeyRemoveParams struct {
+	Name  string `json:"name"`
+	Index int    `json:"index"`
+}
+
+type peerLLMKeyReplaceParams struct {
+	Name   string `json:"name"`
+	Index  int    `json:"index"`
+	APIKey string `json:"api_key"`
+}
+
+type peerLLMKeyRotateParams struct {
+	Name   string `json:"name"`
+	Index  int    `json:"index"`
+	APIKey string `json:"api_key"`
+}
+
+func (h *Handler) replyPeerLLMKeyMutation(ctx context.Context, wsc *wsConn, req *rpcRequest, profileName string, mutate func() (*peerllm.ProviderProfile, error)) {
+	profile, err := mutate()
+	if err != nil {
+		wsc.replyErr(req.ID, errCodeServer, err.Error())
+		return
+	}
+	if h.agentRuntime != nil {
+		h.agentRuntime.InvalidateProviderCache(wsc.peerID, profileName)
+	}
+	wsc.reply(req.ID, map[string]any{
+		"ok":      true,
+		"profile": replyPeerLLMProfileSummary(profile),
+	})
+}
+
+func (h *Handler) rpcPeerLLMKeyAdd(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p peerLLMKeyAddParams
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
+		return
+	}
+	h.replyPeerLLMKeyMutation(ctx, wsc, req, name, func() (*peerllm.ProviderProfile, error) {
+		return h.peerLLMStore.AddKey(ctx, wsc.peerID, name, p.APIKey)
+	})
+}
+
+func (h *Handler) rpcPeerLLMKeyRemove(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p peerLLMKeyRemoveParams
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
+		return
+	}
+	h.replyPeerLLMKeyMutation(ctx, wsc, req, name, func() (*peerllm.ProviderProfile, error) {
+		return h.peerLLMStore.RemoveKey(ctx, wsc.peerID, name, p.Index)
+	})
+}
+
+func (h *Handler) rpcPeerLLMKeyReplace(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p peerLLMKeyReplaceParams
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
+		return
+	}
+	h.replyPeerLLMKeyMutation(ctx, wsc, req, name, func() (*peerllm.ProviderProfile, error) {
+		return h.peerLLMStore.ReplaceKey(ctx, wsc.peerID, name, p.Index, p.APIKey)
+	})
+}
+
+func (h *Handler) rpcPeerLLMKeyRotate(ctx context.Context, wsc *wsConn, req *rpcRequest) {
+	var p peerLLMKeyRotateParams
+	if err := decodeParams(req.Params, &p); err != nil {
+		wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+		return
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
+		return
+	}
+	h.replyPeerLLMKeyMutation(ctx, wsc, req, name, func() (*peerllm.ProviderProfile, error) {
+		return h.peerLLMStore.RotateKey(ctx, wsc.peerID, name, p.Index, p.APIKey)
+	})
 }
 
 // —── peer.llm_provider.activate ──────────────────────────────────────────────

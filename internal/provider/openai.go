@@ -981,6 +981,7 @@ func firstGeminiReplayMarker(text string, markers []string) (int, string) {
 
 type openAIProvider struct {
 	client      *http.Client
+	selector    *credentialSelector
 	apiKey      string
 	baseURL     string
 	model       string
@@ -990,6 +991,13 @@ type openAIProvider struct {
 
 func (p *openAIProvider) Capabilities(string) types.ProviderCapabilities {
 	return p.hooks.capabilities
+}
+
+func (p *openAIProvider) selectAPIKey(ctx context.Context, req *types.ChatRequest) (string, func(error)) {
+	if p.selector != nil {
+		return p.selector.Select(ctx, req)
+	}
+	return strings.TrimSpace(p.apiKey), func(error) {}
 }
 
 func (p *openAIProvider) Complete(ctx context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
@@ -1014,7 +1022,9 @@ func (p *openAIProvider) completeChatCompletions(ctx context.Context, req *types
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
-	p.hooks.applyHeaders(httpReq, p.apiKey)
+	apiKey, report := p.selectAPIKey(ctx, req)
+	defer func() { report(err) }()
+	p.hooks.applyHeaders(httpReq, apiKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -1058,7 +1068,9 @@ func (p *openAIProvider) completeResponses(ctx context.Context, req *types.ChatR
 	if err != nil {
 		return nil, fmt.Errorf("build responses request: %w", err)
 	}
-	p.hooks.applyHeaders(httpReq, p.apiKey)
+	apiKey, report := p.selectAPIKey(ctx, req)
+	defer func() { report(err) }()
+	p.hooks.applyHeaders(httpReq, apiKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -1112,7 +1124,9 @@ func (p *openAIProvider) completeChatCompletionsStream(ctx context.Context, req 
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}
-	p.hooks.applyHeaders(httpReq, p.apiKey)
+	apiKey, report := p.selectAPIKey(streamCtx, req)
+	defer func() { report(err) }()
+	p.hooks.applyHeaders(httpReq, apiKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -1273,7 +1287,9 @@ func (p *openAIProvider) completeResponsesStream(ctx context.Context, req *types
 	if err != nil {
 		return "", fmt.Errorf("build responses request: %w", err)
 	}
-	p.hooks.applyHeaders(httpReq, p.apiKey)
+	apiKey, report := p.selectAPIKey(streamCtx, req)
+	defer func() { report(err) }()
+	p.hooks.applyHeaders(httpReq, apiKey)
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {

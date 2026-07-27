@@ -1231,12 +1231,13 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
 		}
 		var peerLLMSetArgs struct {
-			Name         string `json:"name"`
-			Provider     string `json:"provider"`
-			APIKey       string `json:"api_key"`
-			BaseURL      string `json:"base_url"`
-			DefaultModel string `json:"default_model"`
-			Enabled      *bool  `json:"enabled"`
+			Name         string   `json:"name"`
+			Provider     string   `json:"provider"`
+			APIKey       string   `json:"api_key"`
+			APIKeys      []string `json:"api_keys"`
+			BaseURL      string   `json:"base_url"`
+			DefaultModel string   `json:"default_model"`
+			Enabled      *bool    `json:"enabled"`
 		}
 		if err := json.Unmarshal(call.Arguments, &peerLLMSetArgs); err != nil {
 			return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -1245,6 +1246,7 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			Name:         peerLLMSetArgs.Name,
 			Provider:     peerLLMSetArgs.Provider,
 			APIKey:       peerLLMSetArgs.APIKey,
+			APIKeys:      append([]string(nil), peerLLMSetArgs.APIKeys...),
 			BaseURL:      peerLLMSetArgs.BaseURL,
 			DefaultModel: peerLLMSetArgs.DefaultModel,
 			Enabled:      peerLLMSetArgs.Enabled,
@@ -1257,14 +1259,8 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			h.agentRuntime.InvalidateProviderCache(peerID, profile.Name)
 		}
 		return map[string]any{
-			"ok":            true,
-			"id":            profile.ID,
-			"name":          profile.Name,
-			"provider":      profile.Provider,
-			"has_api_key":   profile.APIKeyEnc != "",
-			"base_url":      profile.BaseURL,
-			"default_model": profile.DefaultModel,
-			"enabled":       profile.Enabled,
+			"ok":      true,
+			"profile": replyPeerLLMProfileSummary(profile),
 		}, nil
 	case "peer.llm_provider.get":
 		if h.peerLLMStore == nil {
@@ -1280,16 +1276,19 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 		if err != nil {
 			return nil, err
 		}
+		pr := profileResultForProfile(pit)
 		return map[string]any{
-			"id":            pit.ID,
-			"name":          pit.Name,
-			"provider":      pit.Provider,
-			"has_api_key":   pit.APIKeyEnc != "",
-			"base_url":      pit.BaseURL,
-			"default_model": pit.DefaultModel,
-			"enabled":       pit.Enabled,
-			"created_at":    pit.CreatedAt,
-			"updated_at":    pit.UpdatedAt,
+			"id":             pit.ID,
+			"name":           pit.Name,
+			"provider":       pit.Provider,
+			"has_api_key":    pr.HasAPIKey,
+			"api_key_count":  pr.APIKeyCount,
+			"api_key_masked": pr.APIKeyMasked,
+			"base_url":       pit.BaseURL,
+			"default_model":  pit.DefaultModel,
+			"enabled":        pit.Enabled,
+			"created_at":     pit.CreatedAt,
+			"updated_at":     pit.UpdatedAt,
 		}, nil
 	case "peer.llm_provider.list":
 		if h.peerLLMStore == nil {
@@ -1351,6 +1350,84 @@ func (h *Handler) executeDataTool(ctx context.Context, peerID string, call agent
 			return nil, err
 		}
 		return h.testProviderConnectivity(ctx, profile), nil
+	case "peer.llm_provider.key_add":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var args struct {
+			Name   string `json:"name"`
+			APIKey string `json:"api_key"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		profile, err := h.peerLLMStore.AddKey(ctx, peerID, args.Name, args.APIKey)
+		if err != nil {
+			return nil, err
+		}
+		if h.agentRuntime != nil {
+			h.agentRuntime.InvalidateProviderCache(peerID, args.Name)
+		}
+		return map[string]any{"ok": true, "profile": replyPeerLLMProfileSummary(profile)}, nil
+	case "peer.llm_provider.key_remove":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var args struct {
+			Name  string `json:"name"`
+			Index int    `json:"index"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		profile, err := h.peerLLMStore.RemoveKey(ctx, peerID, args.Name, args.Index)
+		if err != nil {
+			return nil, err
+		}
+		if h.agentRuntime != nil {
+			h.agentRuntime.InvalidateProviderCache(peerID, args.Name)
+		}
+		return map[string]any{"ok": true, "profile": replyPeerLLMProfileSummary(profile)}, nil
+	case "peer.llm_provider.key_replace":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var args struct {
+			Name   string `json:"name"`
+			Index  int    `json:"index"`
+			APIKey string `json:"api_key"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		profile, err := h.peerLLMStore.ReplaceKey(ctx, peerID, args.Name, args.Index, args.APIKey)
+		if err != nil {
+			return nil, err
+		}
+		if h.agentRuntime != nil {
+			h.agentRuntime.InvalidateProviderCache(peerID, args.Name)
+		}
+		return map[string]any{"ok": true, "profile": replyPeerLLMProfileSummary(profile)}, nil
+	case "peer.llm_provider.key_rotate":
+		if h.peerLLMStore == nil {
+			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")
+		}
+		var args struct {
+			Name   string `json:"name"`
+			Index  int    `json:"index"`
+			APIKey string `json:"api_key"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		profile, err := h.peerLLMStore.RotateKey(ctx, peerID, args.Name, args.Index, args.APIKey)
+		if err != nil {
+			return nil, err
+		}
+		if h.agentRuntime != nil {
+			h.agentRuntime.InvalidateProviderCache(peerID, args.Name)
+		}
+		return map[string]any{"ok": true, "profile": replyPeerLLMProfileSummary(profile)}, nil
 	case "peer.llm_provider.activate":
 		if h.peerLLMStore == nil {
 			return nil, fmt.Errorf("peer LLM provider profiles are not enabled")

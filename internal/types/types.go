@@ -246,12 +246,42 @@ type ReasoningEvent struct {
 }
 
 type reasoningSinkKey struct{}
+type requestIdentityKey struct{}
+
+// RequestIdentity carries stable caller identity used by downstream systems
+// such as per-session credential selection.
+type RequestIdentity struct {
+	PeerID     string
+	SessionKey string
+}
 
 func WithReasoningSink(ctx context.Context, sink func(ReasoningEvent)) context.Context {
 	if sink == nil {
 		return ctx
 	}
 	return context.WithValue(ctx, reasoningSinkKey{}, sink)
+}
+
+func WithRequestIdentity(ctx context.Context, identity RequestIdentity) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	identity.PeerID = strings.TrimSpace(identity.PeerID)
+	identity.SessionKey = strings.TrimSpace(identity.SessionKey)
+	if identity.PeerID == "" && identity.SessionKey == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIdentityKey{}, identity)
+}
+
+func RequestIdentityFromContext(ctx context.Context) RequestIdentity {
+	if ctx == nil {
+		return RequestIdentity{}
+	}
+	identity, _ := ctx.Value(requestIdentityKey{}).(RequestIdentity)
+	identity.PeerID = strings.TrimSpace(identity.PeerID)
+	identity.SessionKey = strings.TrimSpace(identity.SessionKey)
+	return identity
 }
 
 func EmitReasoningEvent(ctx context.Context, ev ReasoningEvent) {

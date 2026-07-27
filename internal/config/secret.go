@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/scrypt"
@@ -233,6 +234,21 @@ func decodeHiddenSecrets(dst *Config, src *fileConfig) error {
 	if dst == nil || src == nil {
 		return nil
 	}
+	if plaintext, raw, err := decodeHiddenSecretValue(src.LLM.APIKey); err != nil {
+		return fmt.Errorf("llm.api_key: %w", err)
+	} else {
+		src.LLM.APIKey = plaintext
+		dst.setHiddenSecret("llm.api_key", raw)
+	}
+	for i := range src.LLM.APIKeys {
+		path := "llm.api_keys." + strconv.Itoa(i)
+		plaintext, raw, err := decodeHiddenSecretValue(src.LLM.APIKeys[i])
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		src.LLM.APIKeys[i] = plaintext
+		dst.setHiddenSecret(path, raw)
+	}
 	for i := range src.LLM.Profiles {
 		path := hiddenSecretPathModelProfileAPIKey(src.LLM.Profiles[i].Name)
 		plaintext, raw, err := decodeHiddenSecretValue(src.LLM.Profiles[i].APIKey)
@@ -241,6 +257,15 @@ func decodeHiddenSecrets(dst *Config, src *fileConfig) error {
 		}
 		src.LLM.Profiles[i].APIKey = plaintext
 		dst.setHiddenSecret(path, raw)
+		for keyIndex := range src.LLM.Profiles[i].APIKeys {
+			entryPath := hiddenSecretPathModelProfileAPIKeysEntry(src.LLM.Profiles[i].Name, keyIndex)
+			plaintext, raw, err := decodeHiddenSecretValue(src.LLM.Profiles[i].APIKeys[keyIndex])
+			if err != nil {
+				return fmt.Errorf("%s: %w", entryPath, err)
+			}
+			src.LLM.Profiles[i].APIKeys[keyIndex] = plaintext
+			dst.setHiddenSecret(entryPath, raw)
+		}
 	}
 	telegram := &src.Channels.Telegram
 	if plaintext, raw, err := decodeHiddenSecretValue(telegram.BotToken); err != nil {
@@ -305,6 +330,14 @@ func decodeHiddenSecretValue(value string) (plaintext string, raw string, err er
 	return plaintext, trimmed, nil
 }
 
+func hiddenSecretPathModelProfileAPIKeysEntry(name string, index int) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "llm.profiles.api_keys." + strconv.Itoa(index)
+	}
+	return "llm.profiles." + trimmed + ".api_keys." + strconv.Itoa(index)
+}
+
 func hiddenSecretPathModelProfileAPIKey(name string) string {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
@@ -325,6 +358,12 @@ func hiddenSecretPathWebSearchAPIKey(provider string) string {
 // path for the named LLM profile's api_key field.
 func HiddenSecretFieldPathModelProfileAPIKey(name string) string {
 	return hiddenSecretPathModelProfileAPIKey(name)
+}
+
+// HiddenSecretFieldPathModelProfileAPIKeysEntry returns the canonical
+// hidden-secret path for one indexed api_keys entry on a named LLM profile.
+func HiddenSecretFieldPathModelProfileAPIKeysEntry(name string, index int) string {
+	return hiddenSecretPathModelProfileAPIKeysEntry(name, index)
 }
 
 func hiddenSecretAAD(prefix, keyID string) []byte {

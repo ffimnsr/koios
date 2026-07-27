@@ -124,6 +124,58 @@ func TestLoadFromPathDecryptsAndPreservesHiddenSecrets(t *testing.T) {
 	}
 }
 
+func TestLoadFromPathDecryptsProfileAPIKeys(t *testing.T) {
+	configureHiddenSecretTestEnv(t)
+	hiddenA, err := HideSecret("api-hidden-a")
+	if err != nil {
+		t.Fatalf("HideSecret A: %v", err)
+	}
+	hiddenB, err := HideSecret("api-hidden-b")
+	if err != nil {
+		t.Fatalf("HideSecret B: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, DefaultConfigFile)
+	content := strings.Join([]string{
+		"[llm]",
+		"default_profile = \"default\"",
+		"",
+		"[[llm.profiles]]",
+		"name = \"default\"",
+		"provider = \"openai\"",
+		"model = \"gpt-4o\"",
+		"api_keys = [\"" + hiddenA + "\", \"plain-key\", \"" + hiddenB + "\"]",
+		"",
+		"[workspace]",
+		"root = \"./workspace\"",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadFromPath(path)
+	if err != nil {
+		t.Fatalf("LoadFromPath: %v", err)
+	}
+	if len(cfg.ModelProfiles) != 1 {
+		t.Fatalf("profile count = %d, want 1", len(cfg.ModelProfiles))
+	}
+	got := cfg.ModelProfiles[0].APIKeys
+	want := []string{"api-hidden-a", "plain-key", "api-hidden-b"}
+	if len(got) != len(want) {
+		t.Fatalf("len(APIKeys) = %d, want %d (%#v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("APIKeys[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	reEncoded := EncodeTOML(cfg, false)
+	if !strings.Contains(reEncoded, hiddenA) || !strings.Contains(reEncoded, hiddenB) {
+		t.Fatalf("expected re-encoded config to preserve hidden multi-key secrets\n%s", reEncoded)
+	}
+}
+
 func TestRevealSecretV2SurvivesHostnameChange(t *testing.T) {
 	configureHiddenSecretTestEnv(t)
 	hidden, err := HideSecret("test-key")

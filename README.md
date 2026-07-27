@@ -38,8 +38,8 @@ koios init --migrate
 This creates `koios.config.toml` with sane defaults and without private keys.
 Key sections:
 - `[server]` listen address, request timeout, allowed origins
-- `[llm]` provider/model/base URL and optional `api_key`
-- `koios hide-secret` emits encrypted blob for secret-valued fields such as `api_key`; new blobs stay readable across container or hostname changes when same Koios config directory is preserved
+- `[llm]` provider/model/base URL and optional `api_key` or `api_keys`
+- `koios hide-secret` emits encrypted blobs for secret-valued fields such as `api_key` and `api_keys`; new blobs stay readable across container or hostname changes when same Koios config directory is preserved
 - `[session]`, `[compaction]`, `[memory]` for context and storage behavior
 - `session.prune_keep_tool_messages` prunes older tool chatter from active request context without compacting the whole session
 - `session.retention`, `session.max_entries`, `session.idle_reset_after`, and `session.daily_reset_time` control session cleanup and auto-reset
@@ -1184,5 +1184,16 @@ name = "gateway"
 provider = "litellm"
 base_url = "http://localhost:4000"
 api_key = "your-litellm-key"
+model = "gpt-4o"
+```
+
+For concurrent peer traffic, the same profile can expose a key ring instead:
+
+```toml
+[[llm.profiles]]
+name = "gateway"
+provider = "litellm"
+base_url = "http://localhost:4000"
+api_keys = ["your-litellm-key-a", "your-litellm-key-b"]
 model = "gpt-4o"
 ```

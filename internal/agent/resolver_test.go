@@ -175,6 +175,97 @@ func TestPeerAwareResolverInvalidateCache(t *testing.T) {
 	}
 }
 
+func TestPeerAwareResolverPeerProfileIsolationByPeer(t *testing.T) {
+	global := &simpleProvider{}
+	store := session.New(10)
+
+	peerStore, err := peerllm.New(filepath.Join(t.TempDir(), "peer_llm.db"))
+	if err != nil {
+		t.Fatalf("peerllm.New: %v", err)
+	}
+	defer peerStore.Close()
+
+	if _, err = peerStore.Set(context.Background(), "alice", peerllm.Input{
+		Name:         "shared-profile",
+		Provider:     "openai",
+		APIKeys:      []string{"sk-alice-1", "sk-alice-2"},
+		DefaultModel: "gpt-alice",
+	}); err != nil {
+		t.Fatalf("peerStore.Set(alice): %v", err)
+	}
+	if _, err = peerStore.Set(context.Background(), "bob", peerllm.Input{
+		Name:         "shared-profile",
+		Provider:     "openai",
+		APIKeys:      []string{"sk-bob-1", "sk-bob-2"},
+		DefaultModel: "gpt-bob",
+	}); err != nil {
+		t.Fatalf("peerStore.Set(bob): %v", err)
+	}
+
+	aliceProfile, err := peerStore.Get(context.Background(), "alice", "shared-profile")
+	if err != nil {
+		t.Fatalf("peerStore.Get(alice): %v", err)
+	}
+	bobProfile, err := peerStore.Get(context.Background(), "bob", "shared-profile")
+	if err != nil {
+		t.Fatalf("peerStore.Get(bob): %v", err)
+	}
+	if got := aliceProfile.APIKeys; len(got) != 2 || got[0] != "sk-alice-1" || got[1] != "sk-alice-2" {
+		t.Fatalf("alice api keys = %#v", got)
+	}
+	if got := bobProfile.APIKeys; len(got) != 2 || got[0] != "sk-bob-1" || got[1] != "sk-bob-2" {
+		t.Fatalf("bob api keys = %#v", got)
+	}
+
+	if err := store.SetPolicy("alice", session.SessionPolicy{ProviderProfile: "shared-profile"}); err != nil {
+		t.Fatalf("SetPolicy(alice): %v", err)
+	}
+	if err := store.SetPolicy("bob", session.SessionPolicy{ProviderProfile: "shared-profile"}); err != nil {
+		t.Fatalf("SetPolicy(bob): %v", err)
+	}
+
+	resolver := NewPeerAwareResolver(global, "gpt-4", 0, 0, peerStore, nil, store)
+
+	aliceProv1, aliceModel1, err := resolver.ResolveProvider(context.Background(), "alice", "alice", "")
+	if err != nil {
+		t.Fatalf("ResolveProvider(alice 1): %v", err)
+	}
+	bobProv1, bobModel1, err := resolver.ResolveProvider(context.Background(), "bob", "bob", "")
+	if err != nil {
+		t.Fatalf("ResolveProvider(bob 1): %v", err)
+	}
+	if aliceProv1 == global || bobProv1 == global {
+		t.Fatal("expected peer-scoped providers, not global fallback")
+	}
+	if aliceModel1 != "gpt-alice" {
+		t.Fatalf("alice model = %q, want gpt-alice", aliceModel1)
+	}
+	if bobModel1 != "gpt-bob" {
+		t.Fatalf("bob model = %q, want gpt-bob", bobModel1)
+	}
+	if aliceProv1 == bobProv1 {
+		t.Fatal("expected different cached provider instances for different peers sharing a profile name")
+	}
+
+	aliceProv2, aliceModel2, err := resolver.ResolveProvider(context.Background(), "alice", "alice", "")
+	if err != nil {
+		t.Fatalf("ResolveProvider(alice 2): %v", err)
+	}
+	bobProv2, bobModel2, err := resolver.ResolveProvider(context.Background(), "bob", "bob", "")
+	if err != nil {
+		t.Fatalf("ResolveProvider(bob 2): %v", err)
+	}
+	if aliceProv2 != aliceProv1 {
+		t.Fatal("expected alice to reuse its own cached provider instance")
+	}
+	if bobProv2 != bobProv1 {
+		t.Fatal("expected bob to reuse its own cached provider instance")
+	}
+	if aliceModel2 != "gpt-alice" || bobModel2 != "gpt-bob" {
+		t.Fatalf("cached models = (%q, %q), want (%q, %q)", aliceModel2, bobModel2, "gpt-alice", "gpt-bob")
+	}
+}
+
 func TestPeerAwareResolverDisabledProfile(t *testing.T) {
 	global := &simpleProvider{}
 	store := session.New(10)

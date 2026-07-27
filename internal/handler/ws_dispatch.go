@@ -767,6 +767,30 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 			return
 		}
 		h.rpcPeerLLMActivate(ctx, wsc, req)
+	case "peer.llm_provider.key_add":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMKeyAdd(ctx, wsc, req)
+	case "peer.llm_provider.key_remove":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMKeyRemove(ctx, wsc, req)
+	case "peer.llm_provider.key_replace":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMKeyReplace(ctx, wsc, req)
+	case "peer.llm_provider.key_rotate":
+		if h.peerLLMStore == nil {
+			wsc.replyErr(req.ID, errCodeServer, "peer LLM provider profiles are not enabled")
+			return
+		}
+		h.rpcPeerLLMKeyRotate(ctx, wsc, req)
 
 	// ── Usage ─────────────────────────────────────────────────────────────
 	case "usage.get":
