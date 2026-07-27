@@ -4,9 +4,13 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      - master
   schedule:
     - cron: '19 4 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   actions: read
