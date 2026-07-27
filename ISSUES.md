@@ -988,3 +988,61 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [x] Idempotency keys for side-effecting RPCs
 	- Research notes: This is only weakly represented upstream today. IronClaw's structured web APIs and job/orchestrator flows are the best secondary reference if Koios wants idempotent side-effecting requests. OpenClaw and PicoClaw did not surface a direct first-class idempotency-key feature in the current searches.
 	- References: OpenClaw `src/gateway/server-methods/skills.ts`; PicoClaw `web/backend/api/*`; IronClaw `docs/drafts/ops/api.mdx`, `src/channels/web/CLAUDE.md`, `src/tools/builtin/job.rs`.
+
+## Multiple API Keys per LLM Profile Plan
+
+- [ ] Backward-compatible multi-key LLM profile configuration
+	- Research notes: This is feasible without dropping the current single-key setup. Koios already centralizes provider credentials through `Config.APIKey`, `ModelProfile.APIKey`, hidden-secret decoding, and peer LLM profile storage, so the cleanest path is to add a normalized key-ring layer that accepts either the legacy `api_key` field or the new `api_keys` field, but never both on the same entry. The goal is for one profile/provider to optionally expose multiple usable keys so concurrent peers can be spread across credentials instead of all sharing the default key.
+	- Suggested Koios shape: add `api_keys = ["..."]` as an alternative to the existing `api_key = "..."` in `[llm]` and `[[llm.profiles]]`; keep `api_key` supported for single-key configs, but reject any config entry that defines both `api_key` and `api_keys` at the same time; reject configs that define neither key field for providers that require auth; document that local providers such as Ollama may still allow an empty key.
+	- Implementation plan:
+		- [ ] Define the public config shape.
+			- [ ] Add `api_keys = ["..."]` support to the root `[llm]` config while keeping existing `api_key = "..."` valid.
+			- [ ] Add `api_keys = ["..."]` support to each `[[llm.profiles]]` entry while keeping profile-level `api_key = "..."` valid.
+			- [ ] Enforce `api_key` and `api_keys` as mutually exclusive fields; return a clear config error when both are defined on the same root or profile entry.
+			- [ ] Preserve empty-key support only for providers that intentionally do not require credentials, such as local Ollama-compatible deployments.
+		- [ ] Update runtime config structs and normalization.
+			- [ ] Extend `internal/config/config.go` with `APIKeys []string` on the root LLM config path.
+			- [ ] Extend `ModelProfile` with `APIKeys []string`.
+			- [ ] Add a normalization helper that returns a stable, trimmed, deduplicated key ring from either `api_key` or `api_keys`, never both.
+			- [ ] Update config validation so authenticated providers fail clearly when the normalized key ring is empty.
+		- [ ] Update config templates and docs.
+			- [ ] Update `internal/config/templates/default_config.toml` with commented examples for legacy `api_key` and new `api_keys` usage.
+			- [ ] Add examples showing either one legacy single key or a multi-key load-balanced list, without mixing both fields in one entry.
+			- [ ] Document migration behavior so existing single-key configs continue working unchanged.
+		- [ ] Update hidden-secret support for multiple keys.
+			- [ ] Update `internal/config/secret.go` to decode hidden secrets in every `api_keys` entry.
+			- [ ] Keep `llm.profiles.<name>.api_key` as the legacy hidden-secret path.
+			- [ ] Add stable indexed paths such as `llm.profiles.<name>.api_keys.<index>` for multi-key entries.
+			- [ ] Add tests that mix plaintext keys, hidden single keys, and hidden multi-key entries.
+		- [ ] Add provider key-selection infrastructure.
+			- [ ] Introduce a concurrency-safe credential selector in `internal/provider` that owns key-ring state per provider/profile.
+			- [ ] Track active peer/session-to-key assignments and current usage counts per key.
+			- [ ] Assign new peers/sessions to the least-used healthy key.
+			- [ ] Keep peer/session assignments sticky for their lifetime.
+			- [ ] Decrement usage when peers disconnect or sessions expire.
+			- [ ] Fall back to deterministic hashing only when no peer/session identity is available.
+			- [ ] Define how unhealthy keys are marked and restored after provider auth/rate-limit failures.
+		- [ ] Wire request-time key selection into providers.
+			- [ ] Change provider constructors in `internal/provider/provider.go` to pass key selectors instead of a single `apiKey` string.
+			- [ ] Update OpenAI-compatible request paths in `internal/provider/openai.go` to select the key per request before setting authorization headers.
+			- [ ] Update Anthropic request paths in `internal/provider/anthropic.go` to select the key per request before setting authorization headers.
+			- [ ] Preserve existing behavior for single-key profiles by producing a one-key selector.
+		- [ ] Extend peer/private key storage.
+			- [ ] Extend `internal/peerllm/store.go` from one encrypted `api_key_enc` value to multiple encrypted key records or an encrypted key list.
+			- [ ] Preserve the existing `api_key_enc` column during migration for compatibility and rollback-safe reads.
+			- [ ] Add migration logic that copies an existing single stored key into the new multi-key representation.
+			- [ ] Make reads prefer the new multi-key representation when present and fall back to the legacy column otherwise.
+			- [ ] Expose safe result metadata such as `api_key_count`, `has_api_key`, and a masked default key without returning plaintext.
+		- [ ] Update peer/provider management tools and payloads.
+			- [ ] Add API/tool input support for setting multiple keys at create/update time.
+			- [ ] Add safe operations for adding, removing, replacing, and rotating individual keys.
+			- [ ] Ensure list/get responses only return masked key metadata and never plaintext keys.
+			- [ ] Preserve existing single `api_key` request payloads for backward compatibility.
+		- [ ] Add focused tests.
+			- [ ] Cover config parsing and normalization for single-key, multi-key, duplicate-key, and invalid mixed single+multi-key configs.
+			- [ ] Cover hidden-secret decoding for root and profile `api_key` / `api_keys` fields.
+			- [ ] Cover active key usage accounting, least-used assignment, sticky assignment cleanup, and deterministic fallback behavior.
+			- [ ] Cover provider auth headers proving different peers can use different keys under the same profile.
+			- [ ] Cover peer LLM store migration from a single encrypted key to multiple encrypted keys.
+			- [ ] Run `gofmt`, `gopls check` on modified Go files, and `go test` on affected packages before marking complete.
+	- References: Koios `internal/config/config.go`, `internal/config/secret.go`, `internal/config/templates/default_config.toml`, `internal/provider/provider.go`, `internal/provider/openai.go`, `internal/provider/anthropic.go`, `internal/peerllm/store.go`.
