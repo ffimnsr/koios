@@ -470,7 +470,7 @@ func (rt *Runtime) Steer(sessionKey, message string) error {
 		return fmt.Errorf("steering queue full for session %s", sessionKey)
 	}
 	rt.steeringQueues[sessionKey] = append(q, message)
-	if NormalizeQueueMode(rt.sessionPolicy(sessionKey).QueueMode) == QueueModeSteer {
+	if rt.sessionQueueMode(sessionKey) == QueueModeSteer {
 		if active := rt.activeStreams[sessionKey]; active != nil && active.cancel != nil {
 			active.interrupted.Store(true)
 			active.cancel()
@@ -489,7 +489,7 @@ func (rt *Runtime) drainSteering(sessionKey string) []string {
 		return nil
 	}
 	delete(rt.steeringQueues, sessionKey)
-	if NormalizeQueueMode(rt.sessionPolicy(sessionKey).QueueMode) == QueueModeCollect && len(msgs) > 1 {
+	if rt.sessionQueueMode(sessionKey) == QueueModeCollect && len(msgs) > 1 {
 		return []string{formatCollectedSteering(msgs)}
 	}
 	return msgs
@@ -1446,6 +1446,27 @@ func (rt *Runtime) sessionPolicy(sessionKey string) session.SessionPolicy {
 		return rt.store.Policy(sessionKey[:idx])
 	}
 	return policy
+}
+
+func (rt *Runtime) sessionQueueMode(sessionKey string) string {
+	policy := rt.store.Policy(sessionKey)
+	if mode := NormalizeQueueMode(policy.QueueMode); policy.QueueMode != "" {
+		return mode
+	}
+	normalized := rt.normalizeSessionKey(sessionKey)
+	if normalized != sessionKey {
+		policy = rt.store.Policy(normalized)
+		if mode := NormalizeQueueMode(policy.QueueMode); policy.QueueMode != "" {
+			return mode
+		}
+	}
+	if idx := strings.Index(normalized, "::"); idx > 0 {
+		policy = rt.store.Policy(normalized[:idx])
+		if mode := NormalizeQueueMode(policy.QueueMode); policy.QueueMode != "" {
+			return mode
+		}
+	}
+	return QueueModeFollowup
 }
 
 // buildTurnMemoryChunk formats a completed agent turn as a compact memory

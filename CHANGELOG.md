@@ -12,6 +12,16 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.19] - 2026-07-27
+
+### Added
+
+- add support for multiple api keys per llm profile todo (`d777c12`)
+- add rotating keys feature for multiple peers (`16edcf9`)
+- add complete runtime message on chat (`1a324dd`)
+- add dynamic provider model listing (`94fad38`)
+- update the to have route status and add new llm providers (`353e913`)
+
 ## [0.7.18] - 2026-07-23
 
 ### Added
@@ -389,7 +399,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.18...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.19...HEAD
+[0.7.19]: https://github.com/ffimnsr/koios/releases/tag/v0.7.19
 [0.7.18]: https://github.com/ffimnsr/koios/releases/tag/v0.7.18
 [0.7.17]: https://github.com/ffimnsr/koios/releases/tag/v0.7.17
 [0.7.16]: https://github.com/ffimnsr/koios/releases/tag/v0.7.16
