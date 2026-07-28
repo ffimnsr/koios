@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.7.22] - 2026-07-28
+
+### Added
+
+- add shared mcp to mcp.server.list (`18f3ffd`)
+
 ## [0.7.21] - 2026-07-27
 
 ### Added
@@ -432,7 +438,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.21...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.22...HEAD
+[0.7.22]: https://github.com/ffimnsr/koios/releases/tag/v0.7.22
 [0.7.21]: https://github.com/ffimnsr/koios/releases/tag/v0.7.21
 [0.7.20]: https://github.com/ffimnsr/koios/releases/tag/v0.7.20
 [0.7.19]: https://github.com/ffimnsr/koios/releases/tag/v0.7.19
