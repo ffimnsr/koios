@@ -644,6 +644,7 @@ func RunGateway(build BuildInfo) error {
 		LogLevel:            logLevel,
 		MCPManager:          mcpMgr,
 		MCPRegistry:         mcpRegistry,
+		ConfigMCPServers:    append([]config.MCPServerConfig(nil), cfg.MCPServers...),
 		BrowserConfig:       cfg.Browser,
 		WorkflowRunner:      workflowRunner,
 		Orchestrator:        orchRuntime,

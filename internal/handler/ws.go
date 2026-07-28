@@ -283,6 +283,7 @@ type Handler struct {
 	logLevel                *slog.LevelVar
 	mcpManager              *mcp.Manager
 	mcpRegistry             *mcpregistry.Store
+	configMCPServers        []config.MCPServerConfig
 	browserConfig           config.BrowserConfig
 	pluginRegistry          *pluginRegistry
 	workflowRunner          *workflow.Runner
@@ -401,6 +402,8 @@ type HandlerOptions struct {
 	MCPManager *mcp.Manager
 	// MCPRegistry, when non-nil, provides the user-managed MCP server store.
 	MCPRegistry *mcpregistry.Store
+	// ConfigMCPServers are operator-configured startup MCP servers exposed by mcp.server.list as non-user-managed entries.
+	ConfigMCPServers []config.MCPServerConfig
 	// BrowserConfig enables named browser profile routing for browser.* tools.
 	BrowserConfig config.BrowserConfig
 	// WorkflowRunner, when non-nil, enables the workflow.* tool family.
@@ -502,6 +505,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		logLevel:                opts.LogLevel,
 		mcpManager:              opts.MCPManager,
 		mcpRegistry:             opts.MCPRegistry,
+		configMCPServers:        append([]config.MCPServerConfig(nil), opts.ConfigMCPServers...),
 		browserConfig:           opts.BrowserConfig,
 		pluginRegistry:          pluginRegistry,
 		workflowRunner:          opts.WorkflowRunner,

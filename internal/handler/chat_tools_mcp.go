@@ -13,20 +13,36 @@ import (
 	"github.com/ffimnsr/koios/internal/mcpregistry"
 )
 
-// executeMCPServerList returns all user-managed MCP servers visible to peerID.
+// executeMCPServerList returns operator-configured shared MCP servers plus user-managed MCP servers visible to peerID.
 func (h *Handler) executeMCPServerList(ctx context.Context, peerID string) (any, error) {
-	if h.mcpRegistry == nil {
-		return nil, fmt.Errorf("MCP registry is not configured")
-	}
-	records, err := h.mcpRegistry.ListByOwner(ctx, peerID)
-	if err != nil {
-		return nil, fmt.Errorf("list: %w", err)
-	}
-	entries := make([]map[string]any, 0, len(records))
-	for _, rec := range records {
-		entry := mcpServerEntryPayload(&rec)
+	statusByName := h.mcpStatusByName()
+	entries := make([]map[string]any, 0, len(h.configMCPServers))
+	for _, server := range h.configMCPServers {
+		name := strings.TrimSpace(server.Name)
+		if name == "" {
+			continue
+		}
+		entry := configMCPServerEntryPayload(server)
+		if status, ok := statusByName[name]; ok {
+			applyMCPRuntimeStatus(entry, status)
+		}
 		entries = append(entries, entry)
 	}
+
+	if h.mcpRegistry != nil {
+		records, err := h.mcpRegistry.ListByOwner(ctx, peerID)
+		if err != nil {
+			return nil, fmt.Errorf("list: %w", err)
+		}
+		for _, rec := range records {
+			entry := mcpServerEntryPayload(&rec)
+			if status, ok := statusByName[mcpregistry.RuntimeName(rec.OwnerPeerID, rec.ID)]; ok {
+				applyMCPRuntimeStatus(entry, status)
+			}
+			entries = append(entries, entry)
+		}
+	}
+
 	return map[string]any{
 		"ok":      true,
 		"servers": entries,
@@ -264,6 +280,8 @@ func mcpServerEntryPayload(rec *mcpregistry.ServerRecord) map[string]any {
 	m := map[string]any{
 		"id":                rec.ID,
 		"name":              rec.Name,
+		"source":            "user",
+		"user_managed":      true,
 		"transport":         rec.Transport,
 		"enabled":           rec.Enabled,
 		"visibility":        rec.Visibility,
@@ -286,6 +304,53 @@ func mcpServerEntryPayload(rec *mcpregistry.ServerRecord) map[string]any {
 		m["timeout"] = rec.Timeout
 	}
 	return m
+}
+
+func configMCPServerEntryPayload(server config.MCPServerConfig) map[string]any {
+	m := map[string]any{
+		"name":         strings.TrimSpace(server.Name),
+		"source":       "config",
+		"user_managed": false,
+		"transport":    server.Transport,
+		"enabled":      server.Enabled,
+		"visibility":   "shared",
+	}
+	if server.Transport == "stdio" {
+		m["command"] = server.Command
+		m["args"] = append([]string(nil), server.Args...)
+	} else {
+		m["url"] = server.URL
+	}
+	if len(server.Env) > 0 {
+		m["env"] = mcpregistry.RedactedEnv(server.Env)
+	}
+	if len(server.Headers) > 0 {
+		m["headers"] = mcpregistry.RedactedHeaders(server.Headers)
+	}
+	if server.Timeout != "" {
+		m["timeout"] = server.Timeout
+	}
+	return m
+}
+
+func (h *Handler) mcpStatusByName() map[string]mcp.ServerStatus {
+	if h.mcpManager == nil {
+		return nil
+	}
+	statuses := h.mcpManager.ServerStatuses()
+	out := make(map[string]mcp.ServerStatus, len(statuses))
+	for _, status := range statuses {
+		out[status.Name] = status
+	}
+	return out
+}
+
+func applyMCPRuntimeStatus(entry map[string]any, status mcp.ServerStatus) {
+	entry["connected"] = status.Connected
+	entry["tool_count"] = status.ToolCount
+	if status.LastError != "" {
+		entry["last_error"] = status.LastError
+	}
 }
 
 func mcpServerDetailPayload(rec *mcpregistry.ServerRecord, showSecrets bool) map[string]any {

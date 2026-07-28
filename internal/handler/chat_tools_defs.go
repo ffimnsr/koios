@@ -4167,13 +4167,13 @@ var toolDefs = []toolDef{
 	// mcp.server.* — self-service MCP server management for peers.
 	{
 		name:        "mcp.server.list",
-		description: "List user-managed MCP servers visible to the calling peer. Includes runtime connection status for enabled servers when the gateway is active.",
+		description: "List shared operator-configured MCP servers and user-managed MCP servers visible to the calling peer. Config entries are marked user_managed=false; user registry entries are marked user_managed=true. Includes runtime connection status for enabled servers when the gateway is active.",
 		parameters: mustJSONSchema(map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
 			"additionalProperties": false,
 		}),
-		available: func(h *Handler) bool { return h.mcpRegistry != nil },
+		available: func(h *Handler) bool { return h.mcpRegistry != nil || len(h.configMCPServers) > 0 },
 	},
 	{
 		name:        "mcp.server.add",
