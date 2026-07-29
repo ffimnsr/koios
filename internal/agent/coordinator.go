@@ -201,7 +201,8 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 	req.SessionKey = sessionKey
 	id := uuid.NewString()
 	now := time.Now().UTC()
-	runCtx, cancel := context.WithCancel(context.Background())
+	// cancel is retained on asyncRun and invoked by Cancel for caller-controlled cancellation.
+	runCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec
 	run := &asyncRun{
 		record: RunRecord{
 			ID:         id,
@@ -241,6 +242,7 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 			}
 		},
 		onDone: func(result *Result, err error) {
+			cancel()
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			finished := time.Now().UTC()

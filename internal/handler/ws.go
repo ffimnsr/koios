@@ -585,7 +585,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Error("ws: upgrade failed", "peer", peerID, "error", err)
+		slog.Error("ws: upgrade failed", "error", err)
 		return
 	}
 	defer conn.Close()
@@ -599,7 +599,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.hbRunner.EnsureRunning(r.Context(), peerID)
 	}
 
-	slog.Info("ws: connected", "peer", peerID)
+	slog.Info("ws: connected")
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -654,7 +654,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	defer unsubscribe()
 	h.readLoop(ctx, wsc)
-	slog.Info("ws: disconnected", "peer", peerID)
+	slog.Info("ws: disconnected")
 }
 
 // readLoop reads inbound frames until the connection is closed.

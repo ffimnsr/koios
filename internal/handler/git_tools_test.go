@@ -197,6 +197,35 @@ func TestExecuteTool_GitBranchCommitApplyPatch(t *testing.T) {
 	_ = patch
 }
 
+func TestExecuteTool_GitAcceptsCanonicalWorkspaceRoot(t *testing.T) {
+	ensureGitAvailable(t)
+	realRoot := filepath.Join(t.TempDir(), "real-workspace")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatalf("create real workspace root: %v", err)
+	}
+	linkRoot := filepath.Join(t.TempDir(), "linked-workspace")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	wsStore, err := workspace.New(linkRoot, true, 1<<20)
+	if err != nil {
+		t.Fatalf("workspace.New: %v", err)
+	}
+	initPeerGitRepo(t, wsStore, "alice")
+	store := session.New(10)
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:          "test-model",
+		Timeout:        5 * time.Second,
+		WorkspaceStore: wsStore,
+		ToolPolicy:     handler.ToolPolicy{Profile: "coding"},
+	})
+
+	if _, err := h.ExecuteTool(context.Background(), "alice", agent.ToolCall{Name: "git.status", Arguments: json.RawMessage(`{"repo_path":"."}`)}); err != nil {
+		t.Fatalf("ExecuteTool(git.status): %v", err)
+	}
+}
+
 func TestExecuteTool_GitRejectsRepoOutsidePeerWorkspace(t *testing.T) {
 	ensureGitAvailable(t)
 	baseDir := t.TempDir()

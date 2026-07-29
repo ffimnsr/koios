@@ -281,7 +281,15 @@ func (h *Handler) resolveGitRepo(ctx context.Context, peerID, repoPath string) (
 	if repoRootAbs == "" {
 		return nil, fmt.Errorf("could not determine repository root")
 	}
-	rel, err := filepath.Rel(peerRoot, repoRootAbs)
+	canonicalPeerRoot, err := filepath.EvalSymlinks(peerRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve workspace root: %w", err)
+	}
+	canonicalRepoRoot, err := filepath.EvalSymlinks(repoRootAbs)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository root: %w", err)
+	}
+	rel, err := filepath.Rel(canonicalPeerRoot, canonicalRepoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository root: %w", err)
 	}
@@ -291,7 +299,7 @@ func (h *Handler) resolveGitRepo(ctx context.Context, peerID, repoPath string) (
 	if rel == "" {
 		rel = "."
 	}
-	return &gitRepoContext{peerRoot: peerRoot, repoRootAbs: repoRootAbs, repoRootRel: filepath.ToSlash(rel)}, nil
+	return &gitRepoContext{peerRoot: canonicalPeerRoot, repoRootAbs: canonicalRepoRoot, repoRootRel: filepath.ToSlash(rel)}, nil
 }
 
 func runGitCommand(ctx context.Context, cwd, display string, stdin []byte, args ...string) (string, error) {

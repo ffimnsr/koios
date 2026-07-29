@@ -310,7 +310,8 @@ func (t *Telegram) Start(ctx context.Context) error {
 		if err := t.client.DeleteWebhook(ctx, t.cfg.BotToken, false); err != nil {
 			return fmt.Errorf("telegram deleteWebhook: %w", err)
 		}
-		pollCtx, cancel := context.WithCancel(ctx)
+		// cancel is retained and invoked by Shutdown to stop polling.
+		pollCtx, cancel := context.WithCancel(ctx) //nolint:gosec
 		t.mu.Lock()
 		t.cancel = cancel
 		t.mu.Unlock()

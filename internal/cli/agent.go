@@ -29,7 +29,11 @@ func newAgentCommand(ctx *commandContext) *cobra.Command {
 		Short: "Run an agent turn or launch an interactive agent TUI",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if message == "" {
-				if !tui && !term.IsTerminal(int(os.Stdin.Fd())) {
+				stdinFD, err := checkedFD(os.Stdin.Fd())
+				if err != nil {
+					return err
+				}
+				if !tui && !term.IsTerminal(stdinFD) {
 					return errors.New("--message is required when stdin is not a terminal")
 				}
 				return runAgentTUI(cmd.Context(), ctx, agentOptions{

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1002,7 +1003,12 @@ func acquireGatewayLock(lockPath string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gateway lock: open %s: %w", lockPath, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	fd, err := checkedFileDescriptor(f.Fd())
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("gateway lock: another koios instance appears to be running (lock file: %s)", lockPath)
 	}
@@ -1015,7 +1021,16 @@ func acquireGatewayLock(lockPath string) (*os.File, error) {
 
 // releaseGatewayLock unlocks and closes f, then removes the lock file.
 func releaseGatewayLock(f *os.File, lockPath string) {
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	if fd, err := checkedFileDescriptor(f.Fd()); err == nil {
+		_ = syscall.Flock(fd, syscall.LOCK_UN)
+	}
 	_ = f.Close()
 	_ = os.Remove(lockPath)
+}
+
+func checkedFileDescriptor(fd uintptr) (int, error) {
+	if fd > uintptr(math.MaxInt) {
+		return 0, fmt.Errorf("file descriptor %d exceeds max int", fd)
+	}
+	return int(fd), nil
 }

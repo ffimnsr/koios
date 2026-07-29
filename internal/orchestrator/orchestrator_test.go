@@ -431,10 +431,20 @@ func TestOrchestrator_EventBus_LifecyclePublished(t *testing.T) {
 	sub, _, bus := buildRuntime(t, successProvider("ok"), 4)
 	orch := New(sub, nil, bus)
 
-	var events []string
+	var (
+		mu     sync.Mutex
+		events []string
+		done   = make(chan struct{})
+		once   sync.Once
+	)
 	busUnsub := bus.Subscribe(func(ev eventbus.Event) {
 		if strings.HasPrefix(ev.Kind, "orchestrator.") {
+			mu.Lock()
 			events = append(events, ev.Kind)
+			mu.Unlock()
+		}
+		if ev.Kind == "orchestrator.completed" {
+			once.Do(func() { close(done) })
 		}
 	})
 	defer busUnsub()
@@ -448,17 +458,25 @@ func TestOrchestrator_EventBus_LifecyclePublished(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	waitRunStatus(t, orch, run.ID, 15*time.Second)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for orchestrator.completed event")
+	}
 
 	// Must have published at least "started" and "completed" lifecycle events.
+	mu.Lock()
+	eventSnapshot := append([]string(nil), events...)
+	mu.Unlock()
 	found := map[string]bool{}
-	for _, k := range events {
+	for _, k := range eventSnapshot {
 		found[k] = true
 	}
 	if !found["orchestrator.started"] {
-		t.Errorf("missing orchestrator.started event; got %v", events)
+		t.Errorf("missing orchestrator.started event; got %v", eventSnapshot)
 	}
 	if !found["orchestrator.completed"] {
-		t.Errorf("missing orchestrator.completed event; got %v", events)
+		t.Errorf("missing orchestrator.completed event; got %v", eventSnapshot)
 	}
 }
 

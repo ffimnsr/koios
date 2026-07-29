@@ -258,18 +258,24 @@ func readHideSecretInput(cmd *cobra.Command, args []string, stdin bool) (string,
 		}
 		return secret, nil
 	}
-	if file, ok := cmd.InOrStdin().(interface{ Fd() uintptr }); ok && term.IsTerminal(int(file.Fd())) {
-		fmt.Fprint(cmd.ErrOrStderr(), "Enter secret: ")
-		secret, err := term.ReadPassword(int(file.Fd()))
-		fmt.Fprintln(cmd.ErrOrStderr())
+	if file, ok := cmd.InOrStdin().(interface{ Fd() uintptr }); ok {
+		fd, err := checkedFD(file.Fd())
 		if err != nil {
-			return "", fmt.Errorf("read secret from terminal: %w", err)
+			return "", err
 		}
-		trimmed := strings.TrimSpace(string(secret))
-		if trimmed == "" {
-			return "", fmt.Errorf("secret must not be empty")
+		if term.IsTerminal(fd) {
+			fmt.Fprint(cmd.ErrOrStderr(), "Enter secret: ")
+			secret, err := term.ReadPassword(fd)
+			fmt.Fprintln(cmd.ErrOrStderr())
+			if err != nil {
+				return "", fmt.Errorf("read secret from terminal: %w", err)
+			}
+			trimmed := strings.TrimSpace(string(secret))
+			if trimmed == "" {
+				return "", fmt.Errorf("secret must not be empty")
+			}
+			return trimmed, nil
 		}
-		return trimmed, nil
 	}
 	data, err := io.ReadAll(cmd.InOrStdin())
 	if err != nil {
