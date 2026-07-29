@@ -12,6 +12,13 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-29
+
+### Added
+
+- update the MCP issue for modernization plan (`af71e10`)
+- update mcp client spec to latest and fix lint errors (`7d4e6bc`)
+
 ## [0.7.22] - 2026-07-28
 
 ### Added
@@ -438,7 +445,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.7.22...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ffimnsr/koios/releases/tag/v0.8.0
 [0.7.22]: https://github.com/ffimnsr/koios/releases/tag/v0.7.22
 [0.7.21]: https://github.com/ffimnsr/koios/releases/tag/v0.7.21
 [0.7.20]: https://github.com/ffimnsr/koios/releases/tag/v0.7.20
