@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-29
+
+### Tests
+
+- fix unit test race on macos and golangci-lint warnings (`eba96c0`)
+
 ## [0.8.0] - 2026-07-29
 
 ### Added
@@ -445,7 +451,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/ffimnsr/koios/releases/tag/v0.8.1
 [0.8.0]: https://github.com/ffimnsr/koios/releases/tag/v0.8.0
 [0.7.22]: https://github.com/ffimnsr/koios/releases/tag/v0.7.22
 [0.7.21]: https://github.com/ffimnsr/koios/releases/tag/v0.7.21
