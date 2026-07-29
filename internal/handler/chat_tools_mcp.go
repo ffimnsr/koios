@@ -274,12 +274,196 @@ func (h *Handler) executeMCPServerTest(ctx context.Context, peerID string, call 
 	return result, nil
 }
 
+func (h *Handler) executeMCPSearch(_ context.Context, _ string, call agent.ToolCall) (any, error) {
+	if h.mcpManager == nil {
+		return nil, fmt.Errorf("MCP manager is not configured")
+	}
+	var args struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	matches := h.mcpManager.Search(args.Query, args.Limit)
+	return map[string]any{"ok": true, "query": args.Query, "count": len(matches), "matches": matches}, nil
+}
+
+func (h *Handler) executeMCPToolDetails(_ context.Context, peerID string, call agent.ToolCall) (any, error) {
+	if h.mcpManager == nil {
+		return nil, fmt.Errorf("MCP manager is not configured")
+	}
+	var args struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	if strings.TrimSpace(args.Name) == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	detail, ok := h.mcpManager.ToolDetails(args.Name)
+	if !ok {
+		return nil, fmt.Errorf("mcp: tool %q not found", args.Name)
+	}
+	if _, err := h.authorizedMCPServerName(peerID, detail.ServerName); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "tool": detail}, nil
+}
+
+func (h *Handler) executeMCPToolCall(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
+	if h.mcpManager == nil {
+		return nil, fmt.Errorf("MCP manager is not configured")
+	}
+	var args struct {
+		Name           string          `json:"name"`
+		Arguments      json.RawMessage `json:"arguments"`
+		InputResponses json.RawMessage `json:"input_responses"`
+		RequestState   json.RawMessage `json:"request_state"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	if strings.TrimSpace(args.Name) == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	detail, ok := h.mcpManager.ToolDetails(args.Name)
+	if !ok {
+		return nil, fmt.Errorf("mcp: tool %q not found", args.Name)
+	}
+	if _, err := h.authorizedMCPServerName(peerID, detail.ServerName); err != nil {
+		return nil, err
+	}
+	result, err := h.mcpManager.CallToolResultWithInput(ctx, args.Name, args.Arguments, args.InputResponses, args.RequestState)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "tool": args.Name, "result": result}, nil
+}
+
+func (h *Handler) executeMCPResourceList(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
+	if h.mcpManager == nil {
+		return nil, fmt.Errorf("MCP manager is not configured")
+	}
+	var args struct {
+		Server string `json:"server"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	serverName, err := h.authorizedMCPServerName(peerID, args.Server)
+	if err != nil {
+		return nil, err
+	}
+	resources, err := h.mcpManager.ListResources(ctx, serverName)
+	if err != nil {
+		return nil, err
+	}
+	templates, err := h.mcpManager.ListResourceTemplates(ctx, serverName)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "server": serverName, "resources": resources, "resource_templates": templates}, nil
+}
+
+func (h *Handler) executeMCPResourceRead(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
+	if h.mcpManager == nil {
+		return nil, fmt.Errorf("MCP manager is not configured")
+	}
+	var args struct {
+		Server string `json:"server"`
+		URI    string `json:"uri"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	if strings.TrimSpace(args.URI) == "" {
+		return nil, fmt.Errorf("uri is required")
+	}
+	serverName, err := h.authorizedMCPServerName(peerID, args.Server)
+	if err != nil {
+		return nil, err
+	}
+	result, err := h.mcpManager.ReadResource(ctx, serverName, args.URI)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "server": serverName, "uri": args.URI, "result": result}, nil
+}
+
+func (h *Handler) executeMCPPromptList(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
+	if h.mcpManager == nil {
+		return nil, fmt.Errorf("MCP manager is not configured")
+	}
+	var args struct {
+		Server string `json:"server"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	serverName, err := h.authorizedMCPServerName(peerID, args.Server)
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := h.mcpManager.ListPrompts(ctx, serverName)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "server": serverName, "prompts": prompts}, nil
+}
+
+func (h *Handler) executeMCPPromptGet(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
+	if h.mcpManager == nil {
+		return nil, fmt.Errorf("MCP manager is not configured")
+	}
+	var args struct {
+		Server    string         `json:"server"`
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	if strings.TrimSpace(args.Name) == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	serverName, err := h.authorizedMCPServerName(peerID, args.Server)
+	if err != nil {
+		return nil, err
+	}
+	result, err := h.mcpManager.GetPrompt(ctx, serverName, args.Name, args.Arguments)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "server": serverName, "name": args.Name, "result": result}, nil
+}
+
+func (h *Handler) authorizedMCPServerName(peerID, requested string) (string, error) {
+	serverName := strings.TrimSpace(requested)
+	if serverName == "" {
+		return "", fmt.Errorf("server is required")
+	}
+	if h.mcpManager == nil {
+		return "", fmt.Errorf("MCP manager is not configured")
+	}
+	status, ok := h.mcpManager.ServerStatusByName(serverName)
+	if !ok {
+		return "", fmt.Errorf("mcp: server %q not found", serverName)
+	}
+	if status.Kind == "user" && status.ProfileName != "" && status.ProfileName != peerID {
+		return "", fmt.Errorf("mcp: server %q is owned by %q, not %q", serverName, status.ProfileName, peerID)
+	}
+	return serverName, nil
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────────────
 
 func mcpServerEntryPayload(rec *mcpregistry.ServerRecord) map[string]any {
 	m := map[string]any{
 		"id":                rec.ID,
 		"name":              rec.Name,
+		"runtime_name":      mcpregistry.RuntimeName(rec.OwnerPeerID, rec.ID),
 		"source":            "user",
 		"user_managed":      true,
 		"transport":         rec.Transport,
@@ -309,6 +493,7 @@ func mcpServerEntryPayload(rec *mcpregistry.ServerRecord) map[string]any {
 func configMCPServerEntryPayload(server config.MCPServerConfig) map[string]any {
 	m := map[string]any{
 		"name":         strings.TrimSpace(server.Name),
+		"runtime_name": strings.TrimSpace(server.Name),
 		"source":       "config",
 		"user_managed": false,
 		"transport":    server.Transport,
@@ -348,6 +533,16 @@ func (h *Handler) mcpStatusByName() map[string]mcp.ServerStatus {
 func applyMCPRuntimeStatus(entry map[string]any, status mcp.ServerStatus) {
 	entry["connected"] = status.Connected
 	entry["tool_count"] = status.ToolCount
+	entry["resource_count"] = status.ResourceCount
+	entry["prompt_count"] = status.PromptCount
+	if strings.TrimSpace(status.ProtocolVersion) != "" {
+		entry["protocol_version"] = status.ProtocolVersion
+	}
+	if len(status.Capabilities) > 0 {
+		entry["capabilities"] = json.RawMessage(status.Capabilities)
+	}
+	entry["cache_fresh"] = status.CacheFresh
+	entry["subscription_state"] = map[string]any{"listening": status.SubscriptionOn}
 	if status.LastError != "" {
 		entry["last_error"] = status.LastError
 	}
@@ -385,8 +580,6 @@ func probeManagedMCPServer(ctx context.Context, rec *mcpregistry.ServerRecord, t
 	switch transport {
 	case "stdio":
 		client = mcp.NewStdioClientWithContext(ctx, cfg.Name, cfg.Command, cfg.Args, cfg.Env)
-	case "sse":
-		client = mcp.NewSSEClient(cfg.Name, cfg.URL, cfg.Headers, timeout)
 	default:
 		client = mcp.NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, timeout)
 	}

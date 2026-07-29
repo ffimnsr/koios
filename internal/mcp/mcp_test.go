@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,19 +32,9 @@ func TestParseToolNameSupportsPluginPrefix(t *testing.T) {
 
 func TestListToolsSkipsHiddenServers(t *testing.T) {
 	mgr := &Manager{servers: []*serverEntry{
-		{
-			name:       "visible",
-			toolPrefix: ToolPrefix("visible"),
-			tools:      []Tool{{Name: "ping", Description: "visible tool"}},
-		},
-		{
-			name:       "hooks-only",
-			toolPrefix: PluginToolPrefix("demo.hooks"),
-			hideTools:  true,
-			tools:      []Tool{{Name: "on_event", Description: "internal hook tool"}},
-		},
+		{name: "visible", toolPrefix: ToolPrefix("visible"), tools: []Tool{{Name: "ping", Description: "visible tool"}}},
+		{name: "hooks-only", toolPrefix: PluginToolPrefix("demo.hooks"), hideTools: true, tools: []Tool{{Name: "on_event", Description: "internal hook tool"}}},
 	}}
-
 	tools := mgr.ListTools()
 	if len(tools) != 1 {
 		t.Fatalf("expected only visible tools, got %#v", tools)
@@ -114,13 +103,7 @@ func TestManagerAddServer(t *testing.T) {
 	mgr := NewManagerWithFactory(nil, func(cfg config.MCPServerConfig) Client {
 		return &fakeManagerClient{tools: []Tool{{Name: "ping"}}, callResult: "pong"}
 	})
-
-	// Add a disabled server.
-	status, err := mgr.AddServer(context.Background(), config.MCPServerConfig{
-		Name:    "u_alice_test",
-		Kind:    "user",
-		Enabled: false,
-	})
+	status, err := mgr.AddServer(context.Background(), config.MCPServerConfig{Name: "u_alice_test", Kind: "user", Enabled: false})
 	if err != nil {
 		t.Fatalf("AddServer: %v", err)
 	}
@@ -131,14 +114,7 @@ func TestManagerAddServer(t *testing.T) {
 		t.Fatal("expected HasServer to be true after AddServer")
 	}
 
-	// Add an enabled server (auto-connects).
-	status, err = mgr.AddServer(context.Background(), config.MCPServerConfig{
-		Name:      "u_bob_other",
-		Kind:      "user",
-		Enabled:   true,
-		Transport: "stdio",
-		Command:   "echo",
-	})
+	status, err = mgr.AddServer(context.Background(), config.MCPServerConfig{Name: "u_bob_other", Kind: "user", Enabled: true, Transport: "stdio", Command: "echo"})
 	if err != nil {
 		t.Fatalf("AddServer enabled: %v", err)
 	}
@@ -146,16 +122,11 @@ func TestManagerAddServer(t *testing.T) {
 		t.Fatal("expected enabled server to be connected")
 	}
 
-	// Duplicate name should be rejected.
-	_, err = mgr.AddServer(context.Background(), config.MCPServerConfig{
-		Name: "u_alice_test",
-		Kind: "user",
-	})
+	_, err = mgr.AddServer(context.Background(), config.MCPServerConfig{Name: "u_alice_test", Kind: "user"})
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("expected duplicate error, got %v", err)
 	}
 
-	// Verify registered tools.
 	tools := mgr.AllTools()
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool from enabled server, got %d: %#v", len(tools), tools)
@@ -163,32 +134,21 @@ func TestManagerAddServer(t *testing.T) {
 }
 
 func TestManagerRemoveServer(t *testing.T) {
-	mgr := NewManagerWithFactory([]config.MCPServerConfig{{
-		Name:      "alice_fs",
-		Enabled:   true,
-		Transport: "stdio",
-		Command:   "echo",
-	}}, func(cfg config.MCPServerConfig) Client {
+	mgr := NewManagerWithFactory([]config.MCPServerConfig{{Name: "alice_fs", Enabled: true, Transport: "stdio", Command: "echo"}}, func(cfg config.MCPServerConfig) Client {
 		return &fakeManagerClient{tools: []Tool{{Name: "read"}}, callResult: "ok"}
 	})
-
 	if !mgr.HasServer("alice_fs") {
 		t.Fatal("expected server from config")
 	}
-
 	if err := mgr.RemoveServer("alice_fs"); err != nil {
 		t.Fatalf("RemoveServer: %v", err)
 	}
 	if mgr.HasServer("alice_fs") {
 		t.Fatal("expected HasServer to be false after RemoveServer")
 	}
-
-	// Removing a non-existent server should error.
 	if err := mgr.RemoveServer("nonexistent"); err == nil {
 		t.Fatal("expected error for non-existent server")
 	}
-
-	// Tools should be empty after removal.
 	if tools := mgr.AllTools(); len(tools) != 0 {
 		t.Fatalf("expected 0 tools after removal, got %d", len(tools))
 	}
@@ -200,33 +160,17 @@ func TestManagerUpdateServer(t *testing.T) {
 		callCount++
 		return &fakeManagerClient{tools: []Tool{{Name: "tool_" + cfg.Name}}, callResult: cfg.Name}
 	})
-
-	// Add and then update.
-	_, err := mgr.AddServer(context.Background(), config.MCPServerConfig{
-		Name:      "u_alice_s1",
-		Enabled:   true,
-		Transport: "stdio",
-		Command:   "echo",
-	})
+	_, err := mgr.AddServer(context.Background(), config.MCPServerConfig{Name: "u_alice_s1", Enabled: true, Transport: "stdio", Command: "echo"})
 	if err != nil {
 		t.Fatalf("AddServer: %v", err)
 	}
-
-	// Update the server config.
-	status, err := mgr.UpdateServer(context.Background(), config.MCPServerConfig{
-		Name:      "u_alice_s1",
-		Enabled:   true,
-		Transport: "stdio",
-		Command:   "new-command",
-	})
+	status, err := mgr.UpdateServer(context.Background(), config.MCPServerConfig{Name: "u_alice_s1", Enabled: true, Transport: "stdio", Command: "new-command"})
 	if err != nil {
 		t.Fatalf("UpdateServer: %v", err)
 	}
 	if !status.Connected {
 		t.Fatal("expected connected after update")
 	}
-
-	// Updating a non-existent server should error.
 	_, err = mgr.UpdateServer(context.Background(), config.MCPServerConfig{Name: "nonexistent"})
 	if err == nil {
 		t.Fatal("expected error for non-existent server update")
@@ -234,11 +178,7 @@ func TestManagerUpdateServer(t *testing.T) {
 }
 
 func TestManagerHasServer(t *testing.T) {
-	mgr := NewManagerWithFactory([]config.MCPServerConfig{{
-		Name:    "existing",
-		Enabled: true,
-	}}, nil)
-
+	mgr := NewManagerWithFactory([]config.MCPServerConfig{{Name: "existing", Enabled: true}}, nil)
 	if !mgr.HasServer("existing") {
 		t.Fatal("expected HasServer to be true for existing server")
 	}
@@ -247,7 +187,187 @@ func TestManagerHasServer(t *testing.T) {
 	}
 }
 
-// ─── encodeParams ─────────────────────────────────────────────────────────────
+func TestManagerCachesResourcesAndPrompts(t *testing.T) {
+	mgr := NewManagerWithFactory([]config.MCPServerConfig{{Name: "monaco", Enabled: true, Transport: "stdio", Command: "ignored"}}, func(cfg config.MCPServerConfig) Client {
+		return &fakeManagerClient{
+			tools:             []Tool{{Name: "ping"}},
+			resources:         []Resource{{URI: "mach1://strategy-spec/schema.json", Name: "schema"}},
+			resourceTemplates: []ResourceTemplate{{URITemplate: "mach1://strategy-spec/{name}"}},
+			prompts:           []Prompt{{Name: "build_strategy"}},
+			resourceRead:      &ResourceReadResult{Contents: []ResourceContent{{URI: "mach1://strategy-spec/schema.json", Text: "{}", MimeType: "application/json"}}},
+			promptGet:         &PromptGetResult{Messages: []PromptMessage{{Role: "user", Content: Content{Type: "text", Text: "hi"}}}},
+		}
+	})
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	resources, err := mgr.ListResources(context.Background(), "monaco")
+	if err != nil || len(resources) != 1 || resources[0].URI != "mach1://strategy-spec/schema.json" {
+		t.Fatalf("unexpected resources: %#v err=%v", resources, err)
+	}
+	templates, err := mgr.ListResourceTemplates(context.Background(), "monaco")
+	if err != nil || len(templates) != 1 {
+		t.Fatalf("unexpected resource templates: %#v err=%v", templates, err)
+	}
+	readResult, err := mgr.ReadResource(context.Background(), "monaco", "mach1://strategy-spec/schema.json")
+	if err != nil || len(readResult.Contents) != 1 || readResult.Contents[0].Text != "{}" {
+		t.Fatalf("unexpected read result: %#v err=%v", readResult, err)
+	}
+	prompts, err := mgr.ListPrompts(context.Background(), "monaco")
+	if err != nil || len(prompts) != 1 || prompts[0].Name != "build_strategy" {
+		t.Fatalf("unexpected prompts: %#v err=%v", prompts, err)
+	}
+	promptResult, err := mgr.GetPrompt(context.Background(), "monaco", "build_strategy", nil)
+	if err != nil || len(promptResult.Messages) != 1 {
+		t.Fatalf("unexpected prompt result: %#v err=%v", promptResult, err)
+	}
+	status, ok := mgr.ServerStatusByName("monaco")
+	if !ok || status.ResourceCount != 1 || status.PromptCount != 1 {
+		t.Fatalf("unexpected status: %#v ok=%v", status, ok)
+	}
+}
+
+func TestCallToolResultPreservesToolErrors(t *testing.T) {
+	mgr := NewManagerWithFactory([]config.MCPServerConfig{{Name: "monaco", Enabled: true, Transport: "stdio", Command: "ignored"}}, func(cfg config.MCPServerConfig) Client {
+		return &fakeManagerClient{tools: []Tool{{Name: "ping"}}, toolResult: &ToolResult{IsError: true, Content: []Content{{Type: "text", Text: "bad request"}}}}
+	})
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	result, err := mgr.CallToolResult(context.Background(), ToolName("monaco", "ping"), nil)
+	if err != nil {
+		t.Fatalf("expected MCP tool error payload, got err=%v", err)
+	}
+	if !result.IsError || extractText(result) != "bad request" {
+		t.Fatalf("unexpected tool result: %#v", result)
+	}
+}
+
+func TestManagerSearchDetailsAndResourceCacheInvalidation(t *testing.T) {
+	client := &fakeManagerClient{
+		tools:         []Tool{{Name: "quote", Description: "quote asset"}},
+		resources:     []Resource{{URI: "mach1://strategy-spec/schema.json", Name: "schema"}},
+		prompts:       []Prompt{{Name: "build_strategy"}},
+		resourceRead:  &ResourceReadResult{TTLMs: 60_000, Contents: []ResourceContent{{URI: "mach1://strategy-spec/schema.json", Text: "v1"}}},
+		notifications: make(chan Notification, 2),
+	}
+	mgr := NewManagerWithFactory([]config.MCPServerConfig{{Name: "monaco", Enabled: true, Transport: "stdio", Command: "ignored"}}, func(config.MCPServerConfig) Client {
+		return client
+	})
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	matches := mgr.Search("strategy", 10)
+	if len(matches) == 0 {
+		t.Fatal("expected strategy match")
+	}
+	if detail, ok := mgr.ToolDetails(ToolName("monaco", "quote")); !ok || detail.ToolName != "quote" {
+		t.Fatalf("unexpected details: %#v ok=%v", detail, ok)
+	}
+	got, err := mgr.ReadResource(context.Background(), "monaco", "mach1://strategy-spec/schema.json")
+	if err != nil || got.Contents[0].Text != "v1" {
+		t.Fatalf("read cache seed: %#v err=%v", got, err)
+	}
+	client.resourceRead = &ResourceReadResult{TTLMs: 60_000, Contents: []ResourceContent{{URI: "mach1://strategy-spec/schema.json", Text: "v2"}}}
+	got, err = mgr.ReadResource(context.Background(), "monaco", "mach1://strategy-spec/schema.json")
+	if err != nil || got.Contents[0].Text != "v1" {
+		t.Fatalf("expected cached v1 before invalidation, got %#v err=%v", got, err)
+	}
+	client.notifications <- Notification{Method: "notifications/resources/updated", Params: json.RawMessage(`{"uri":"mach1://strategy-spec/schema.json"}`)}
+	time.Sleep(20 * time.Millisecond)
+	got, err = mgr.ReadResource(context.Background(), "monaco", "mach1://strategy-spec/schema.json")
+	if err != nil || got.Contents[0].Text != "v2" {
+		t.Fatalf("expected v2 after invalidation, got %#v err=%v", got, err)
+	}
+}
+
+func TestHTTPClientPaginatesAndMirrorsToolHeaderAnnotations(t *testing.T) {
+	var cursors []string
+	var gotParam string
+	inputSchema := json.RawMessage(`{"type":"object","properties":{"tenant":{"type":"string","x-mcp-header":"Tenant"}}}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = r.Body.Close()
+		switch req.Method {
+		case "tools/list":
+			var params listParams
+			_ = json.Unmarshal(req.Params, &params)
+			if params.Cursor == nil {
+				cursors = append(cursors, "<nil>")
+				result, _ := json.Marshal(toolsListResult{Tools: []Tool{{Name: "first"}}, NextCursor: ptrString("")})
+				_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: JSONRPCVersion, ID: req.ID, Result: result})
+				return
+			}
+			cursors = append(cursors, *params.Cursor)
+			result, _ := json.Marshal(toolsListResult{Tools: []Tool{{Name: "quote", InputSchema: inputSchema}}})
+			_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: JSONRPCVersion, ID: req.ID, Result: result})
+		case "tools/call":
+			gotParam = r.Header.Get("Mcp-Param-Tenant")
+			result, _ := json.Marshal(ToolResult{Content: []Content{{Type: "text", Text: "ok"}}})
+			_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: JSONRPCVersion, ID: req.ID, Result: result})
+		default:
+			t.Fatalf("unexpected method %s", req.Method)
+		}
+	}))
+	defer srv.Close()
+	client := NewHTTPClient("monaco", srv.URL, nil, 5*time.Second)
+	tools, err := client.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 2 || cursors[0] != "<nil>" || cursors[1] != "" {
+		t.Fatalf("pagination failed tools=%#v cursors=%#v", tools, cursors)
+	}
+	if _, err := client.CallTool(context.Background(), "quote", map[string]any{"tenant": "alpha"}); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if gotParam != "alpha" {
+		t.Fatalf("expected mirrored header alpha, got %q", gotParam)
+	}
+}
+
+func ptrString(v string) *string { return &v }
+
+func TestHTTPClientSetsModernHeadersAndReadsResource(t *testing.T) {
+	var gotAccept, gotVersion, gotMethod, gotName string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept")
+		gotVersion = r.Header.Get("MCP-Protocol-Version")
+		gotMethod = r.Header.Get("Mcp-Method")
+		gotName = r.Header.Get("Mcp-Name")
+		var req rpcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = r.Body.Close()
+		result, _ := json.Marshal(ResourceReadResult{Contents: []ResourceContent{{URI: "mach1://strategy-spec/schema.json", Text: "{}"}}})
+		_ = json.NewEncoder(w).Encode(rpcResponse{JSONRPC: JSONRPCVersion, ID: req.ID, Result: result})
+	}))
+	defer srv.Close()
+	client := NewHTTPClient("monaco", srv.URL, nil, 5*time.Second)
+	readResult, err := client.ReadResource(context.Background(), "mach1://strategy-spec/schema.json")
+	if err != nil {
+		t.Fatalf("ReadResource: %v", err)
+	}
+	if len(readResult.Contents) != 1 || readResult.Contents[0].Text != "{}" {
+		t.Fatalf("unexpected read result: %#v", readResult)
+	}
+	if !strings.Contains(gotAccept, "text/event-stream") || !strings.Contains(gotAccept, "application/json") {
+		t.Fatalf("unexpected Accept header: %q", gotAccept)
+	}
+	if gotVersion != ProtocolVersion2026 {
+		t.Fatalf("unexpected protocol version header: %q", gotVersion)
+	}
+	if gotMethod != "resources/read" {
+		t.Fatalf("unexpected method header: %q", gotMethod)
+	}
+	if gotName != "base64:bWFjaDE6Ly9zdHJhdGVneS1zcGVjL3NjaGVtYS5qc29u" {
+		t.Fatalf("unexpected name header: %q", gotName)
+	}
+}
 
 func TestEncodeParams_StaticValues(t *testing.T) {
 	got := encodeParams(map[string]any{"key": "val"})
@@ -260,29 +380,6 @@ func TestEncodeParams_StaticValues(t *testing.T) {
 	}
 }
 
-type fakeManagerClient struct {
-	tools      []Tool
-	callResult string
-	closed     bool
-}
-
-func (c *fakeManagerClient) Initialize(context.Context) error { return nil }
-
-func (c *fakeManagerClient) ListTools(context.Context) ([]Tool, error) {
-	return append([]Tool(nil), c.tools...), nil
-}
-
-func (c *fakeManagerClient) CallTool(context.Context, string, map[string]any) (*ToolResult, error) {
-	return &ToolResult{Content: []Content{{Type: "text", Text: c.callResult}}}, nil
-}
-
-func (c *fakeManagerClient) Close() error {
-	c.closed = true
-	return nil
-}
-
-// TestEncodeParams_NonMarshalable_DoesNotPanic verifies that passing a type
-// that cannot be JSON-encoded does not crash the server via panic.
 func TestEncodeParams_NonMarshalable_DoesNotPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -296,141 +393,63 @@ func TestEncodeParams_NonMarshalable_DoesNotPanic(t *testing.T) {
 	}
 }
 
-// ─── SSE client ───────────────────────────────────────────────────────────────
-
-// TestSSEClient_StreamDoneAlreadyClosed_DoesNotPanic checks that calling send
-// after the SSE stream has been closed returns an error rather than panicking.
-func TestSSEClient_StreamDoneAlreadyClosed_DoesNotPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("send panicked after stream close: %v", r)
-		}
-	}()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	defer srv.Close()
-
-	c := &sseClient{
-		name:       "test",
-		postURL:    srv.URL + "/msg",
-		timeout:    2 * time.Second,
-		http:       &http.Client{Timeout: 0},
-		responses:  make(chan *rpcResponse, 256),
-		streamDone: make(chan struct{}),
-	}
-	c.streamOnce.Do(func() { close(c.streamDone) })
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, err := c.send(ctx, "tools/list", encodeParams(map[string]any{}))
-	if err == nil {
-		t.Fatal("expected error after stream close, got nil")
-	}
-	if !strings.Contains(err.Error(), "SSE stream closed") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+type fakeManagerClient struct {
+	tools             []Tool
+	resources         []Resource
+	resourceTemplates []ResourceTemplate
+	prompts           []Prompt
+	callResult        string
+	toolResult        *ToolResult
+	resourceRead      *ResourceReadResult
+	promptGet         *PromptGetResult
+	notifications     chan Notification
+	closed            bool
 }
 
-// TestSSEClient_ContextCancelled_DoesNotPanic checks that cancelling the
-// context during send returns ctx.Err() without panicking.
-func TestSSEClient_ContextCancelled_DoesNotPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("send panicked on context cancel: %v", r)
-		}
-	}()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	defer srv.Close()
-
-	c := &sseClient{
-		name:       "test",
-		postURL:    srv.URL + "/msg",
-		timeout:    5 * time.Second,
-		http:       &http.Client{Timeout: 0},
-		responses:  make(chan *rpcResponse, 256),
-		streamDone: make(chan struct{}),
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel before send
-
-	_, err := c.send(ctx, "tools/list", encodeParams(map[string]any{}))
-	if err == nil {
-		t.Fatal("expected error on cancelled context, got nil")
-	}
+func (c *fakeManagerClient) Discover(context.Context) (*DiscoverResult, error) {
+	return &DiscoverResult{ProtocolVersion: ProtocolVersion2026, ServerInfo: Implementation{Name: "fake", Version: "test"}}, nil
 }
-
-// TestSSEClient_CallMu_NoConcurrentPanic runs two goroutines that each call
-// send concurrently. callMu serializes them so neither should panic.
-func TestSSEClient_CallMu_NoConcurrentPanic(t *testing.T) {
-	respCh := make(chan *rpcResponse, 16)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req rpcRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		_ = r.Body.Close()
-		w.WriteHeader(http.StatusAccepted)
-
-		result, _ := json.Marshal(toolsListResult{Tools: []Tool{{Name: "ping"}}})
-		resp := &rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: result}
-		select {
-		case respCh <- resp:
-		default:
-		}
-	}))
-	defer srv.Close()
-
-	c := &sseClient{
-		name:       "test",
-		postURL:    srv.URL + "/msg",
-		timeout:    3 * time.Second,
-		http:       &http.Client{Timeout: 0},
-		responses:  make(chan *rpcResponse, 256),
-		streamDone: make(chan struct{}),
-	}
-
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			case resp := <-respCh:
-				select {
-				case c.responses <- resp:
-				case <-stop:
-					return
-				}
-			}
-		}
-	}()
-
-	var wg sync.WaitGroup
-	panicked := false
-	var panicMu sync.Mutex
-	for range 2 {
-		wg.Go(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					panicMu.Lock()
-					panicked = true
-					panicMu.Unlock()
-				}
-			}()
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			_, _ = c.send(ctx, "tools/list", encodeParams(map[string]any{}))
-		})
-	}
-	wg.Wait()
-
-	if panicked {
-		t.Fatal("concurrent send caused a panic")
-	}
+func (c *fakeManagerClient) Initialize(context.Context) error { return nil }
+func (c *fakeManagerClient) ListTools(context.Context) ([]Tool, error) {
+	return append([]Tool(nil), c.tools...), nil
 }
+func (c *fakeManagerClient) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResult, error) {
+	return c.CallToolWithInput(ctx, name, args, nil, nil)
+}
+func (c *fakeManagerClient) CallToolWithInput(context.Context, string, map[string]any, json.RawMessage, json.RawMessage) (*ToolResult, error) {
+	if c.toolResult != nil {
+		return c.toolResult, nil
+	}
+	return &ToolResult{Content: []Content{{Type: "text", Text: c.callResult}}}, nil
+}
+func (c *fakeManagerClient) ListResources(context.Context) ([]Resource, error) {
+	return append([]Resource(nil), c.resources...), nil
+}
+func (c *fakeManagerClient) ListResourceTemplates(context.Context) ([]ResourceTemplate, error) {
+	return append([]ResourceTemplate(nil), c.resourceTemplates...), nil
+}
+func (c *fakeManagerClient) ReadResource(context.Context, string) (*ResourceReadResult, error) {
+	if c.resourceRead == nil {
+		return &ResourceReadResult{}, nil
+	}
+	return c.resourceRead, nil
+}
+func (c *fakeManagerClient) ListPrompts(context.Context) ([]Prompt, error) {
+	return append([]Prompt(nil), c.prompts...), nil
+}
+func (c *fakeManagerClient) GetPrompt(context.Context, string, map[string]any) (*PromptGetResult, error) {
+	if c.promptGet == nil {
+		return &PromptGetResult{}, nil
+	}
+	return c.promptGet, nil
+}
+func (c *fakeManagerClient) Listen(context.Context) (<-chan Notification, error) {
+	if c.notifications != nil {
+		return c.notifications, nil
+	}
+	ch := make(chan Notification)
+	close(ch)
+	return ch, nil
+}
+func (c *fakeManagerClient) Cancel(context.Context, any, string) error { return nil }
+func (c *fakeManagerClient) Close() error                              { c.closed = true; return nil }

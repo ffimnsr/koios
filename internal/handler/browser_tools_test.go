@@ -676,6 +676,10 @@ type fakeBrowserClient struct {
 	canvasMounted bool
 }
 
+func (c *fakeBrowserClient) Discover(context.Context) (*mcp.DiscoverResult, error) {
+	return &mcp.DiscoverResult{ProtocolVersion: mcp.ProtocolVersion2026}, nil
+}
+
 func (c *fakeBrowserClient) Initialize(context.Context) error { return nil }
 
 func (c *fakeBrowserClient) ListTools(context.Context) ([]mcp.Tool, error) {
@@ -697,7 +701,11 @@ func (c *fakeBrowserClient) ListTools(context.Context) ([]mcp.Tool, error) {
 	}, nil
 }
 
-func (c *fakeBrowserClient) CallTool(_ context.Context, name string, args map[string]any) (*mcp.ToolResult, error) {
+func (c *fakeBrowserClient) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResult, error) {
+	return c.CallToolWithInput(ctx, name, args, nil, nil)
+}
+
+func (c *fakeBrowserClient) CallToolWithInput(_ context.Context, name string, args map[string]any, _, _ json.RawMessage) (*mcp.ToolResult, error) {
 	if isFakeBrowserPageScopedTool(name) {
 		if _, ok := args["pageId"]; ok {
 			return nil, fmt.Errorf("tool %s received unexpected pageId argument", name)
@@ -852,7 +860,33 @@ func (c *fakeBrowserClient) CallTool(_ context.Context, name string, args map[st
 	return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: text}}}, nil
 }
 
-func (c *fakeBrowserClient) Close() error { return nil }
+func (c *fakeBrowserClient) ListResources(context.Context) ([]mcp.Resource, error) {
+	return nil, nil
+}
+
+func (c *fakeBrowserClient) ListResourceTemplates(context.Context) ([]mcp.ResourceTemplate, error) {
+	return nil, nil
+}
+
+func (c *fakeBrowserClient) ReadResource(context.Context, string) (*mcp.ResourceReadResult, error) {
+	return &mcp.ResourceReadResult{}, nil
+}
+
+func (c *fakeBrowserClient) ListPrompts(context.Context) ([]mcp.Prompt, error) {
+	return nil, nil
+}
+
+func (c *fakeBrowserClient) GetPrompt(context.Context, string, map[string]any) (*mcp.PromptGetResult, error) {
+	return &mcp.PromptGetResult{}, nil
+}
+
+func (c *fakeBrowserClient) Listen(context.Context) (<-chan mcp.Notification, error) {
+	ch := make(chan mcp.Notification)
+	close(ch)
+	return ch, nil
+}
+func (c *fakeBrowserClient) Cancel(context.Context, any, string) error { return nil }
+func (c *fakeBrowserClient) Close() error                              { return nil }
 
 func (c *fakeBrowserClient) listPagesJSON() string {
 	if len(c.pages) == 0 {

@@ -344,7 +344,7 @@ type peerLLMKeyRotateParams struct {
 	APIKey string `json:"api_key"`
 }
 
-func (h *Handler) replyPeerLLMKeyMutation(ctx context.Context, wsc *wsConn, req *rpcRequest, profileName string, mutate func() (*peerllm.ProviderProfile, error)) {
+func (h *Handler) replyPeerLLMKeyMutation(wsc *wsConn, req *rpcRequest, profileName string, mutate func() (*peerllm.ProviderProfile, error)) {
 	profile, err := mutate()
 	if err != nil {
 		wsc.replyErr(req.ID, errCodeServer, err.Error())
@@ -370,7 +370,7 @@ func (h *Handler) rpcPeerLLMKeyAdd(ctx context.Context, wsc *wsConn, req *rpcReq
 		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
 		return
 	}
-	h.replyPeerLLMKeyMutation(ctx, wsc, req, name, func() (*peerllm.ProviderProfile, error) {
+	h.replyPeerLLMKeyMutation(wsc, req, name, func() (*peerllm.ProviderProfile, error) {
 		return h.peerLLMStore.AddKey(ctx, wsc.peerID, name, p.APIKey)
 	})
 }
@@ -386,7 +386,7 @@ func (h *Handler) rpcPeerLLMKeyRemove(ctx context.Context, wsc *wsConn, req *rpc
 		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
 		return
 	}
-	h.replyPeerLLMKeyMutation(ctx, wsc, req, name, func() (*peerllm.ProviderProfile, error) {
+	h.replyPeerLLMKeyMutation(wsc, req, name, func() (*peerllm.ProviderProfile, error) {
 		return h.peerLLMStore.RemoveKey(ctx, wsc.peerID, name, p.Index)
 	})
 }
@@ -402,7 +402,7 @@ func (h *Handler) rpcPeerLLMKeyReplace(ctx context.Context, wsc *wsConn, req *rp
 		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
 		return
 	}
-	h.replyPeerLLMKeyMutation(ctx, wsc, req, name, func() (*peerllm.ProviderProfile, error) {
+	h.replyPeerLLMKeyMutation(wsc, req, name, func() (*peerllm.ProviderProfile, error) {
 		return h.peerLLMStore.ReplaceKey(ctx, wsc.peerID, name, p.Index, p.APIKey)
 	})
 }
@@ -418,7 +418,7 @@ func (h *Handler) rpcPeerLLMKeyRotate(ctx context.Context, wsc *wsConn, req *rpc
 		wsc.replyErr(req.ID, errCodeInvalidParams, "name is required")
 		return
 	}
-	h.replyPeerLLMKeyMutation(ctx, wsc, req, name, func() (*peerllm.ProviderProfile, error) {
+	h.replyPeerLLMKeyMutation(wsc, req, name, func() (*peerllm.ProviderProfile, error) {
 		return h.peerLLMStore.RotateKey(ctx, wsc.peerID, name, p.Index, p.APIKey)
 	})
 }

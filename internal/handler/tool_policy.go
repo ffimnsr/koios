@@ -18,6 +18,7 @@ var toolProfiles = map[string][]string{
 		"group:web",
 		"group:browser",
 		"group:automation",
+		"group:mcp_context",
 	},
 	"messaging": {
 		"group:sessions",
@@ -249,6 +250,16 @@ var toolGroups = map[string][]string{
 		"cron.delete",
 		"cron.trigger",
 		"cron.runs",
+	},
+	"group:mcp_context": {
+		"mcp.server.list",
+		"mcp.search",
+		"mcp.tool.details",
+		"mcp.tool.call",
+		"mcp.resource.list",
+		"mcp.resource.read",
+		"mcp.prompt.list",
+		"mcp.prompt.get",
 	},
 	"group:mcp_admin": {
 		"mcp.server.list",

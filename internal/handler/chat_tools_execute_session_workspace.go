@@ -1777,6 +1777,20 @@ func (h *Handler) executeSessionWorkspaceTool(ctx context.Context, peerID string
 			"reset":               args.Reset,
 		}
 		return response, nil
+	case "mcp.search":
+		return h.executeMCPSearch(ctx, peerID, call)
+	case "mcp.tool.details":
+		return h.executeMCPToolDetails(ctx, peerID, call)
+	case "mcp.tool.call":
+		return h.executeMCPToolCall(ctx, peerID, call)
+	case "mcp.resource.list":
+		return h.executeMCPResourceList(ctx, peerID, call)
+	case "mcp.resource.read":
+		return h.executeMCPResourceRead(ctx, peerID, call)
+	case "mcp.prompt.list":
+		return h.executeMCPPromptList(ctx, peerID, call)
+	case "mcp.prompt.get":
+		return h.executeMCPPromptGet(ctx, peerID, call)
 	case "mcp.server.list":
 		return h.executeMCPServerList(ctx, peerID)
 	case "mcp.server.add":

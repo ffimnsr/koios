@@ -151,7 +151,7 @@ func collectDoctorRuntimeFindings(ctx context.Context, state *repoState, deep bo
 			} else if deep {
 				findings = append(findings, doctorFinding{Level: "info", Key: prefix + ".command", Message: fmt.Sprintf("MCP server %q command resolved", name), Path: resolved})
 			}
-		case "http", "sse":
+		case "http":
 			if strings.TrimSpace(server.URL) == "" {
 				findings = append(findings, doctorFinding{Level: "error", Key: prefix + ".url", Message: fmt.Sprintf("MCP server %q requires a URL", name), Path: state.ConfigPath})
 				probeReady = false
@@ -162,7 +162,7 @@ func collectDoctorRuntimeFindings(ctx context.Context, state *repoState, deep bo
 				probeReady = false
 			}
 		default:
-			findings = append(findings, doctorFinding{Level: "error", Key: prefix + ".transport", Message: fmt.Sprintf("unsupported MCP transport %q for %q", server.Transport, name), Path: state.ConfigPath, Hint: "use stdio, http, or sse"})
+			findings = append(findings, doctorFinding{Level: "error", Key: prefix + ".transport", Message: fmt.Sprintf("unsupported MCP transport %q for %q", server.Transport, name), Path: state.ConfigPath, Hint: "use stdio or http"})
 			probeReady = false
 		}
 		if deep && probeReady {
@@ -891,8 +891,6 @@ func newDoctorMCPClient(ctx context.Context, server config.MCPServerConfig, tran
 	switch transport {
 	case "stdio":
 		return mcp.NewStdioClientWithContext(ctx, server.Name, server.Command, server.Args, server.Env)
-	case "sse":
-		return mcp.NewSSEClient(server.Name, server.URL, server.Headers, timeout)
 	default:
 		return mcp.NewHTTPClient(server.Name, server.URL, server.Headers, timeout)
 	}
@@ -995,7 +993,7 @@ func collectDoctorUserMCPFindings(ctx context.Context, cfg *config.Config, deep 
 					})
 				}
 			}
-		case "http", "sse":
+		case "http":
 			if strings.TrimSpace(rec.URL) == "" {
 				findings = append(findings, doctorFinding{
 					Level:   "warn",
@@ -1015,7 +1013,7 @@ func collectDoctorUserMCPFindings(ctx context.Context, cfg *config.Config, deep 
 		}
 
 		// Probe only when deep and the server is enabled and has a valid transport.
-		if deep && (transport == "stdio" || transport == "http" || transport == "sse") {
+		if deep && (transport == "stdio" || transport == "http") {
 			cfg := config.MCPServerConfig{
 				Name:    rec.Name,
 				Command: rec.Command,

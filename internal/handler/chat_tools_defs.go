@@ -4164,10 +4164,107 @@ var toolDefs = []toolDef{
 		argHint:   `{"name":"work-openai"}`,
 		available: func(h *Handler) bool { return h.peerLLMStore != nil },
 	},
+	{
+		name:        "mcp.search",
+		description: "Search connected MCP tools, resources, resource templates, and prompts without injecting every remote schema into context.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+				"limit": map[string]any{"type": "integer"},
+			},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpManager != nil },
+	},
+	{
+		name:        "mcp.tool.details",
+		description: "Inspect one MCP tool schema by runtime full_name from mcp.search or mcp.server.list results.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required":             []string{"name"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpManager != nil },
+	},
+	{
+		name:        "mcp.tool.call",
+		description: "Call one MCP tool by runtime full_name. Protocol errors fail the call; tool isError payloads are returned for self-correction.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":            map[string]any{"type": "string"},
+				"arguments":       map[string]any{"type": "object"},
+				"input_responses": map[string]any{"type": "object", "description": "Explicit user-approved MRTR elicitation responses."},
+				"request_state":   map[string]any{"description": "Opaque requestState returned by an input_required MCP result."},
+			},
+			"required":             []string{"name"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpManager != nil },
+	},
+	{
+		name:        "mcp.resource.list",
+		description: "List resources and resource templates exposed by one connected MCP server. Pass the server runtime_name from mcp.server.list.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"server": map[string]any{"type": "string"},
+			},
+			"required":             []string{"server"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpManager != nil },
+	},
+	{
+		name:        "mcp.resource.read",
+		description: "Read one MCP resource by URI from one connected MCP server. Pass the server runtime_name from mcp.server.list.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"server": map[string]any{"type": "string"},
+				"uri":    map[string]any{"type": "string"},
+			},
+			"required":             []string{"server", "uri"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpManager != nil },
+	},
+	{
+		name:        "mcp.prompt.list",
+		description: "List prompts exposed by one connected MCP server. Pass the server runtime_name from mcp.server.list.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"server": map[string]any{"type": "string"},
+			},
+			"required":             []string{"server"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpManager != nil },
+	},
+	{
+		name:        "mcp.prompt.get",
+		description: "Resolve one MCP prompt by name from one connected MCP server. Pass the server runtime_name from mcp.server.list.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"server":    map[string]any{"type": "string"},
+				"name":      map[string]any{"type": "string"},
+				"arguments": map[string]any{"type": "object"},
+			},
+			"required":             []string{"server", "name"},
+			"additionalProperties": false,
+		}),
+		available: func(h *Handler) bool { return h.mcpManager != nil },
+	},
 	// mcp.server.* — self-service MCP server management for peers.
 	{
 		name:        "mcp.server.list",
-		description: "List shared operator-configured MCP servers and user-managed MCP servers visible to the calling peer. Config entries are marked user_managed=false; user registry entries are marked user_managed=true. Includes runtime connection status for enabled servers when the gateway is active.",
+		description: "List shared operator-configured MCP servers and user-managed MCP servers visible to the calling peer. Config entries are marked user_managed=false; user registry entries are marked user_managed=true. Includes runtime_name for follow-up mcp.resource.* and mcp.prompt.* calls, plus runtime connection status for enabled servers when the gateway is active.",
 		parameters: mustJSONSchema(map[string]any{
 			"type":                 "object",
 			"properties":           map[string]any{},
@@ -4182,7 +4279,7 @@ var toolDefs = []toolDef{
 			"type": "object",
 			"properties": map[string]any{
 				"name":              map[string]any{"type": "string"},
-				"transport":         map[string]any{"type": "string", "enum": []string{"stdio", "http", "sse"}},
+				"transport":         map[string]any{"type": "string", "enum": []string{"stdio", "http"}},
 				"command":           map[string]any{"type": "string"},
 				"args":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"env":               map[string]any{"type": "object"},

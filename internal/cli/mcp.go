@@ -145,7 +145,7 @@ The server is saved disabled by default; use --enable or
 			}
 			transport = strings.ToLower(strings.TrimSpace(transport))
 			if transport == "" {
-				return fmt.Errorf("--transport is required (stdio, http, sse)")
+				return fmt.Errorf("--transport is required (stdio or http)")
 			}
 
 			// Parse env flags.
@@ -245,11 +245,11 @@ The server is saved disabled by default; use --enable or
 	}
 	cmd.Flags().StringVar(&owner, "owner", "", "owner peer ID")
 	cmd.Flags().StringVar(&name, "name", "", "display name for the server")
-	cmd.Flags().StringVar(&transport, "transport", "", "transport: stdio, http, or sse")
+	cmd.Flags().StringVar(&transport, "transport", "", "transport: stdio or http")
 	cmd.Flags().StringVar(&command, "command", "", "executable for stdio transport")
 	cmd.Flags().StringArrayVar(&args, "arg", nil, "command argument (repeatable)")
 	cmd.Flags().StringArrayVar(&env, "env", nil, "environment key=value (repeatable)")
-	cmd.Flags().StringVar(&url_, "url", "", "URL for http/sse transport")
+	cmd.Flags().StringVar(&url_, "url", "", "URL for http transport")
 	cmd.Flags().StringArrayVar(&headers, "header", nil, "HTTP header key=value (repeatable)")
 	cmd.Flags().StringVar(&timeout, "timeout", "30s", "request timeout")
 	cmd.Flags().BoolVar(&enable, "enable", false, "enable the server immediately")
@@ -542,8 +542,6 @@ func probeMCPClient(ctx context.Context, server config.MCPServerConfig, transpor
 	switch transport {
 	case "stdio":
 		return mcp.NewStdioClientWithContext(ctx, server.Name, server.Command, server.Args, server.Env)
-	case "sse":
-		return mcp.NewSSEClient(server.Name, server.URL, server.Headers, timeout)
 	default:
 		return mcp.NewHTTPClient(server.Name, server.URL, server.Headers, timeout)
 	}

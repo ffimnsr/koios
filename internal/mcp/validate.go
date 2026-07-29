@@ -22,16 +22,18 @@ func ValidateServerConfig(server config.MCPServerConfig) error {
 
 	transport := strings.ToLower(strings.TrimSpace(server.Transport))
 	switch transport {
-	case "stdio", "http", "sse":
+	case "stdio", "http":
+	case "sse":
+		return fmt.Errorf("mcp: transport %q is deprecated; use http with a Streamable HTTP MCP endpoint", server.Transport)
 	default:
-		return fmt.Errorf("mcp: unsupported transport %q (expected stdio, http, or sse)", server.Transport)
+		return fmt.Errorf("mcp: unsupported transport %q (expected stdio or http)", server.Transport)
 	}
 
 	if transport == "stdio" && strings.TrimSpace(server.Command) == "" {
 		return fmt.Errorf("mcp: command is required for stdio transport")
 	}
-	if (transport == "http" || transport == "sse") && strings.TrimSpace(server.URL) == "" {
-		return fmt.Errorf("mcp: url is required for %s transport", transport)
+	if transport == "http" && strings.TrimSpace(server.URL) == "" {
+		return fmt.Errorf("mcp: url is required for http transport")
 	}
 
 	if t := strings.TrimSpace(server.Timeout); t != "" {
@@ -40,7 +42,6 @@ func ValidateServerConfig(server config.MCPServerConfig) error {
 		}
 	}
 
-	// Reject reserved name prefixes used by the runtime.
 	if strings.HasPrefix(strings.ToLower(name), "mcp__") {
 		return fmt.Errorf("mcp: server name %q uses reserved prefix \"mcp__\"", name)
 	}

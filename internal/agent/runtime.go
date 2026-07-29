@@ -714,9 +714,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 		}
 
 		history := rt.store.Get(sessionKey).History()
-		history, _ = rt.repairTranscriptMessages(history)
+		history = rt.repairTranscriptMessages(history)
 		stepMessages := append([]types.Message(nil), workingMessages...)
-		stepMessages, _ = rt.repairTranscriptMessages(stepMessages)
+		stepMessages = rt.repairTranscriptMessages(stepMessages)
 		selectedTools := rt.toolDefinitionsForRun(reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile, stepMessages)
 		if reqCopy.ToolExecutor != nil {
 			if toolPrompt := strings.TrimSpace(rt.toolPromptForRun(reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, reqCopy.ActiveProfile, stepMessages)); toolPrompt != "" {
@@ -772,7 +772,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			emitStepFinish(false, "failed", err)
 			return result, err
 		}
-		built.Request.Messages, _ = rt.repairTranscriptMessages(built.Request.Messages)
+		built.Request.Messages = rt.repairTranscriptMessages(built.Request.Messages)
 		rt.emitEvent(result, reqCopy.EventSink, Event{
 			Kind:       EventContext,
 			SessionKey: sessionKey,
@@ -1289,12 +1289,11 @@ func stripToolCallEnvelope(text string) string {
 	return strings.TrimSpace(text[:start] + text[end:])
 }
 
-func (rt *Runtime) repairTranscriptMessages(messages []types.Message) ([]types.Message, int) {
+func (rt *Runtime) repairTranscriptMessages(messages []types.Message) []types.Message {
 	if len(messages) == 0 {
-		return nil, 0
+		return nil
 	}
 	out := make([]types.Message, 0, len(messages))
-	repairs := 0
 	var pending []ToolCall
 	flushPending := func() {
 		if len(pending) == 0 {
@@ -1302,7 +1301,6 @@ func (rt *Runtime) repairTranscriptMessages(messages []types.Message) ([]types.M
 		}
 		for _, call := range pending {
 			out = append(out, types.Message{Role: "tool", ToolCallID: call.ID, Content: rt.formatToolResult(call.Name, nil, fmt.Errorf("tool execution did not complete; synthetic repair inserted during transcript normalization"))})
-			repairs++
 		}
 		pending = nil
 	}
@@ -1315,7 +1313,6 @@ func (rt *Runtime) repairTranscriptMessages(messages []types.Message) ([]types.M
 					normalized := normalizeToolCall(nil, "", *call)
 					msg.ToolCalls = []types.ToolCall{toolCallMessage(normalized)}
 					msg.Content = stripToolCallEnvelope(msg.Content)
-					repairs++
 				}
 			}
 			out = append(out, msg)
@@ -1327,7 +1324,6 @@ func (rt *Runtime) repairTranscriptMessages(messages []types.Message) ([]types.M
 			}
 		case "tool":
 			if strings.TrimSpace(msg.ToolCallID) == "" {
-				repairs++
 				continue
 			}
 			matched := false
@@ -1351,7 +1347,6 @@ func (rt *Runtime) repairTranscriptMessages(messages []types.Message) ([]types.M
 					pending[0].ID = msg.ToolCallID
 					out = append(out, msg)
 					pending = nil
-					repairs++
 					continue
 				}
 				if prev.Role == "assistant" && len(prev.ToolCalls) == 0 {
@@ -1362,19 +1357,17 @@ func (rt *Runtime) repairTranscriptMessages(messages []types.Message) ([]types.M
 						prev.Content = stripToolCallEnvelope(prev.Content)
 						out[len(out)-1] = prev
 						out = append(out, msg)
-						repairs++
 						continue
 					}
 				}
 			}
-			repairs++
 		default:
 			flushPending()
 			out = append(out, msg)
 		}
 	}
 	flushPending()
-	return out, repairs
+	return out
 }
 
 func (rt *Runtime) persistTurn(ctx context.Context, peerID, sessionKey, model string, transcript, workingMessages []types.Message, assistantText string, suppressed bool) {

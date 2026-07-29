@@ -671,13 +671,16 @@ func validateMCPServer(server config.MCPServerConfig, path string) error {
 	if strings.TrimSpace(server.Name) == "" {
 		return fmt.Errorf("extension manifest %s: mcp server name is required", path)
 	}
-	if transport != "stdio" && transport != "http" && transport != "sse" {
+	if transport == "sse" {
+		return fmt.Errorf("extension manifest %s: mcp transport %q is deprecated; use http with a Streamable HTTP MCP endpoint", path, server.Transport)
+	}
+	if transport != "stdio" && transport != "http" {
 		return fmt.Errorf("extension manifest %s: unsupported mcp transport %q", path, server.Transport)
 	}
 	if transport == "stdio" && strings.TrimSpace(server.Command) == "" {
 		return fmt.Errorf("extension manifest %s: mcp.command is required for stdio transport", path)
 	}
-	if (transport == "http" || transport == "sse") && strings.TrimSpace(server.URL) == "" {
+	if transport == "http" && strings.TrimSpace(server.URL) == "" {
 		return fmt.Errorf("extension manifest %s: mcp.url is required for %s transport", path, transport)
 	}
 	return nil

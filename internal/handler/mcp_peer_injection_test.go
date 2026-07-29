@@ -13,9 +13,17 @@ import (
 )
 
 type captureMCPClient struct {
-	tools    []mcp.Tool
-	lastName string
-	lastArgs map[string]any
+	tools        []mcp.Tool
+	resources    []mcp.Resource
+	prompts      []mcp.Prompt
+	readResult   *mcp.ResourceReadResult
+	promptResult *mcp.PromptGetResult
+	lastName     string
+	lastArgs     map[string]any
+}
+
+func (c *captureMCPClient) Discover(context.Context) (*mcp.DiscoverResult, error) {
+	return &mcp.DiscoverResult{ProtocolVersion: mcp.ProtocolVersion2026}, nil
 }
 
 func (c *captureMCPClient) Initialize(context.Context) error { return nil }
@@ -24,13 +32,49 @@ func (c *captureMCPClient) ListTools(context.Context) ([]mcp.Tool, error) {
 	return c.tools, nil
 }
 
-func (c *captureMCPClient) CallTool(_ context.Context, name string, args map[string]any) (*mcp.ToolResult, error) {
+func (c *captureMCPClient) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResult, error) {
+	return c.CallToolWithInput(ctx, name, args, nil, nil)
+}
+
+func (c *captureMCPClient) CallToolWithInput(_ context.Context, name string, args map[string]any, _, _ json.RawMessage) (*mcp.ToolResult, error) {
 	c.lastName = name
 	c.lastArgs = args
 	return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "ok"}}}, nil
 }
 
-func (c *captureMCPClient) Close() error { return nil }
+func (c *captureMCPClient) ListResources(context.Context) ([]mcp.Resource, error) {
+	return c.resources, nil
+}
+
+func (c *captureMCPClient) ListResourceTemplates(context.Context) ([]mcp.ResourceTemplate, error) {
+	return nil, nil
+}
+
+func (c *captureMCPClient) ReadResource(context.Context, string) (*mcp.ResourceReadResult, error) {
+	if c.readResult == nil {
+		return &mcp.ResourceReadResult{}, nil
+	}
+	return c.readResult, nil
+}
+
+func (c *captureMCPClient) ListPrompts(context.Context) ([]mcp.Prompt, error) {
+	return c.prompts, nil
+}
+
+func (c *captureMCPClient) GetPrompt(context.Context, string, map[string]any) (*mcp.PromptGetResult, error) {
+	if c.promptResult == nil {
+		return &mcp.PromptGetResult{}, nil
+	}
+	return c.promptResult, nil
+}
+
+func (c *captureMCPClient) Listen(context.Context) (<-chan mcp.Notification, error) {
+	ch := make(chan mcp.Notification)
+	close(ch)
+	return ch, nil
+}
+func (c *captureMCPClient) Cancel(context.Context, any, string) error { return nil }
+func (c *captureMCPClient) Close() error                              { return nil }
 
 func TestExecuteToolInjectsPeerIDForMonacoMCPTools(t *testing.T) {
 	client := &captureMCPClient{tools: []mcp.Tool{{Name: "get_profile", Description: "profile"}}}

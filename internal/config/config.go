@@ -274,7 +274,7 @@ type MCPServerConfig struct {
 	// Name is a short identifier used to identify the MCP server in config,
 	// logs, and startup dedupe checks.
 	Name string `toml:"name"`
-	// Transport is one of "stdio", "http", or "sse".
+	// Transport is one of "stdio" or "http".
 	Transport string `toml:"transport"`
 	// Command is the executable to spawn for stdio transport.
 	Command string `toml:"command"`
@@ -282,9 +282,9 @@ type MCPServerConfig struct {
 	Args []string `toml:"args"`
 	// Env holds extra environment variables for the subprocess (stdio only).
 	Env map[string]string `toml:"env"`
-	// URL is the endpoint for http and sse transports.
+	// URL is the endpoint for Streamable HTTP transport.
 	URL string `toml:"url"`
-	// Headers are HTTP headers added to every request for http/sse transports.
+	// Headers are HTTP headers added to every request for http transport.
 	Headers map[string]string `toml:"headers"`
 	// Timeout is the per-request deadline, e.g. "30s". Defaults to "30s".
 	Timeout string `toml:"timeout"`

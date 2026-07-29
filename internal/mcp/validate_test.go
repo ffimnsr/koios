@@ -13,7 +13,7 @@ func TestValidateServerConfig_Ok(t *testing.T) {
 	}{
 		{"stdio minimal", config.MCPServerConfig{Name: "filesystem", Transport: "stdio", Command: "npx"}},
 		{"http minimal", config.MCPServerConfig{Name: "myserver", Transport: "http", URL: "http://localhost:3000/mcp"}},
-		{"sse minimal", config.MCPServerConfig{Name: "myserver", Transport: "sse", URL: "http://localhost:3000/sse"}},
+
 		{"with timeout", config.MCPServerConfig{Name: "timed", Transport: "http", URL: "http://localhost/mcp", Timeout: "30s"}},
 		{"with args", config.MCPServerConfig{Name: "args", Transport: "stdio", Command: "npx", Args: []string{"-y", "package"}}},
 	}
@@ -36,7 +36,7 @@ func TestValidateServerConfig_Errors(t *testing.T) {
 		{"invalid transport", config.MCPServerConfig{Name: "x", Transport: "ws"}, "unsupported transport"},
 		{"stdio missing command", config.MCPServerConfig{Name: "x", Transport: "stdio", Command: ""}, "command is required"},
 		{"http missing url", config.MCPServerConfig{Name: "x", Transport: "http", URL: ""}, "url is required"},
-		{"sse missing url", config.MCPServerConfig{Name: "x", Transport: "sse", URL: ""}, "url is required"},
+		{"sse deprecated", config.MCPServerConfig{Name: "x", Transport: "sse", URL: "http://localhost/sse"}, "deprecated"},
 		{"invalid timeout", config.MCPServerConfig{Name: "x", Transport: "http", URL: "http://localhost", Timeout: "not-a-duration"}, "invalid timeout"},
 		{"reserved prefix mcp__", config.MCPServerConfig{Name: "mcp__test", Transport: "stdio", Command: "echo"}, "reserved prefix"},
 		{"reserved prefix mcp_plug_", config.MCPServerConfig{Name: "mcp_plug_test", Transport: "stdio", Command: "echo"}, "reserved prefix"},
