@@ -43,6 +43,26 @@ const (
 	StatusSkipped   RunStatus = "skipped"
 )
 
+// Timing captures a per-run phase breakdown in milliseconds. Zero or omitted
+// fields mean the phase was not measured or did not occur for that run.
+// Older records written before timing support will have a nil Timing.
+type Timing struct {
+	// QueueMs is the time spent between queued_at and started_at.
+	QueueMs int64 `json:"queue_ms,omitempty"`
+	// ModelMs is the aggregate provider call time across all steps.
+	ModelMs int64 `json:"model_ms,omitempty"`
+	// ToolMs is the aggregate tool execution time across all steps.
+	ToolMs int64 `json:"tool_ms,omitempty"`
+	// FinalizeMs is execution time outside the measured model/tool phases
+	// (context building, memory extraction, persistence). It is only derived
+	// when model or tool time was measured.
+	FinalizeMs int64 `json:"finalize_ms,omitempty"`
+	// TotalMs is the wall-clock time between queued_at and finished_at.
+	TotalMs int64 `json:"total_ms,omitempty"`
+	// Retries is the total number of provider retry attempts across the run.
+	Retries int `json:"retries,omitempty"`
+}
+
 // Record is a unified ledger entry that captures a run regardless of which
 // subsystem produced it.
 type Record struct {
@@ -64,6 +84,9 @@ type Record struct {
 	QueuedAt         time.Time       `json:"queued_at"`
 	StartedAt        *time.Time      `json:"started_at,omitempty"`
 	FinishedAt       *time.Time      `json:"finished_at,omitempty"`
+	// Timing carries the per-phase duration breakdown for the run, when any
+	// phase was measured.
+	Timing *Timing `json:"timing,omitempty"`
 }
 
 // Filter restricts which records are returned by List.
@@ -253,6 +276,33 @@ func (s *Store) writeLocked(rec Record) error {
 	cp := rec
 	s.index[rec.ID] = &cp
 	return nil
+}
+
+// CompleteTiming fills in any missing queue/total/finalize durations derived
+// from the record's stored timestamps and returns the merged timing. It
+// returns nil when the merged timing carries no measurements, so legacy
+// records and short-lived runs without measurable phases stay unset.
+func CompleteTiming(rec Record, partial Timing) *Timing {
+	t := partial
+	if t.QueueMs <= 0 && !rec.QueuedAt.IsZero() && rec.StartedAt != nil && rec.StartedAt.After(rec.QueuedAt) {
+		t.QueueMs = rec.StartedAt.Sub(rec.QueuedAt).Milliseconds()
+	}
+	if t.TotalMs <= 0 && !rec.QueuedAt.IsZero() && rec.FinishedAt != nil && rec.FinishedAt.After(rec.QueuedAt) {
+		t.TotalMs = rec.FinishedAt.Sub(rec.QueuedAt).Milliseconds()
+	}
+	// Finalize time is execution time that fell outside the measured model and
+	// tool phases. It is only derived when the caller measured at least one of
+	// those phases; otherwise the whole execution would be mislabeled as
+	// finalization overhead.
+	if t.FinalizeMs <= 0 && (t.ModelMs > 0 || t.ToolMs > 0) && rec.StartedAt != nil && rec.FinishedAt != nil && rec.FinishedAt.After(*rec.StartedAt) {
+		if overhead := rec.FinishedAt.Sub(*rec.StartedAt).Milliseconds() - t.ModelMs - t.ToolMs; overhead > 0 {
+			t.FinalizeMs = overhead
+		}
+	}
+	if t.QueueMs == 0 && t.ModelMs == 0 && t.ToolMs == 0 && t.FinalizeMs == 0 && t.TotalMs == 0 && t.Retries == 0 {
+		return nil
+	}
+	return &t
 }
 
 func isTerminal(status RunStatus) bool {

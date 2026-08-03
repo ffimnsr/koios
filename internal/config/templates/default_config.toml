@@ -215,6 +215,9 @@ retry_attempts = 3
 retry_initial_backoff = "500ms"
 retry_max_backoff = "5s"
 retry_status_codes = [429, 500, 502, 503, 504]
+# perf_logging emits a structured per-model-call performance log entry
+# (latency, first-token latency, token usage, sanitized errors).
+perf_logging = false
 
 [tools]
 profile = "full"

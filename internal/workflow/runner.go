@@ -340,6 +340,7 @@ func (r *Runner) ledgerFinished(run *Run) {
 		if !finishedAt.IsZero() {
 			rec.FinishedAt = &finishedAt
 		}
+		rec.Timing = runledger.CompleteTiming(*rec, runledger.Timing{})
 	})
 }
 

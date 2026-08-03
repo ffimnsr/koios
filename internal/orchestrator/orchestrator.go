@@ -31,6 +31,7 @@ import (
 
 	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/eventbus"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/subagent"
 )
 
@@ -52,6 +53,6 @@ type Orchestrator struct {
 type OrchestratorLedger interface {
 	LedgerQueued(id, peerID, sessionKey, model string, queuedAt time.Time)
 	LedgerStarted(id string, startedAt time.Time)
-	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int)
+	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int, timing runledger.Timing)
 	LedgerMetadata(id, parentID string, toolCalls int)
 }

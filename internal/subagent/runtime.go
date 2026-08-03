@@ -201,6 +201,9 @@ func (r *Runtime) execute(ctx context.Context, id string, req SpawnRequest, pare
 			rec.SubTurn.State = SubTurnErrored
 			rec.SubTurn.FinishedAt = now
 			rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: "error", Message: redact.Error(err)})
+			if result != nil {
+				rec.TimingMs = &result.TimingMs
+			}
 		})
 		r.publishLifecycle(id, req.PeerID, req.SessionKey, "subagent.errored", map[string]any{"error": redact.Error(err)})
 		slog.Warn("subagent run failed", "run", id, "error", err)
@@ -215,6 +218,7 @@ func (r *Runtime) execute(ctx context.Context, id string, req SpawnRequest, pare
 		rec.SubTurn.FinishedAt = now
 		rec.SubTurn.Steps = result.Steps
 		rec.Events = append(rec.Events, LifecycleEvent{At: now, Type: "complete", Message: redact.String(result.AssistantText)})
+		rec.TimingMs = &result.TimingMs
 	})
 	r.publishLifecycle(id, req.PeerID, req.SessionKey, "subagent.completed", map[string]any{
 		"steps":      result.Steps,

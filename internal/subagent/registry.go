@@ -13,6 +13,7 @@ import (
 	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/google/uuid"
 
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/types"
 )
 
@@ -148,6 +149,9 @@ type RunRecord struct {
 	AnnounceSkip bool             `json:"announce_skip,omitempty"`
 	ReplySkip    bool             `json:"reply_skip,omitempty"`
 	SubTurn      SubTurn          `json:"subturn"`
+	// TimingMs carries the per-phase timing measurements of the underlying
+	// agent run, forwarded to the unified run ledger on terminal transitions.
+	TimingMs *runledger.Timing `json:"timing_ms,omitempty"`
 }
 
 // Registry persists run records to disk and restores them on startup.
@@ -189,7 +193,7 @@ func cloneRunRecord(rec *RunRecord) *RunRecord {
 type SubagentLedger interface {
 	LedgerQueued(id, peerID, sessionKey, model string, queuedAt time.Time)
 	LedgerStarted(id string, startedAt time.Time)
-	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int)
+	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int, timing runledger.Timing)
 	LedgerMetadata(id, parentID string, toolCalls int)
 }
 
@@ -328,10 +332,19 @@ func (r *Registry) Update(id string, fn func(*RunRecord)) (*RunRecord, bool) {
 			r.ledger.LedgerStarted(id, rec.StartedAt)
 		case StatusCompleted, StatusErrored, StatusKilled, StatusReset, StatusDeleted:
 			r.ledger.LedgerFinished(id, rec.FinishedAt, string(rec.Status), rec.Error,
-				rec.SubTurn.Steps, 0, 0)
+				rec.SubTurn.Steps, 0, 0, recordTiming(rec))
 		}
 	}
 	return cloneRunRecord(rec), true
+}
+
+// recordTiming returns the run's measured timing, or a zero Timing when the
+// underlying agent run never produced measurements.
+func recordTiming(rec *RunRecord) runledger.Timing {
+	if rec.TimingMs == nil {
+		return runledger.Timing{}
+	}
+	return *rec.TimingMs
 }
 
 // Get returns a snapshot copy of a run record.

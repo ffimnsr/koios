@@ -60,12 +60,17 @@ func TestRegistry_UpdatesUnifiedLedgerMetadata(t *testing.T) {
 		Model:       "model",
 	}, "peer::child")
 
-	finishedAt := time.Now().UTC()
+	spawned, ok := reg.Get(rec.ID)
+	if !ok {
+		t.Fatal("spawned record not found")
+	}
+	finishedAt := spawned.CreatedAt.Add(time.Second)
 	if _, ok := reg.Update(rec.ID, func(r *RunRecord) {
 		r.SubTurn.ToolCalls = 4
 		r.SubTurn.Steps = 2
 		r.Status = StatusCompleted
 		r.FinishedAt = finishedAt
+		r.TimingMs = &runledger.Timing{ModelMs: 1200, ToolMs: 300, Retries: 1}
 	}); !ok {
 		t.Fatal("update failed")
 	}
@@ -82,5 +87,14 @@ func TestRegistry_UpdatesUnifiedLedgerMetadata(t *testing.T) {
 	}
 	if got.Status != runledger.StatusCompleted {
 		t.Fatalf("expected completed status, got %q", got.Status)
+	}
+	if got.Timing == nil {
+		t.Fatal("expected timing on subagent ledger record")
+	}
+	if got.Timing.ModelMs != 1200 || got.Timing.ToolMs != 300 || got.Timing.Retries != 1 {
+		t.Fatalf("unexpected subagent timing: %+v", got.Timing)
+	}
+	if got.Timing.TotalMs <= 0 {
+		t.Errorf("expected derived total duration: %+v", got.Timing)
 	}
 }

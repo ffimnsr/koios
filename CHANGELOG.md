@@ -12,6 +12,11 @@ changelog together.
 
 ## [Unreleased]
 
+### Added
+
+- add per-run timing breakdown (queue/model/tool/finalize/total/retries) to run ledger records, exposed via `runs.list`, `runs.get`, agent run records, and the dashboard runtime section
+- add config-gated model performance logging (`[agent] perf_logging`) with latency, first-token latency, token usage, retry attempts, and sanitized errors for every provider call
+
 ## [0.8.1] - 2026-07-29
 
 ### Tests

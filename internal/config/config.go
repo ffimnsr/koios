@@ -482,6 +482,9 @@ type Config struct {
 	AgentRetryInitialBackoff time.Duration
 	AgentRetryMaxBackoff     time.Duration
 	AgentRetryStatusCodes    []int
+	// AgentPerfLogging enables structured per-model-call performance logging
+	// (latency, first-token latency, token usage, sanitized errors).
+	AgentPerfLogging bool
 
 	AllowedOrigins []string
 	// OwnerPeerIDs restricts owner-only slash commands (e.g. /restart) to
@@ -711,6 +714,7 @@ type fileConfig struct {
 		RetryInitialBackoff string `toml:"retry_initial_backoff"`
 		RetryMaxBackoff     string `toml:"retry_max_backoff"`
 		RetryStatusCodes    []int  `toml:"retry_status_codes"`
+		PerfLogging         *bool  `toml:"perf_logging"`
 	} `toml:"agent"`
 	Tools struct {
 		Profile string   `toml:"profile"`
@@ -858,6 +862,7 @@ func Default() *Config {
 		AgentRetryInitialBackoff:      500 * time.Millisecond,
 		AgentRetryMaxBackoff:          5 * time.Second,
 		AgentRetryStatusCodes:         []int{429, 500, 502, 503, 504},
+		AgentPerfLogging:              false,
 		ToolProfile:                   "full",
 		ExecEnabled:                   true,
 		ExecEnableDenyPatterns:        true,
@@ -1096,6 +1101,7 @@ func EncodeTOML(cfg *Config, includeAPIKey bool) string {
 		strconv.Quote(cfg.AgentRetryInitialBackoff.String()),
 		strconv.Quote(cfg.AgentRetryMaxBackoff.String()),
 		quoteIntSlice(cfg.AgentRetryStatusCodes),
+		cfg.AgentPerfLogging,
 		strconv.Quote(cfg.ToolProfile),
 		inlineQuotedStringSlice(cfg.ToolsAllow),
 		inlineQuotedStringSlice(cfg.ToolsDeny),
@@ -1867,6 +1873,9 @@ func applyFileConfig(dst *Config, src *fileConfig) {
 	}
 	if src.Agent.RetryStatusCodes != nil {
 		dst.AgentRetryStatusCodes = append([]int(nil), src.Agent.RetryStatusCodes...)
+	}
+	if src.Agent.PerfLogging != nil {
+		dst.AgentPerfLogging = *src.Agent.PerfLogging
 	}
 	if src.Tools.Profile != "" {
 		dst.ToolProfile = src.Tools.Profile

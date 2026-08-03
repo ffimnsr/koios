@@ -454,8 +454,25 @@ func writeDashboardRuntime(sb *strings.Builder, runtime dashboardRuntime, gatewa
 	sb.WriteString("- Recent runs:\n")
 	for _, record := range runtime.RecentRuns {
 		stamp := record.QueuedAt.In(loc).Format("2006-01-02 15:04")
-		fmt.Fprintf(sb, "  %s %s [%s/%s] steps=%d tools=%d\n", record.ID, stamp, record.Kind, record.Status, record.Steps, record.ToolCalls)
+		line := fmt.Sprintf("  %s %s [%s/%s] steps=%d tools=%d", record.ID, stamp, record.Kind, record.Status, record.Steps, record.ToolCalls)
+		if record.Timing != nil {
+			line += fmt.Sprintf(" queue=%s model=%s tools=%s total=%s",
+				dashboardDuration(record.Timing.QueueMs),
+				dashboardDuration(record.Timing.ModelMs),
+				dashboardDuration(record.Timing.ToolMs),
+				dashboardDuration(record.Timing.TotalMs))
+		}
+		sb.WriteString(line)
+		sb.WriteString("\n")
 	}
+}
+
+// dashboardDuration formats a millisecond duration compactly for dashboards.
+func dashboardDuration(ms int64) string {
+	if ms <= 0 {
+		return "0s"
+	}
+	return (time.Duration(ms) * time.Millisecond).Round(10 * time.Millisecond).String()
 }
 
 func dashboardEventCount(report *briefing.Report) int {

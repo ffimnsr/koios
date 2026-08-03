@@ -214,6 +214,7 @@ func (h *Handler) startBackgroundProcessUnchecked(ctx context.Context, peerID st
 			r.Error = err.Error()
 			r.Result = resultPayload
 			r.FinishedAt = &finishedAt
+			r.Timing = runledger.CompleteTiming(*r, runledger.Timing{})
 		})
 		return nil, fmt.Errorf("start background process: %w", err)
 	}
@@ -276,6 +277,7 @@ func (h *Handler) waitBackgroundProcess(proc *managedBackgroundProcess, stdoutFi
 		r.Error = errMsg
 		r.Result = resultPayload
 		r.FinishedAt = &finishedAt
+		r.Timing = runledger.CompleteTiming(*r, runledger.Timing{})
 	}); err != nil {
 		slog.Debug("process: failed to mark run finished", "id", proc.id, "error", err)
 	}

@@ -56,8 +56,11 @@ func (a *CoordinatorAdapter) LedgerStarted(id string, startedAt time.Time) {
 	}
 }
 
-// LedgerFinished satisfies agent.RunLedger and subagent.SubagentLedger.
-func (a *CoordinatorAdapter) LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int) {
+// LedgerFinished satisfies agent.RunLedger, subagent.SubagentLedger, and
+// orchestrator.OrchestratorLedger. The timing argument carries any per-phase
+// measurements made by the caller; queue/total/finalize durations are derived
+// from the record's stored timestamps when missing.
+func (a *CoordinatorAdapter) LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int, timing Timing) {
 	st := normalizeStatus(status)
 	if err := a.store.Update(id, func(r *Record) {
 		r.Status = st
@@ -66,6 +69,9 @@ func (a *CoordinatorAdapter) LedgerFinished(id string, finishedAt time.Time, sta
 		r.PromptTokens = promptTokens
 		r.CompletionTokens = completionTokens
 		r.FinishedAt = &finishedAt
+		if t := CompleteTiming(*r, timing); t != nil {
+			r.Timing = t
+		}
 	}); err != nil {
 		slog.Debug("runledger: update finished failed", "id", id, "err", err)
 	}

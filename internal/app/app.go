@@ -335,6 +335,7 @@ func RunGateway(build BuildInfo) error {
 		StatusCodes:    cfg.AgentRetryStatusCodes,
 	})
 	agentRuntime.SetDefaultMaxSteps(cfg.AgentMaxSteps)
+	agentRuntime.SetPerfLogging(cfg.AgentPerfLogging)
 	agentRuntime.SetServerCompaction(
 		cfg.CompactMode,
 		cfg.OpenAIServerCompaction.CompactThreshold,

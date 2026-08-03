@@ -388,6 +388,127 @@ func TestRuntime_RetryStatusCodeFilter(t *testing.T) {
 	}
 }
 
+func TestRuntime_MeasuresModelTimingInResult(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			time.Sleep(10 * time.Millisecond)
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+
+	res, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.TimingMs.ModelMs < 10 {
+		t.Errorf("model_ms: want >= 10, got %d", res.TimingMs.ModelMs)
+	}
+	if res.TimingMs.ToolMs != 0 || res.TimingMs.Retries != 0 {
+		t.Errorf("unexpected tool/retry timing: %+v", res.TimingMs)
+	}
+	// The timing aggregate is internal to the runtime; it must not leak into
+	// client-facing JSON serialization of the result.
+	encoded, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), "timing") {
+		t.Errorf("timing leaked into result JSON: %s", encoded)
+	}
+}
+
+func TestRuntime_CountsRetriesInTiming(t *testing.T) {
+	store := session.New(20)
+	attempts := 0
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("timeout")
+			}
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "retry ok"}}}}, nil
+		},
+	}
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 2, InitialBackoff: time.Millisecond, MaxBackoff: time.Millisecond})
+
+	res, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", res.Attempts)
+	}
+	if res.TimingMs.Retries != 1 {
+		t.Errorf("retries: want 1, got %d", res.TimingMs.Retries)
+	}
+	if res.TimingMs.ModelMs <= 0 {
+		t.Errorf("model_ms should be measured across retries, got %d", res.TimingMs.ModelMs)
+	}
+}
+
+func TestRuntime_PerfLoggingGatedByConfig(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			return &types.ChatResponse{
+				Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "ok"}}},
+				Usage:   types.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
+			}, nil
+		},
+		caps: types.ProviderCapabilities{Name: "openrouter"},
+	}
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(oldLogger)
+
+	// Disabled by default: no perf records are emitted.
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	if _, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(logBuf.String(), "agent: llm perf") {
+		t.Fatalf("perf log emitted while disabled: %s", logBuf.String())
+	}
+
+	// Enabled: structured record with metadata, usage, and no payload content.
+	logBuf.Reset()
+	rt.SetPerfLogging(true)
+	if _, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, "agent: llm perf") {
+		t.Fatalf("expected perf log record, got: %s", out)
+	}
+	for _, want := range []string{"provider=openrouter", "model=model", "attempt=1", "latency_ms=", "prompt_tokens=3", "completion_tokens=2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("perf log missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "hello") {
+		t.Errorf("perf log must not include request payloads: %s", out)
+	}
+}
+
 func TestRuntime_LogsProviderOnInvoke(t *testing.T) {
 	store := session.New(20)
 	var logBuf bytes.Buffer

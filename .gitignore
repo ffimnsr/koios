@@ -35,6 +35,7 @@ Thumbs.db
 !CODE_OF_CONDUCT.md
 !CONTRIBUTING.md
 !SECURITY.md
+!SHIPPED.md
 
 .env
 .env.*

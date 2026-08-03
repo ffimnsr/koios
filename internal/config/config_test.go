@@ -19,6 +19,7 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	cfg.LLMMaxToolResultChars = 2048
 	cfg.AgentMaxSteps = 120
 	cfg.AgentRetryStatusCodes = []int{429, 500, 503}
+	cfg.AgentPerfLogging = true
 	cfg.CompactMode = "server"
 	cfg.CompactTokenThreshold = 12345
 	cfg.OpenAIServerCompaction = OpenAIServerCompactionConfig{CompactThreshold: 210000}
@@ -124,6 +125,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	if !strings.Contains(encoded, "retry_status_codes = [429, 500, 503]") {
 		t.Fatalf("expected retry_status_codes array in encoded config, got:\n%s", encoded)
 	}
+	if !strings.Contains(encoded, "perf_logging = true") {
+		t.Fatalf("expected perf_logging in encoded config, got:\n%s", encoded)
+	}
 	for _, expected := range []string{
 		`allow = ["read", "write"]`,
 		`deny = ["exec"]`,
@@ -208,6 +212,9 @@ func TestEncodeTOMLRoundTripsRetryStatusCodes(t *testing.T) {
 	}
 	if len(loaded.AgentRetryStatusCodes) != 3 || loaded.AgentRetryStatusCodes[0] != 429 || loaded.AgentRetryStatusCodes[1] != 500 || loaded.AgentRetryStatusCodes[2] != 503 {
 		t.Fatalf("unexpected retry_status_codes after round-trip: %#v", loaded.AgentRetryStatusCodes)
+	}
+	if !loaded.AgentPerfLogging {
+		t.Fatalf("expected agent.perf_logging after round-trip, got %t", loaded.AgentPerfLogging)
 	}
 	if loaded.LLMIdleTimeout != 42*time.Second {
 		t.Fatalf("unexpected llm.idle_timeout after round-trip: %s", loaded.LLMIdleTimeout)

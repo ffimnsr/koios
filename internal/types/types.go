@@ -266,6 +266,7 @@ type ReasoningEvent struct {
 
 type reasoningSinkKey struct{}
 type requestIdentityKey struct{}
+type runIDKey struct{}
 
 // RequestIdentity carries stable caller identity used by downstream systems
 // such as per-session credential selection.
@@ -301,6 +302,25 @@ func RequestIdentityFromContext(ctx context.Context) RequestIdentity {
 	identity.PeerID = strings.TrimSpace(identity.PeerID)
 	identity.SessionKey = strings.TrimSpace(identity.SessionKey)
 	return identity
+}
+
+// WithRunID attaches an async run ID to the context so downstream
+// observability (e.g. model performance logging) can correlate events with
+// the corresponding run ledger record.
+func WithRunID(ctx context.Context, runID string) context.Context {
+	if ctx == nil || strings.TrimSpace(runID) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, runIDKey{}, strings.TrimSpace(runID))
+}
+
+// RunIDFromContext returns the run ID attached via WithRunID, or "".
+func RunIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(runIDKey{}).(string)
+	return strings.TrimSpace(id)
 }
 
 func EmitReasoningEvent(ctx context.Context, ev ReasoningEvent) {

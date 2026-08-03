@@ -23,6 +23,7 @@ import (
 	"github.com/ffimnsr/koios/internal/ops"
 	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/ffimnsr/koios/internal/requestctx"
+	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/skills"
 	"github.com/ffimnsr/koios/internal/standing"
@@ -150,6 +151,10 @@ type Result struct {
 	SuppressedReply            bool                        `json:"suppressed_reply,omitempty"`
 	SuppressionToken           string                      `json:"suppression_token,omitempty"`
 	PendingMutatingToolFailure *PendingMutatingToolFailure `json:"pending_mutating_tool_failure,omitempty"`
+	// TimingMs carries the per-phase timing aggregates measured by the runtime.
+	// It is excluded from client serialization; the coordinator forwards it to
+	// the run ledger when one is attached.
+	TimingMs runledger.Timing `json:"-"`
 }
 
 type memoryCandidateExtraction struct {
@@ -340,6 +345,9 @@ type Runtime struct {
 	steeringMu     sync.Mutex
 	steeringQueues map[string][]string // sessionKey → pending user messages
 	activeStreams  map[string]*activeStreamState
+
+	// perfLogging enables structured per-model-call performance logging.
+	perfLogging bool
 }
 
 type activeStreamState struct {
@@ -592,6 +600,12 @@ func (rt *Runtime) SetDefaultMaxSteps(maxSteps int) {
 	}
 }
 
+// SetPerfLogging enables or disables structured model-call performance
+// logging (latency, first-token latency, token usage, sanitized errors).
+func (rt *Runtime) SetPerfLogging(enabled bool) {
+	rt.perfLogging = enabled
+}
+
 // SetProviderResolver configures optional per-request provider resolution.
 func (rt *Runtime) SetProviderResolver(r ProviderResolver) {
 	rt.resolver = r
@@ -652,6 +666,20 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	}
 
 	result := &Result{SessionKey: sessionKey}
+	// Accumulate per-phase timings across all steps so the run ledger can
+	// persist a model/tool breakdown even for failed or canceled runs.
+	var (
+		modelMs int64
+		toolMs  int64
+		retries int
+	)
+	defer func() {
+		result.TimingMs = runledger.Timing{
+			ModelMs: modelMs,
+			ToolMs:  toolMs,
+			Retries: retries,
+		}
+	}()
 	reqCopy := req
 	reqCopy.SessionKey = sessionKey
 	reqCopy.Messages = append([]types.Message(nil), req.Messages...)
@@ -869,7 +897,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 					Provider:   re.Provider,
 				})
 			})
-			assistantText, resp, err := rt.invoke(attemptCtx, &invokeReq, invokeStream, invokeSink)
+			invokeStartedAt := time.Now()
+			assistantText, resp, err := rt.invoke(attemptCtx, &invokeReq, invokeStream, invokeSink, attempt)
+			modelMs += elapsedMilliseconds(invokeStartedAt)
 			if err != nil && toolProbe && err.Error() == "nil response from provider" {
 				invokeReq.Stream = built.Request.Stream
 				invokeStream = invokeReq.Stream
@@ -877,7 +907,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				if invokeStream {
 					activeStream = rt.registerActiveStream(sessionKey, attemptCancel)
 				}
-				assistantText, resp, err = rt.invoke(attemptCtx, &invokeReq, invokeStream, invokeSink)
+				invokeStartedAt = time.Now()
+				assistantText, resp, err = rt.invoke(attemptCtx, &invokeReq, invokeStream, invokeSink, attempt)
+				modelMs += elapsedMilliseconds(invokeStartedAt)
 			}
 			if activeStream != nil {
 				rt.unregisterActiveStream(sessionKey, activeStream)
@@ -910,7 +942,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 					if toolCalls := nativeToolCalls(resp); len(toolCalls) > 0 {
 						baseAssistantMsg, _ := assistantMessage(assistantText, resp)
 						for _, tc := range toolCalls {
+							toolStartedAt := time.Now()
 							assistantToolMsg, toolResultMsg, meta, execErr := rt.executeToolCall(toolExecCtx, reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, step, assistantText, baseAssistantMsg, tc, reqCopy.EventSink, result)
+							toolMs += elapsedMilliseconds(toolStartedAt)
 							workingMessages = append(workingMessages, assistantToolMsg, toolResultMsg)
 							updatePendingMutatingToolFailure(result, normalizeToolCall(reqCopy.ToolExecutor, reqCopy.PeerID, tc), meta, step)
 							if execErr != nil {
@@ -936,7 +970,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 						break
 					}
 					if ok {
+						toolStartedAt := time.Now()
 						assistantToolMsg, toolResultMsg, meta, execErr := rt.executeToolCall(toolExecCtx, reqCopy.ToolExecutor, reqCopy.PeerID, sessionKey, step, assistantText, types.Message{Role: "assistant", Content: assistantText}, *call, reqCopy.EventSink, result)
+						toolMs += elapsedMilliseconds(toolStartedAt)
 						workingMessages = append(workingMessages, assistantToolMsg, toolResultMsg)
 						updatePendingMutatingToolFailure(result, normalizeToolCall(reqCopy.ToolExecutor, reqCopy.PeerID, *call), meta, step)
 						if execErr != nil {
@@ -983,6 +1019,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				break
 			}
 			if attempt < rt.retry.MaxAttempts && rt.shouldRetry(err) {
+				retries++
 				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRetry, SessionKey: sessionKey, Attempt: attempt + 1, Step: step})
 				select {
 				case <-ctx.Done():
@@ -1034,7 +1071,7 @@ func (rt *Runtime) skillAllowlist(peerID, activeProfile string) []string {
 	return append([]string(nil), resolved.Profile.SkillsAllow...)
 }
 
-func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bool, sink *captureResponseWriter) (string, *types.ChatResponse, error) {
+func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bool, sink *captureResponseWriter, attempt int) (string, *types.ChatResponse, error) {
 	prov := rt.providerForContext(ctx)
 	if rt.hooks != nil {
 		ev, err := rt.hooks.Intercept(ctx, ops.Event{
@@ -1071,6 +1108,8 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 		"stream", stream,
 		"messages", len(req.Messages),
 	)
+	invokeStartedAt := time.Now()
+	var firstTokenAt time.Time
 	var text string
 	var resp *types.ChatResponse
 	var callErr error
@@ -1078,8 +1117,10 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 		if sink == nil {
 			return "", nil, fmt.Errorf("stream sink is required")
 		}
+		// Wrap the sink so the first Write records time-to-first-token.
+		tracker := &firstTokenTracker{ResponseWriter: sink, firstAt: &firstTokenAt}
 		var streamText string
-		streamText, callErr = prov.CompleteStream(ctx, req, sink)
+		streamText, callErr = prov.CompleteStream(ctx, req, tracker)
 		if callErr == nil {
 			text = streamText
 			resp = &types.ChatResponse{
@@ -1098,6 +1139,7 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 			}
 		}
 	}
+	rt.logLLMPerf(ctx, prov, req, stream, attempt, invokeStartedAt, firstTokenAt, resp, callErr)
 	if callErr != nil {
 		return text, nil, callErr
 	}
@@ -1109,6 +1151,67 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 		},
 	})
 	return text, resp, nil
+}
+
+// logLLMPerf emits a structured model-call performance record when perf
+// logging is enabled. Sensitive payloads (prompts, completions, tool
+// arguments, credentials) are intentionally never included.
+func (rt *Runtime) logLLMPerf(ctx context.Context, prov Provider, req *types.ChatRequest, stream bool, attempt int, startedAt, firstTokenAt time.Time, resp *types.ChatResponse, callErr error) {
+	if !rt.perfLogging {
+		return
+	}
+	attrs := []any{
+		"provider", providerNameForLog(prov, req.Model),
+		"model", req.Model,
+		"stream", stream,
+		"session", CurrentSessionKey(ctx),
+		"attempt", attempt,
+		"latency_ms", elapsedMilliseconds(startedAt),
+	}
+	if runID := types.RunIDFromContext(ctx); runID != "" {
+		attrs = append(attrs, "run_id", runID)
+	}
+	if identity := types.RequestIdentityFromContext(ctx); identity.PeerID != "" {
+		attrs = append(attrs, "peer", identity.PeerID)
+	}
+	if stream && !firstTokenAt.IsZero() {
+		ms := firstTokenAt.Sub(startedAt).Milliseconds()
+		if ms < 0 {
+			ms = 0
+		}
+		attrs = append(attrs, "first_token_ms", ms)
+	}
+	if resp != nil {
+		attrs = append(attrs,
+			"prompt_tokens", resp.Usage.PromptTokens,
+			"completion_tokens", resp.Usage.CompletionTokens,
+		)
+	}
+	if callErr != nil {
+		attrs = append(attrs, "error", redact.Error(callErr))
+	}
+	slog.Info("agent: llm perf", attrs...)
+}
+
+// firstTokenTracker wraps a stream sink and records the timestamp of the
+// first Write so time-to-first-token can be measured for streaming calls.
+// Flush is forwarded so the provider's SSE flushing keeps working.
+type firstTokenTracker struct {
+	http.ResponseWriter
+	firstAt *time.Time
+}
+
+func (w *firstTokenTracker) Write(b []byte) (int, error) {
+	if w.firstAt != nil && w.firstAt.IsZero() {
+		*w.firstAt = time.Now()
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *firstTokenTracker) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 func (rt *Runtime) providerForContext(ctx context.Context) Provider {

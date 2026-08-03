@@ -341,7 +341,7 @@ func (o *Orchestrator) recordTerminal(run *Run, status runledger.RunStatus, errM
 		finishedAt = time.Now().UTC()
 	}
 	ledger.LedgerMetadata(snapshot.ID, snapshot.ParentRunID, totalToolCalls(snapshot.Children))
-	ledger.LedgerFinished(snapshot.ID, finishedAt, string(status), errMsg, totalSteps(snapshot.Children), 0, 0)
+	ledger.LedgerFinished(snapshot.ID, finishedAt, string(status), errMsg, totalSteps(snapshot.Children), 0, 0, runledger.Timing{})
 }
 
 func totalSteps(children []ChildResult) int {

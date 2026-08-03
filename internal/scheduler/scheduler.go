@@ -278,7 +278,7 @@ func (s *Scheduler) recordSkip(job *Job, reason string) {
 		slog.Warn("cron: failed to write skipped run record", "job", job.JobID, "error", err)
 	}
 	if s.runLedger != nil {
-		_ = s.runLedger.Add(runledger.Record{
+		rec := runledger.Record{
 			ID:         rec.RunID,
 			Kind:       runledger.KindCron,
 			PeerID:     job.PeerID,
@@ -288,7 +288,9 @@ func (s *Scheduler) recordSkip(job *Job, reason string) {
 			QueuedAt:   rec.StartedAt,
 			StartedAt:  &rec.StartedAt,
 			FinishedAt: &rec.EndedAt,
-		})
+		}
+		rec.Timing = runledger.CompleteTiming(rec, runledger.Timing{})
+		_ = s.runLedger.Add(rec)
 	}
 }
 
@@ -325,7 +327,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job *Job, runID string) {
 		if rec.Status == RunError {
 			status = runledger.StatusErrored
 		}
-		_ = s.runLedger.Add(runledger.Record{
+		rec := runledger.Record{
 			ID:         rec.RunID,
 			Kind:       runledger.KindCron,
 			PeerID:     job.PeerID,
@@ -335,7 +337,9 @@ func (s *Scheduler) executeJob(ctx context.Context, job *Job, runID string) {
 			QueuedAt:   rec.StartedAt,
 			StartedAt:  &rec.StartedAt,
 			FinishedAt: &rec.EndedAt,
-		})
+		}
+		rec.Timing = runledger.CompleteTiming(rec, runledger.Timing{})
+		_ = s.runLedger.Add(rec)
 	}
 
 	// Reload the current version of the job (may have changed while we ran).

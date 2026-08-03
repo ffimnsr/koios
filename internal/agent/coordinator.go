@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/ffimnsr/koios/internal/runledger"
+	"github.com/ffimnsr/koios/internal/types"
 )
 
 const (
@@ -41,6 +44,8 @@ type RunRecord struct {
 	QueuedAt   time.Time  `json:"queued_at"`
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// Timing carries the per-phase duration breakdown once the run finishes.
+	Timing *runledger.Timing `json:"timing,omitempty"`
 }
 
 type laneTask struct {
@@ -70,8 +75,9 @@ type RunLedger interface {
 	LedgerQueued(id, peerID, sessionKey, model string, queuedAt time.Time)
 	// LedgerStarted records that an async run began executing.
 	LedgerStarted(id string, startedAt time.Time)
-	// LedgerFinished records the terminal state of an async run.
-	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int)
+	// LedgerFinished records the terminal state of an async run. timing carries
+	// the per-phase measurements made by the runtime.
+	LedgerFinished(id string, finishedAt time.Time, status, errMsg string, steps, promptTokens, completionTokens int, timing runledger.Timing)
 }
 
 // Coordinator serializes runs per session key and supports queued async runs.
@@ -203,6 +209,9 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 	now := time.Now().UTC()
 	// cancel is retained on asyncRun and invoked by Cancel for caller-controlled cancellation.
 	runCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec
+	// Attach the run ID so downstream observability (e.g. model performance
+	// logging) can correlate events with this ledger record.
+	runCtx = types.WithRunID(runCtx, id)
 	run := &asyncRun{
 		record: RunRecord{
 			ID:         id,
@@ -251,6 +260,12 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 				errMsg                    string
 				steps, prompt, completion int
 			)
+			// The runtime returns a partial result even for failed/canceled runs;
+			// keep whatever timing was measured so the ledger can persist it.
+			var runTiming runledger.Timing
+			if result != nil {
+				runTiming = result.TimingMs
+			}
 			if err != nil {
 				if err == context.Canceled {
 					run.record.Status = StatusCanceled
@@ -272,9 +287,16 @@ func (c *Coordinator) Start(req RunRequest) (*RunRecord, error) {
 				}
 			}
 			run.record.FinishedAt = &finished
+			if t := runledger.CompleteTiming(runledger.Record{
+				QueuedAt:   run.record.QueuedAt,
+				StartedAt:  run.record.StartedAt,
+				FinishedAt: run.record.FinishedAt,
+			}, runTiming); t != nil {
+				run.record.Timing = t
+			}
 			close(run.done)
 			if ledger != nil {
-				ledger.LedgerFinished(id, finished, string(finalStatus), errMsg, steps, prompt, completion)
+				ledger.LedgerFinished(id, finished, string(finalStatus), errMsg, steps, prompt, completion, runTiming)
 			}
 		},
 	}

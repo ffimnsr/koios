@@ -1174,7 +1174,7 @@ func TestDashboardCommand(t *testing.T) {
 			case "waiting.list":
 				result = map[string]any{"waiting": []map[string]any{{"id": "wait-1", "title": "Vendor quote", "status": "open", "waiting_for": "vendor", "follow_up_at": float64(1777233600)}}}
 			case "runs.list":
-				result = map[string]any{"records": []map[string]any{{"id": "run-1", "kind": "cron", "status": "running", "steps": float64(2), "tool_calls": float64(1), "queued_at": "2026-04-27T08:00:00Z", "started_at": "2026-04-27T08:00:05Z"}}}
+				result = map[string]any{"records": []map[string]any{{"id": "run-1", "kind": "cron", "status": "running", "steps": float64(2), "tool_calls": float64(1), "queued_at": "2026-04-27T08:00:00Z", "started_at": "2026-04-27T08:00:05Z", "timing": map[string]any{"queue_ms": float64(500), "model_ms": float64(1200), "tool_ms": float64(300), "total_ms": float64(2500)}}}}
 			default:
 				result = map[string]any{"ok": true}
 			}
@@ -1219,6 +1219,9 @@ func TestDashboardCommand(t *testing.T) {
 	}
 	if !strings.Contains(text, "Runtime") || !strings.Contains(text, "run-1") {
 		t.Fatalf("missing runtime section in dashboard output: %s", text)
+	}
+	if !strings.Contains(text, "queue=500ms model=1.2s tools=300ms total=2.5s") {
+		t.Fatalf("missing run timing breakdown in dashboard output: %s", text)
 	}
 	if !strings.Contains(text, "Gateway: ok") {
 		t.Fatalf("missing gateway status in dashboard output: %s", text)

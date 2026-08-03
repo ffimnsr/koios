@@ -45,6 +45,7 @@ retry_attempts = %d
 retry_initial_backoff = %s
 retry_max_backoff = %s
 retry_status_codes = [%s]
+perf_logging = %t
 
 [tools]
 profile = %s

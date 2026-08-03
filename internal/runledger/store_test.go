@@ -287,3 +287,151 @@ func TestUpdateNotFound(t *testing.T) {
 		t.Error("Update on missing ID should return error")
 	}
 }
+
+func TestCompleteTiming(t *testing.T) {
+	queued := time.Now().UTC().Truncate(time.Millisecond)
+	started := queued.Add(250 * time.Millisecond)
+	finished := started.Add(2 * time.Second)
+	rec := runledger.Record{
+		QueuedAt:   queued,
+		StartedAt:  &started,
+		FinishedAt: &finished,
+	}
+
+	// Caller-measured phases only; queue/total/finalize are derived.
+	got := runledger.CompleteTiming(rec, runledger.Timing{ModelMs: 1500, ToolMs: 200, Retries: 1})
+	if got == nil {
+		t.Fatal("CompleteTiming: expected non-nil timing")
+	}
+	if got.QueueMs != 250 {
+		t.Errorf("queue_ms: want 250, got %d", got.QueueMs)
+	}
+	if got.ModelMs != 1500 || got.ToolMs != 200 {
+		t.Errorf("model/tool not preserved: %+v", got)
+	}
+	if got.TotalMs != 2250 {
+		t.Errorf("total_ms: want 2250, got %d", got.TotalMs)
+	}
+	// exec (2000) - model (1500) - tool (200) = 300ms of finalize overhead.
+	if got.FinalizeMs != 300 {
+		t.Errorf("finalize_ms: want 300, got %d", got.FinalizeMs)
+	}
+	if got.Retries != 1 {
+		t.Errorf("retries: want 1, got %d", got.Retries)
+	}
+
+	// Without caller-measured model/tool phases, finalize is not derived so
+	// unknown execution is not mislabeled as finalization overhead.
+	got = runledger.CompleteTiming(rec, runledger.Timing{})
+	if got == nil {
+		t.Fatal("CompleteTiming: expected non-nil timing")
+	}
+	if got.QueueMs != 250 || got.TotalMs != 2250 {
+		t.Errorf("derived queue/total wrong: %+v", got)
+	}
+	if got.FinalizeMs != 0 || got.ModelMs != 0 || got.ToolMs != 0 {
+		t.Errorf("finalize/model/tool should stay zero: %+v", got)
+	}
+
+	// Explicitly measured fields win over derivation.
+	got = runledger.CompleteTiming(rec, runledger.Timing{QueueMs: 10, TotalMs: 500, ModelMs: 100})
+	if got == nil {
+		t.Fatal("CompleteTiming: expected non-nil timing")
+	}
+	if got.QueueMs != 10 || got.TotalMs != 500 {
+		t.Errorf("explicit fields should win: %+v", got)
+	}
+
+	// No timestamps and no measurements → nil (legacy/short-lived runs).
+	if got := runledger.CompleteTiming(runledger.Record{}, runledger.Timing{}); got != nil {
+		t.Errorf("empty record should yield nil timing, got %+v", got)
+	}
+}
+
+func TestAdapterPersistsTimingBreakdown(t *testing.T) {
+	dir := t.TempDir()
+	s, err := runledger.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	adapter := runledger.NewCoordinatorAdapter(s)
+	queued := time.Now().UTC().Truncate(time.Millisecond)
+	adapter.LedgerQueued("run-timing", "alice", "sess", "model", queued)
+	started := queued.Add(time.Second)
+	adapter.LedgerStarted("run-timing", started)
+	finished := started.Add(3 * time.Second)
+	adapter.LedgerFinished("run-timing", finished, "completed", "", 2, 100, 50, runledger.Timing{ModelMs: 2000, ToolMs: 500, Retries: 1})
+
+	got, ok := s.Get("run-timing")
+	if !ok {
+		t.Fatal("record not found")
+	}
+	if got.Timing == nil {
+		t.Fatal("expected timing on record")
+	}
+	if got.Timing.QueueMs != 1000 {
+		t.Errorf("queue_ms: want 1000, got %d", got.Timing.QueueMs)
+	}
+	if got.Timing.ModelMs != 2000 || got.Timing.ToolMs != 500 {
+		t.Errorf("model/tool not persisted: %+v", got.Timing)
+	}
+	if got.Timing.TotalMs != 4000 {
+		t.Errorf("total_ms: want 4000, got %d", got.Timing.TotalMs)
+	}
+	// exec (3000) - model (2000) - tool (500) = 500ms finalize overhead.
+	if got.Timing.FinalizeMs != 500 {
+		t.Errorf("finalize_ms: want 500, got %d", got.Timing.FinalizeMs)
+	}
+	if got.Timing.Retries != 1 {
+		t.Errorf("retries: want 1, got %d", got.Timing.Retries)
+	}
+
+	// Legacy records written without timing stay nil.
+	if err := s.Add(runledger.Record{ID: "legacy", Kind: runledger.KindCron, PeerID: "alice", Status: runledger.StatusCompleted, QueuedAt: queued}); err != nil {
+		t.Fatalf("Add legacy: %v", err)
+	}
+	legacy, ok := s.Get("legacy")
+	if !ok {
+		t.Fatal("legacy record not found")
+	}
+	if legacy.Timing != nil {
+		t.Errorf("legacy record should have nil timing, got %+v", legacy.Timing)
+	}
+}
+
+func TestTimingSurvivesReload(t *testing.T) {
+	dir := t.TempDir()
+	s, err := runledger.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	queued := time.Now().UTC().Truncate(time.Millisecond)
+	if err := s.Add(runledger.Record{
+		ID:       "persist-timing",
+		Kind:     runledger.KindAgent,
+		PeerID:   "alice",
+		Status:   runledger.StatusCompleted,
+		QueuedAt: queued,
+		Timing:   &runledger.Timing{QueueMs: 5, ModelMs: 1200, ToolMs: 300, TotalMs: 2000, Retries: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	s2, err := runledger.New(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	got, ok := s2.Get("persist-timing")
+	if !ok {
+		t.Fatal("reopen: record not found")
+	}
+	if got.Timing == nil || got.Timing.ModelMs != 1200 || got.Timing.TotalMs != 2000 || got.Timing.Retries != 2 {
+		t.Errorf("timing not preserved across reload: %+v", got.Timing)
+	}
+}
