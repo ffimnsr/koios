@@ -1139,7 +1139,8 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 			}
 		}
 	}
-	rt.logLLMPerf(ctx, prov, req, stream, attempt, invokeStartedAt, firstTokenAt, resp, callErr)
+	finishedAt := time.Now()
+	rt.logLLMPerf(ctx, prov, req, stream, attempt, invokeStartedAt, finishedAt, firstTokenAt, resp, callErr)
 	if callErr != nil {
 		return text, nil, callErr
 	}
@@ -1155,17 +1156,28 @@ func (rt *Runtime) invoke(ctx context.Context, req *types.ChatRequest, stream bo
 
 // logLLMPerf emits a structured model-call performance record when perf
 // logging is enabled. Sensitive payloads (prompts, completions, tool
-// arguments, credentials) are intentionally never included.
-func (rt *Runtime) logLLMPerf(ctx context.Context, prov Provider, req *types.ChatRequest, stream bool, attempt int, startedAt, firstTokenAt time.Time, resp *types.ChatResponse, callErr error) {
+// arguments, credentials) are intentionally never included. Koios does not
+// model per-turn IDs, so session key plus run_id (for async runs) are the
+// correlation keys; the aggregated per-run model/tool durations reported to
+// the run ledger are measured from the same start/end timestamps emitted here.
+func (rt *Runtime) logLLMPerf(ctx context.Context, prov Provider, req *types.ChatRequest, stream bool, attempt int, startedAt, finishedAt, firstTokenAt time.Time, resp *types.ChatResponse, callErr error) {
 	if !rt.perfLogging {
 		return
 	}
+	op := "complete"
+	if stream {
+		op = "stream"
+	}
 	attrs := []any{
+		"op", op,
 		"provider", providerNameForLog(prov, req.Model),
 		"model", req.Model,
 		"stream", stream,
 		"session", CurrentSessionKey(ctx),
 		"attempt", attempt,
+		"ok", callErr == nil,
+		"started_at", startedAt.UTC().Format(time.RFC3339Nano),
+		"finished_at", finishedAt.UTC().Format(time.RFC3339Nano),
 		"latency_ms", elapsedMilliseconds(startedAt),
 	}
 	if runID := types.RunIDFromContext(ctx); runID != "" {

@@ -185,6 +185,9 @@ func (r *Runtime) execute(ctx context.Context, id string, req SpawnRequest, pare
 			r.onAgentEvent(id, ev)
 		},
 	}
+	// Correlate the underlying agent run's model performance logs with this
+	// subagent run's ledger record.
+	ctx = types.WithRunID(ctx, id)
 	result, err := r.agent.Run(ctx, runtimeReq)
 	now := time.Now().UTC()
 	r.mu.Lock()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -499,13 +500,109 @@ func TestRuntime_PerfLoggingGatedByConfig(t *testing.T) {
 	if !strings.Contains(out, "agent: llm perf") {
 		t.Fatalf("expected perf log record, got: %s", out)
 	}
-	for _, want := range []string{"provider=openrouter", "model=model", "attempt=1", "latency_ms=", "prompt_tokens=3", "completion_tokens=2"} {
+	for _, want := range []string{
+		"op=complete",
+		"provider=openrouter",
+		"model=model",
+		"attempt=1",
+		"ok=true",
+		"started_at=",
+		"finished_at=",
+		"latency_ms=",
+		"prompt_tokens=3",
+		"completion_tokens=2",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("perf log missing %q: %s", want, out)
 		}
 	}
 	if strings.Contains(out, "hello") {
 		t.Errorf("perf log must not include request payloads: %s", out)
+	}
+}
+
+func TestRuntime_PerfLogRedactsSensitiveErrors(t *testing.T) {
+	store := session.New(20)
+	const leakedToken = "sk_abcdefghijklmnopqrstuvwxyz"
+	prov := &stubProvider{
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			return nil, fmt.Errorf("upstream 401: invalid api key %s", leakedToken)
+		},
+	}
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(oldLogger)
+
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetPerfLogging(true)
+	_, err := rt.Run(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("expected provider error")
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, "agent: llm perf") {
+		t.Fatalf("expected perf log record, got: %s", out)
+	}
+	if strings.Contains(out, leakedToken) {
+		t.Errorf("perf log leaked credential token: %s", out)
+	}
+	if !strings.Contains(out, "[REDACTED]") {
+		t.Errorf("perf log error not redacted: %s", out)
+	}
+	if !strings.Contains(out, "ok=false") {
+		t.Errorf("perf log should mark the failed call ok=false: %s", out)
+	}
+}
+
+func TestRuntime_PerfLogStreamingFirstToken(t *testing.T) {
+	store := session.New(20)
+	prov := &stubProvider{
+		stream: func(_ context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
+			// Simulate a slow first token, then a quick remainder.
+			time.Sleep(80 * time.Millisecond)
+			_, _ = w.Write([]byte("data: {\"id\":\"1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"first \"}}]}\n\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			time.Sleep(40 * time.Millisecond)
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return "first token", nil
+		},
+	}
+	var logBuf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	defer slog.SetDefault(oldLogger)
+
+	rt := agent.NewRuntime(store, prov, "model", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+	rt.SetPerfLogging(true)
+	res, err := rt.RunStream(context.Background(), agent.RunRequest{
+		PeerID:   "peer",
+		Scope:    agent.ScopeMain,
+		Messages: []types.Message{{Role: "user", Content: "hello"}},
+		Stream:   true,
+	}, newProbeStreamWriter())
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	out := logBuf.String()
+	if !strings.Contains(out, "agent: llm perf") {
+		t.Fatalf("expected perf log record, got: %s", out)
+	}
+	if !strings.Contains(out, "op=stream") {
+		t.Errorf("perf log missing operation type: %s", out)
+	}
+	if !strings.Contains(out, "first_token_ms=") {
+		t.Errorf("perf log missing first-token latency: %s", out)
+	}
+	// Streaming model time must also feed the run-level timing aggregates.
+	if res == nil || res.TimingMs.ModelMs <= 0 {
+		t.Errorf("expected measured model time for streamed run, got %+v", res.TimingMs)
 	}
 }
 

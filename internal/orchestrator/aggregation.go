@@ -105,7 +105,7 @@ func (o *Orchestrator) aggregateReducer(ctx context.Context, run *Run, req FanOu
 	task := fmt.Sprintf("%s\n\nChild results:\n\n%s", prompt, labeled)
 
 	sessionKey := fmt.Sprintf("%s::orchestrator-reducer::%s", req.PeerID, run.ID)
-	result, err := o.agentRT.Run(ctx, agent.RunRequest{
+	result, err := o.agentRT.Run(types.WithRunID(ctx, run.ID), agent.RunRequest{
 		PeerID:     req.PeerID,
 		Scope:      agent.ScopeIsolated,
 		SessionKey: sessionKey,
@@ -204,7 +204,7 @@ func (o *Orchestrator) aggregateVote(ctx context.Context, run *Run, req FanOutRe
 			top1, top2,
 		)
 		sessionKey := fmt.Sprintf("%s::orchestrator-tiebreaker::%s", req.PeerID, run.ID)
-		result, err := o.agentRT.Run(ctx, agent.RunRequest{
+		result, err := o.agentRT.Run(types.WithRunID(ctx, run.ID), agent.RunRequest{
 			PeerID:     req.PeerID,
 			Scope:      agent.ScopeIsolated,
 			SessionKey: sessionKey,
