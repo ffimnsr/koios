@@ -403,3 +403,516 @@ This file is a merged checklist for the feature gap between Koios and the refere
 - [-] Config env substitution and richer secret handling (DON'T IMPLEMENT only need config)
 	- Research notes: OpenClaw is the clearest direct reference because secret inputs and config validation are already first-class. PicoClaw is also useful because it splits security config from app config. IronClaw has the strongest typed secrets subsystem and config resolution stack if Koios wants richer secret references and validation.
 	- References: OpenClaw `src/config/types.secrets.ts`, `src/config/zod-schema.ts`; PicoClaw `docs/security_configuration.md`, `docs/configuration.md`; IronClaw `src/config/mod.rs`, `src/secrets/*`.
+
+## MCP SDK Migration Plan
+
+Goal: replace Koios' hand-rolled MCP client transport and protocol implementation with the official `github.com/modelcontextprotocol/go-sdk` while preserving Koios' existing manager, registry, tool-prefixing, handler, and runtime behavior.
+
+Overview: migrate behind the existing `internal/mcp.Client` boundary first, keep `internal/mcp.Manager` as the orchestration layer, add SDK-backed tests for every supported transport and MCP asset type, then remove the legacy stdio/http JSON-RPC implementations after parity is proven.
+
+### Phase 1 — Add the official MCP SDK behind Koios' existing client boundary
+
+Goal: introduce the official SDK dependency and a new SDK-backed client implementation without changing handler, registry, or runtime call sites.
+
+Overview: keep Koios-facing types and the `Client` interface stable, add conversion helpers between SDK types and Koios types, and implement stdio tool listing/calling first so the smallest useful path is testable.
+
+Rules:
+- Keep `internal/mcp.Manager` behavior unchanged in this phase.
+- Keep Koios-facing structs in `internal/mcp/client.go` so SDK types do not leak into handlers or agent runtime code.
+- Add only the official `github.com/modelcontextprotocol/go-sdk` dependency for MCP protocol support.
+- Do not add a config feature flag or legacy fallback path; the SDK adapter should become the implementation once tests pass.
+- Do not delete `internal/mcp/stdio.go` or `internal/mcp/http.go` in this phase.
+- Use `context.Context` for all SDK connection and request operations.
+- Wrap SDK errors with Koios server names and operation names using `%w`.
+
+- [ ] Add the official MCP Go SDK dependency.
+	- [ ] Add `github.com/modelcontextprotocol/go-sdk` to `go.mod`.
+	- [ ] Run module resolution so `go.sum` contains the SDK checksums.
+	- [ ] Ensure no unrelated dependency is added as a direct requirement.
+- [ ] Add `internal/mcp/sdk_client.go`.
+	- [ ] Define an unexported `sdkClient` type that implements the existing `internal/mcp.Client` interface.
+		- [ ] Store the MCP server runtime name.
+		- [ ] Store the original `config.MCPServerConfig`.
+		- [ ] Store the parsed per-request timeout.
+		- [ ] Store the SDK client/session state needed to make requests after initialization.
+		- [ ] Store a close function or transport/session handle so `Close` shuts down subprocesses and network resources.
+		- [ ] Protect mutable session and notification state with a mutex when the SDK state is not explicitly concurrency-safe.
+	- [ ] Add `NewSDKClient(c config.MCPServerConfig) Client`.
+		- [ ] Parse `c.Timeout` using the same default behavior as the existing factory.
+		- [ ] Normalize `c.Transport` using the existing accepted values: `stdio` and `http`.
+		- [ ] Return a client that delays network or subprocess startup until `Initialize`.
+		- [ ] Return an SDK client instance for both supported transports without adding a legacy compatibility branch.
+- [ ] Implement SDK-backed stdio initialization.
+	- [ ] Build the SDK command transport from `MCPServerConfig.Command` and `MCPServerConfig.Args`.
+	- [ ] Pass `MCPServerConfig.Env` to the subprocess transport.
+	- [ ] Preserve current stderr handling semantics by ensuring server stderr is not parsed as MCP JSON-RPC stdout.
+	- [ ] Connect the SDK client during `Initialize`.
+	- [ ] Store the connected SDK session on the `sdkClient` instance.
+	- [ ] Make repeated `Initialize` calls idempotent for an already-connected session.
+	- [ ] Return a contextual error when `Initialize` is called for `stdio` with an empty command.
+	- [ ] Ensure `Close` terminates the stdio session and subprocess resources.
+	- [ ] Ensure `Close` clears the stored SDK session state.
+- [ ] Implement SDK-to-Koios conversion helpers for tool support.
+	- [ ] Add `fromSDKTool` to convert SDK tool metadata into `mcp.Tool`.
+		- [ ] Preserve `name`.
+		- [ ] Preserve `title` when available.
+		- [ ] Preserve `description`.
+		- [ ] Preserve `inputSchema` as `json.RawMessage`.
+		- [ ] Preserve `outputSchema` as `json.RawMessage` when available.
+		- [ ] Preserve `annotations` as `json.RawMessage` when available.
+	- [ ] Add `fromSDKToolResult` to convert SDK tool call results into `mcp.ToolResult`.
+		- [ ] Preserve text content blocks.
+		- [ ] Preserve image, audio, blob, and resource content blocks when exposed by the SDK.
+		- [ ] Preserve `mimeType`, `uri`, `blob`, `data`, `resource`, and `annotations` fields when present.
+		- [ ] Preserve `structuredContent` when exposed by the SDK.
+		- [ ] Preserve `isError`.
+		- [ ] Preserve raw extension fields needed by Koios when SDK types expose or retain them.
+- [ ] Implement `ListTools` using the SDK session.
+	- [ ] Return an error when `ListTools` is called before successful initialization.
+	- [ ] Request all tool pages through the SDK API.
+	- [ ] Convert all SDK tools into Koios `Tool` values.
+	- [ ] Reuse `filterValidTools` before returning tools.
+	- [ ] Wrap listing errors as `mcp sdk <server>: tools/list: <err>`.
+- [ ] Implement `CallTool` and basic `CallToolWithInput`.
+	- [ ] Return an error when tool calls are attempted before successful initialization.
+	- [ ] Marshal `map[string]any` arguments into the SDK call parameter shape.
+	- [ ] Call the SDK tool invocation method.
+	- [ ] Convert the SDK result to Koios `ToolResult`.
+	- [ ] Return normal tool errors through the existing `ToolResult.IsError` behavior when the SDK represents tool failures as successful MCP responses.
+	- [ ] Return transport and protocol errors as Go errors.
+	- [ ] Implement `CallToolWithInput` as the same basic path when `inputResponses` and `requestState` are nil.
+- [ ] Add stdio SDK client tests.
+	- [ ] Add a fake stdio MCP server test fixture that uses the official SDK server APIs.
+	- [ ] Test that `Initialize` connects to the fake stdio server.
+	- [ ] Test that calling `Initialize` twice does not create a second active session.
+	- [ ] Test that `ListTools` returns a valid Koios `Tool`.
+	- [ ] Test that invalid tools are filtered the same way as the legacy client.
+	- [ ] Test that `CallTool` returns text content from a fake tool.
+	- [ ] Test that `CallTool` preserves `IsError` for tool-level failures.
+	- [ ] Test that calling `ListTools` before `Initialize` returns an error.
+	- [ ] Test that calling `CallTool` before `Initialize` returns an error.
+	- [ ] Test that `Close` can be called after successful initialization.
+	- [ ] Test that `Close` can be called after failed initialization without panic or leaked state.
+
+Acceptance criteria:
+- [ ] `go test ./internal/mcp` passes with the SDK dependency added.
+- [ ] The new SDK stdio client satisfies the existing `internal/mcp.Client` interface at compile time.
+- [ ] No handler, registry, browser, extension, or agent runtime call site imports the official SDK directly.
+- [ ] Existing legacy stdio/http files remain present until later parity phases.
+
+### Phase 2 — Add Streamable HTTP support with Koios header behavior
+
+Goal: implement SDK-backed HTTP MCP connections while preserving Koios' configured header and timeout behavior.
+
+Overview: support `transport = "http"` through the SDK adapter, keep `MCPServerConfig.Headers` semantics, and test that headers reach the server on initialize, list, and call requests.
+
+Rules:
+- Preserve `MCPServerConfig.Headers` exactly as configured.
+- Preserve per-request timeout behavior from `MCPServerConfig.Timeout`.
+- Keep `sse` rejected in validation; do not reintroduce deprecated SSE transport support.
+- Preserve existing per-tool dynamic header behavior when it is currently implemented by Koios.
+- Implement a custom SDK transport using `github.com/modelcontextprotocol/go-sdk/jsonrpc` only if the official SDK HTTP transport cannot attach required headers.
+
+- [ ] Implement SDK-backed HTTP initialization.
+	- [ ] Create the SDK Streamable HTTP transport from `MCPServerConfig.URL`.
+	- [ ] Attach `MCPServerConfig.Headers` to every SDK HTTP request.
+	- [ ] Apply the parsed timeout to HTTP requests.
+	- [ ] Connect the SDK client during `Initialize`.
+	- [ ] Store the connected SDK session on the `sdkClient` instance.
+	- [ ] Make repeated `Initialize` calls idempotent for an already-connected session.
+	- [ ] Return a contextual error when `Initialize` is called for `http` with an empty URL.
+	- [ ] Make `Close` release HTTP transport and session resources.
+- [ ] Preserve static configured HTTP headers.
+	- [ ] Send configured headers on initialization.
+	- [ ] Send configured headers on `tools/list`.
+	- [ ] Send configured headers on `tools/call`.
+	- [ ] Send configured headers on `resources/list`.
+	- [ ] Send configured headers on `resources/read`.
+	- [ ] Send configured headers on `prompts/list`.
+	- [ ] Send configured headers on `prompts/get`.
+- [ ] Preserve per-tool argument-derived headers when invoking HTTP tools.
+	- [ ] Move the existing dynamic header extraction logic into SDK-compatible request construction.
+	- [ ] Apply dynamic headers only to `tools/call` requests.
+	- [ ] Ensure configured static headers are still present when dynamic headers are added.
+	- [ ] Ensure dynamic headers override static headers only when the existing legacy client already allowed that behavior.
+	- [ ] Ensure invalid header names are rejected or skipped consistently with the current validation behavior.
+- [ ] Add HTTP SDK client tests.
+	- [ ] Add an in-process HTTP MCP test server using the official SDK server APIs or a minimal MCP-compatible handler.
+	- [ ] Test that `Initialize` connects over HTTP.
+	- [ ] Test that calling `Initialize` twice over HTTP does not create a second active session.
+	- [ ] Test that `ListTools` works over HTTP.
+	- [ ] Test that `CallTool` works over HTTP.
+	- [ ] Test that static headers are present on initialization.
+	- [ ] Test that static headers are present on tool listing.
+	- [ ] Test that static headers are present on tool calls.
+	- [ ] Test that static headers are present on resource requests.
+	- [ ] Test that static headers are present on prompt requests.
+	- [ ] Test that per-tool dynamic headers are present on tool calls.
+	- [ ] Test that invalid per-tool dynamic header names do not produce unsafe HTTP requests.
+	- [ ] Test that the configured timeout is applied to a delayed server response.
+	- [ ] Test that failed HTTP responses return contextual Go errors.
+
+Acceptance criteria:
+- [ ] `go test ./internal/mcp` passes for both stdio and HTTP SDK-backed clients.
+- [ ] `MCPServerConfig.Headers` behavior is covered by automated tests.
+- [ ] `ValidateServerConfig` still rejects `sse`.
+- [ ] No HTTP behavior required by existing tests is dropped.
+
+### Phase 3 — Implement resources, resource templates, prompts, and result caching compatibility
+
+Goal: complete SDK-backed support for non-tool MCP assets used by Koios.
+
+Overview: implement resources and prompts through the SDK adapter while preserving manager-level cache behavior and existing handler APIs.
+
+Rules:
+- Keep cache ownership in `internal/mcp.Manager`.
+- Keep `ReadResource` TTL caching behavior in the manager.
+- Convert SDK asset types into Koios types before returning them from `Client`.
+- Treat resources and prompts as optional capabilities, preserving current manager behavior when a server does not support them.
+- Preserve opaque JSON fields rather than normalizing away information Koios already surfaces.
+
+- [ ] Implement `ListResources`.
+	- [ ] Return an error when `ListResources` is called before successful initialization.
+	- [ ] Call the SDK resources list API.
+	- [ ] Convert each SDK resource into Koios `Resource`.
+		- [ ] Preserve `uri`.
+		- [ ] Preserve `name`.
+		- [ ] Preserve `title`.
+		- [ ] Preserve `description`.
+		- [ ] Preserve `mimeType`.
+		- [ ] Preserve `size` when available.
+		- [ ] Preserve `annotations` when available.
+	- [ ] Return unsupported-capability errors in a form that `isOptionalCapabilityError` recognizes.
+- [ ] Implement `ListResourceTemplates`.
+	- [ ] Return an error when `ListResourceTemplates` is called before successful initialization.
+	- [ ] Call the SDK resource template list API.
+	- [ ] Convert each SDK resource template into Koios `ResourceTemplate`.
+		- [ ] Preserve `uriTemplate`.
+		- [ ] Preserve `name`.
+		- [ ] Preserve `title`.
+		- [ ] Preserve `description`.
+		- [ ] Preserve `mimeType`.
+		- [ ] Preserve `annotations` when available.
+	- [ ] Return unsupported-capability errors in a form that `isOptionalCapabilityError` recognizes.
+- [ ] Implement `ReadResource`.
+	- [ ] Return an error when `ReadResource` is called before successful initialization.
+	- [ ] Call the SDK resource read API.
+	- [ ] Convert returned contents into Koios `ResourceContent`.
+		- [ ] Preserve text contents.
+		- [ ] Preserve blob contents.
+		- [ ] Preserve `uri`.
+		- [ ] Preserve `name`.
+		- [ ] Preserve `mimeType`.
+		- [ ] Preserve `annotations` when available.
+	- [ ] Preserve `ttlMs` and `cacheScope` when exposed by the SDK or raw response metadata.
+	- [ ] Return a Koios `ResourceReadResult` compatible with manager caching.
+- [ ] Implement `ListPrompts`.
+	- [ ] Return an error when `ListPrompts` is called before successful initialization.
+	- [ ] Call the SDK prompts list API.
+	- [ ] Convert each SDK prompt into Koios `Prompt`.
+		- [ ] Preserve `name`.
+		- [ ] Preserve `title`.
+		- [ ] Preserve `description`.
+		- [ ] Preserve arguments.
+		- [ ] Preserve argument `required` flags.
+- [ ] Implement `GetPrompt`.
+	- [ ] Return an error when `GetPrompt` is called before successful initialization.
+	- [ ] Call the SDK prompt get API with the provided argument map.
+	- [ ] Convert returned prompt messages into Koios `PromptMessage`.
+	- [ ] Convert prompt message content into Koios `Content`.
+	- [ ] Preserve `description`.
+	- [ ] Preserve `ttlMs` and `cacheScope` when exposed by the SDK or raw response metadata.
+- [ ] Add asset conversion tests.
+	- [ ] Test resource listing conversion.
+	- [ ] Test resource template listing conversion.
+	- [ ] Test resource read conversion for text content.
+	- [ ] Test resource read conversion for blob content.
+	- [ ] Test resource read TTL metadata reaches `ResourceReadResult`.
+	- [ ] Test prompt listing conversion.
+	- [ ] Test prompt argument conversion.
+	- [ ] Test prompt get message conversion.
+- [ ] Add manager compatibility tests for SDK-backed assets.
+	- [ ] Test `Manager.ListResources` returns cached resources after startup.
+	- [ ] Test `Manager.ListResourceTemplates` returns cached templates after startup.
+	- [ ] Test `Manager.ReadResource` caches a TTL-backed resource read.
+	- [ ] Test `Manager.ListPrompts` returns cached prompts after startup.
+	- [ ] Test `Manager.GetPrompt` resolves a prompt through the SDK-backed client.
+	- [ ] Test servers without resource support still connect when tools are available.
+	- [ ] Test servers without prompt support still connect when tools are available.
+
+Acceptance criteria:
+- [ ] `go test ./internal/mcp` passes with SDK-backed tools, resources, resource templates, and prompts.
+- [ ] Manager cache behavior remains covered by automated tests.
+- [ ] Optional MCP capabilities remain optional.
+- [ ] Koios-facing asset structs remain stable for handler consumers.
+
+### Phase 4 — Implement notifications, cancellation, and manager invalidation behavior
+
+Goal: preserve Koios' runtime freshness behavior for changing MCP tools, resources, and prompts.
+
+Overview: convert SDK notification or callback behavior into Koios' existing `Notification` channel so `internal/mcp.Manager.consumeNotifications` can remain the central invalidation path.
+
+Rules:
+- Keep `Manager.consumeNotifications` and `Manager.applyNotification` as the owner of cache invalidation.
+- Convert SDK notifications into Koios `Notification` values.
+- Keep notification listening tied to the manager listener context.
+- Ensure listener shutdown happens when a server is stopped, removed, updated, or the manager closes.
+- Preserve cancellation support through the existing `Client.Cancel` method.
+
+- [ ] Implement `Listen` on the SDK client.
+	- [ ] Return a receive-only channel of Koios `Notification`.
+	- [ ] Start SDK notification handling only after the client is initialized.
+	- [ ] Forward `notifications/tools/list_changed`.
+	- [ ] Forward `notifications/resources/list_changed`.
+	- [ ] Forward `notifications/resources/updated`.
+	- [ ] Forward `notifications/prompts/list_changed`.
+	- [ ] Preserve raw notification params as `json.RawMessage`.
+	- [ ] Close the notification channel when the listener context is canceled.
+	- [ ] Close the notification channel when the SDK session closes.
+	- [ ] Return a contextual error when `Listen` is called before initialization.
+- [ ] Preserve manager invalidation behavior.
+	- [ ] Test `notifications/tools/list_changed` clears cached tools and marks the server cache stale.
+	- [ ] Test `notifications/resources/list_changed` clears cached resources, templates, and resource reads.
+	- [ ] Test `notifications/resources/updated` clears only the matching cached resource read when a URI is present.
+	- [ ] Test `notifications/resources/updated` clears all resource reads when the URI is missing or invalid.
+	- [ ] Test `notifications/prompts/list_changed` clears cached prompts.
+- [ ] Implement `Cancel`.
+	- [ ] Send MCP cancellation through the official SDK when the SDK exposes a cancellation API.
+	- [ ] Use the SDK JSON-RPC layer to send the cancellation notification when no typed API exists.
+	- [ ] Preserve Koios' existing method-level behavior by accepting `requestID any` and `reason string`.
+	- [ ] Wrap cancellation errors with server and request ID context.
+	- [ ] Return a contextual error when `Cancel` is called before initialization.
+- [ ] Add cancellation tests.
+	- [ ] Test `Cancel` sends a cancellation notification with the request ID.
+	- [ ] Test `Cancel` includes the cancellation reason.
+	- [ ] Test `Cancel` returns a contextual error when the server/session is closed.
+- [ ] Add listener lifecycle tests.
+	- [ ] Test `StopServer` cancels the listener.
+	- [ ] Test `RemoveServer` cancels the listener.
+	- [ ] Test `UpdateServer` cancels the previous listener before reconnecting.
+	- [ ] Test `Manager.Close` cancels all listeners.
+
+Acceptance criteria:
+- [ ] `go test ./internal/mcp` passes with SDK-backed notification forwarding.
+- [ ] Existing manager invalidation tests pass or are replaced by equivalent SDK-backed tests.
+- [ ] Cancellation behavior is covered by automated tests.
+- [ ] Listener goroutines terminate when servers are stopped, removed, updated, or closed.
+
+### Phase 5 — Implement MRTR and elicitation-compatible tool calls
+
+Goal: preserve Koios' `CallToolWithInput` behavior for input-required MCP tool flows.
+
+Overview: map Koios' `inputResponses` and `requestState` fields into the SDK request path, preserve input-required result metadata, and keep handler-level retry behavior unchanged.
+
+Rules:
+- Preserve the existing `CallToolWithInput` signature.
+- Preserve Koios result fields needed by `mcp.call`.
+- Do not drop opaque `requestState`.
+- Keep input-required support testable without live external MCP servers.
+- Use raw JSON extension fields when the SDK does not expose typed fields.
+
+- [ ] Implement non-nil `inputResponses` support.
+	- [ ] Validate that non-empty `inputResponses` contains valid JSON before sending the request.
+	- [ ] Include `inputResponses` in the SDK tool call request when provided.
+	- [ ] Preserve `inputResponses` as opaque JSON.
+	- [ ] Reject malformed `inputResponses` with a contextual error before sending the request.
+- [ ] Implement non-nil `requestState` support.
+	- [ ] Validate that non-empty `requestState` contains valid JSON before sending the request.
+	- [ ] Include `requestState` in the SDK tool call request when provided.
+	- [ ] Preserve `requestState` as opaque JSON.
+	- [ ] Reject malformed `requestState` with a contextual error before sending the request.
+- [ ] Preserve input-required result fields.
+	- [ ] Populate `ToolResult.ResultType` when the server returns an input-required result.
+	- [ ] Populate `ToolResult.RequestID` when present.
+	- [ ] Populate `ToolResult.RequestState` when present.
+	- [ ] Populate `ToolResult.Elicitation` when present.
+	- [ ] Populate `ToolResult.TTLMs` when present.
+	- [ ] Populate `ToolResult.CacheScope` when present.
+- [ ] Add MRTR unit tests.
+	- [ ] Test a tool call that returns `resultType = "input_required"`.
+	- [ ] Test that `requestId` is preserved.
+	- [ ] Test that `requestState` is preserved exactly.
+	- [ ] Test that `elicitation` is preserved exactly.
+	- [ ] Test a follow-up tool call with `inputResponses`.
+	- [ ] Test a follow-up tool call with both `inputResponses` and `requestState`.
+	- [ ] Test malformed `inputResponses` returns an error without making a tool call.
+	- [ ] Test malformed `requestState` returns an error without making a tool call.
+- [ ] Add handler integration tests for MRTR preservation.
+	- [ ] Test `mcp.call` passes `input_responses` into `Manager.CallToolResultWithInput`.
+	- [ ] Test `mcp.call` passes `request_state` into `Manager.CallToolResultWithInput`.
+	- [ ] Test returned input-required metadata is visible in the handler response.
+
+Acceptance criteria:
+- [ ] `go test ./internal/mcp ./internal/handler` passes with MRTR coverage.
+- [ ] Existing `mcp.call` behavior remains compatible with input-required results.
+- [ ] Opaque request state and elicitation JSON round-trip unchanged.
+
+### Phase 6 — Switch the default MCP client factory to the SDK adapter
+
+Goal: make all configured MCP servers use the official SDK adapter by default.
+
+Overview: replace the old factory implementation with `NewSDKClient`, keep config validation unchanged, and run the full MCP/handler integration suite against the SDK path.
+
+Rules:
+- Do not add a runtime config switch for legacy MCP clients.
+- Keep `ValidateServerConfig` behavior unchanged unless tests prove a necessary SDK compatibility adjustment.
+- Keep static, extension, and user-managed server merge behavior unchanged.
+- Keep runtime tool prefix behavior unchanged.
+- Keep `Manager` as the owner of server status, cache state, runtime names, and source-layer merging.
+
+- [ ] Replace `newClient` in `internal/mcp/manager.go`.
+	- [ ] Return `NewSDKClient(c)` for all supported transports.
+	- [ ] Keep timeout parsing inside `NewSDKClient`.
+	- [ ] Remove direct calls to `NewStdioClient` and `NewHTTPClient` from the factory.
+- [ ] Update manager startup tests to use the SDK default path.
+	- [ ] Test static configured stdio servers connect through `Manager.Start`.
+	- [ ] Test static configured HTTP servers connect through `Manager.Start`.
+	- [ ] Test extension-provided MCP servers connect through `Manager.Start`.
+	- [ ] Test user-managed MCP servers connect through `Manager.AddServer`.
+	- [ ] Test disabled servers are skipped.
+	- [ ] Test failed servers record `LastError` and do not prevent other servers from starting.
+- [ ] Update handler MCP tests to use the SDK default path where practical.
+	- [ ] Test `mcp.server.list` includes SDK-connected server status.
+	- [ ] Test `mcp.server.test` succeeds against a fake SDK-backed MCP server.
+	- [ ] Test `mcp.server.enable` adds a user-managed server to the runtime manager.
+	- [ ] Test `mcp.server.disable` removes a user-managed server from the runtime manager.
+	- [ ] Test `mcp.search` returns SDK-discovered tools, resources, templates, and prompts.
+	- [ ] Test `mcp.call` invokes an SDK-discovered tool.
+- [ ] Preserve tool-prefix compatibility.
+	- [ ] Test `ToolPrefix` still returns `mcp__<server>__`.
+	- [ ] Test `ToolName` still returns `mcp__<server>__<tool>`.
+	- [ ] Test `PluginToolPrefix` remains unchanged.
+	- [ ] Test `ParseToolName` parses existing prefixed tool names.
+	- [ ] Test handler tool definitions expose prefixed SDK-discovered tool names.
+
+Acceptance criteria:
+- [ ] `go test ./internal/mcp ./internal/mcpregistry ./internal/handler` passes with the SDK adapter as the default factory.
+- [ ] No production code path creates `NewStdioClient` or `NewHTTPClient`.
+- [ ] Static, extension, and user-managed MCP server paths all use the SDK adapter.
+- [ ] Runtime tool names remain backward-compatible.
+
+### Phase 7 — Remove legacy MCP transport and JSON-RPC implementation
+
+Goal: delete the hand-rolled stdio/http JSON-RPC client code after SDK parity is covered.
+
+Overview: remove obsolete transport files and local JSON-RPC helper code while retaining Koios-facing protocol structs, manager orchestration, validation, and conversion helpers.
+
+Rules:
+- Delete all Koios-owned legacy MCP transport, protocol, and handshake compatibility code made obsolete by the official SDK.
+- Keep only Koios-facing types that handlers, manager, tests, or registry code still use as stable internal DTOs.
+- Keep validation and merge logic owned by Koios.
+- Keep tests behavior-focused rather than tied to exact SDK error text.
+- Do not keep a legacy fallback client, feature flag, compatibility shim, or duplicate JSON-RPC path after the SDK-backed path is the default.
+- Do not keep deprecated MCP protocol branches in Koios code when the official SDK owns protocol-version negotiation.
+
+- [ ] Delete legacy stdio client implementation.
+	- [ ] Remove `internal/mcp/stdio.go`.
+	- [ ] Remove tests that only verify legacy pending-map or scanner internals.
+	- [ ] Replace removed legacy-specific tests with SDK behavior tests when coverage would otherwise be lost.
+- [ ] Delete legacy HTTP client implementation.
+	- [ ] Remove `internal/mcp/http.go`.
+	- [ ] Remove tests that only verify legacy raw HTTP JSON-RPC internals.
+	- [ ] Keep or replace tests for configured headers, timeouts, and tool calls.
+- [ ] Trim obsolete JSON-RPC helpers from `internal/mcp/client.go`.
+	- [ ] Remove `rpcRequest` if no longer used.
+	- [ ] Remove `rpcResponse` if no longer used.
+	- [ ] Remove `rpcError` if no longer used.
+	- [ ] Remove legacy initialize/discover parameter structs if no longer used.
+	- [ ] Keep Koios-facing MCP asset/result structs.
+	- [ ] Keep protocol constants that are still shown in status or tests.
+- [ ] Remove Koios-owned legacy handshake and protocol compatibility shims.
+	- [ ] Remove `legacyProtocolVersion` if it is no longer referenced by SDK-backed code.
+	- [ ] Remove legacy `initialize` parameter/result helpers if SDK negotiation owns initialization.
+	- [ ] Remove Koios-owned `server/discover` fallback logic if SDK negotiation owns discovery and initialization.
+	- [ ] Remove `notifications/initialized` compatibility notification construction if SDK initialization owns it.
+	- [ ] Remove method-not-found fallback handling that existed only to switch between legacy and modern handshakes.
+	- [ ] Remove tests that assert Koios' old legacy-handshake fallback behavior.
+	- [ ] Replace removed fallback tests with SDK negotiation behavior tests where coverage is still needed.
+- [ ] Remove unreachable legacy helper functions.
+	- [ ] Remove old encode/decode helpers that only supported legacy clients.
+	- [ ] Remove old method-not-found handling if the SDK adapter no longer needs it.
+	- [ ] Remove old HTTP header helper code only after SDK header tests pass.
+	- [ ] Remove old pagination helpers only after SDK pagination tests pass.
+	- [ ] Remove raw JSON-RPC request/response plumbing that only existed for the old local client implementation.
+- [ ] Remove compatibility references from public-facing MCP docs and comments.
+	- [ ] Remove comments saying Koios prefers `server/discover` and falls back to legacy `initialize` when that behavior is no longer Koios-owned.
+	- [ ] Update package comments to describe the official SDK as the protocol compatibility layer.
+	- [ ] Keep validation text that rejects deprecated `sse` transport.
+- [ ] Update package documentation.
+	- [ ] Update the `internal/mcp` package comment to say Koios uses the official MCP Go SDK for client transport/protocol handling.
+	- [ ] Keep documentation of Koios-specific manager responsibilities.
+- [ ] Run compile-focused cleanup.
+	- [ ] Remove unused imports from all modified files.
+	- [ ] Remove unused constants, structs, and helper functions.
+	- [ ] Run `gofmt` on modified Go files.
+	- [ ] Run `gopls check` on each modified Go file.
+
+Acceptance criteria:
+- [ ] No legacy stdio or HTTP MCP client implementation remains.
+- [ ] No Koios-owned legacy MCP handshake fallback remains outside the official SDK.
+- [ ] No legacy MCP client feature flag or fallback factory remains.
+- [ ] No unused JSON-RPC helper structs remain in `internal/mcp`.
+- [ ] No production code path constructs or references `NewStdioClient`, `NewHTTPClient`, legacy initialize helpers, or local raw JSON-RPC request/response helpers.
+- [ ] `go test ./internal/mcp ./internal/mcpregistry ./internal/handler` passes.
+- [ ] `gopls check` passes for every modified Go file.
+
+### Phase 8 — Full integration validation and regression coverage
+
+Goal: prove the SDK migration is complete across Koios' MCP-facing runtime surfaces.
+
+Overview: run the broad test suite, add regression coverage for all migrated behavior, and ensure no unrelated runtime behavior changed.
+
+Rules:
+- Treat MCP SDK migration as complete only when broad tests pass.
+- Fix regressions caused by the SDK migration before closing the checklist.
+- Do not fix unrelated failing tests as part of this migration unless they block compilation of changed packages.
+- Do not change Monaco API request or response payloads as part of this MCP migration.
+- Keep all validation automated through Go tests, `gopls check`, and compile-time checks.
+
+- [ ] Add regression tests for MCP manager lifecycle.
+	- [ ] Test `Manager.Start` connects multiple servers concurrently.
+	- [ ] Test one failed MCP server does not prevent another server from connecting.
+	- [ ] Test `EnsureServer` connects an initially disconnected configured server.
+	- [ ] Test `StopServer` resets connection state and clears caches.
+	- [ ] Test `UpdateServer` replaces configuration and reconnects when enabled.
+	- [ ] Test `RemoveServer` deletes runtime state and closes resources.
+	- [ ] Test `Close` shuts down all connected SDK clients.
+- [ ] Add regression tests for user-managed MCP registry integration.
+	- [ ] Test registry records convert to `MCPServerConfig` values accepted by `ValidateServerConfig`.
+	- [ ] Test `MergeServerConfigs` preserves static, extension, and user-managed source behavior.
+	- [ ] Test duplicate runtime names are rejected.
+	- [ ] Test user-managed disabled servers do not connect until enabled.
+- [ ] Add regression tests for handler-visible MCP tools.
+	- [ ] Test SDK-discovered tools appear in `ToolDefinitionsForRun`.
+	- [ ] Test hidden MCP tools do not appear in agent-visible definitions.
+	- [ ] Test hidden MCP tools remain callable by full runtime name for internal callers.
+	- [ ] Test tool mutation classification remains unchanged for MCP tool names.
+	- [ ] Test MCP tool execution records runtime-managed tool results when applicable.
+- [ ] Add regression tests for MCP search and asset surfaces.
+	- [ ] Test `mcp.search` finds tools by name.
+	- [ ] Test `mcp.search` finds tools by description.
+	- [ ] Test `mcp.search` finds resources by URI.
+	- [ ] Test `mcp.search` finds resource templates by URI template.
+	- [ ] Test `mcp.search` finds prompts by name.
+	- [ ] Test `mcp.search` respects the limit argument.
+- [ ] Run targeted package tests.
+	- [ ] Run `go test ./internal/mcp`.
+	- [ ] Run `go test ./internal/mcpregistry`.
+	- [ ] Run `go test ./internal/handler`.
+	- [ ] Run `go test ./internal/agent`.
+- [ ] Run full repository tests.
+	- [ ] Run `go test ./...`.
+	- [ ] Fix SDK-migration regressions found by the full suite.
+	- [ ] Leave unrelated pre-existing failures unchanged and documented in final implementation notes.
+- [ ] Run Go language-server checks.
+	- [ ] Run `gopls check` for each modified file under `internal/mcp`.
+	- [ ] Run `gopls check` for each modified file under `internal/handler`.
+	- [ ] Run `gopls check` for each modified file under `internal/config` if config code changed.
+	- [ ] Run `gopls check` for each modified test file.
+
+Acceptance criteria:
+- [ ] Targeted MCP, registry, handler, and agent tests pass.
+- [ ] `go test ./...` passes or only unrelated pre-existing failures remain.
+- [ ] `gopls check` passes for all modified Go files.
+- [ ] The official MCP SDK is the only production MCP transport/protocol implementation used by Koios.
+- [ ] Existing Koios MCP config, runtime tool names, registry flows, and handler APIs remain backward-compatible.
