@@ -12,6 +12,8 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-05
+
 ### Added
 
 - add per-run timing breakdown (queue/model/tool/finalize/total/retries) to run ledger records, exposed via `runs.list`, `runs.get`, agent run records, and the dashboard runtime section
@@ -456,7 +458,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/ffimnsr/koios/releases/tag/v0.8.2
 [0.8.1]: https://github.com/ffimnsr/koios/releases/tag/v0.8.1
 [0.8.0]: https://github.com/ffimnsr/koios/releases/tag/v0.8.0
 [0.7.22]: https://github.com/ffimnsr/koios/releases/tag/v0.7.22
