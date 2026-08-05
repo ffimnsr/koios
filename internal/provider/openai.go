@@ -122,8 +122,8 @@ type openAIResponsesUsage struct {
 func marshalOpenAIWireRequest(providerName string, req *types.ChatRequest) ([]byte, error) {
 	wire := openAIWireRequest{
 		Model:            req.Model,
-		Messages:         sanitizeOpenAIWireMessages(providerName, req.Messages),
-		Tools:            req.Tools,
+		Messages:         encodeProviderToolMessages(sanitizeOpenAIWireMessages(providerName, req.Messages)),
+		Tools:            encodeProviderToolDefinitions(req.Tools),
 		ToolChoice:       req.ToolChoice,
 		Stream:           req.Stream,
 		MaxTokens:        req.MaxTokens,
@@ -151,7 +151,7 @@ func marshalOpenAIResponsesRequest(req *types.ChatRequest) ([]byte, error) {
 	wire := openAIResponsesRequest{
 		Model:              req.Model,
 		Input:              input,
-		Tools:              req.Tools,
+		Tools:              encodeProviderToolDefinitions(req.Tools),
 		ToolChoice:         req.ToolChoice,
 		Stream:             req.Stream,
 		MaxOutputTokens:    req.MaxTokens,
@@ -196,7 +196,7 @@ func buildOpenAIResponsesInput(messages []types.Message) []openAIResponsesInputI
 			items = append(items, openAIResponsesInputItem{
 				Type:      "function_call",
 				CallID:    strings.TrimSpace(call.ID),
-				Name:      strings.TrimSpace(call.Function.Name),
+				Name:      types.EncodeProviderToolName(strings.TrimSpace(call.Function.Name)),
 				Arguments: strings.TrimSpace(call.Function.Arguments),
 			})
 		}
@@ -580,7 +580,7 @@ func extractOpenAIResponsesChatResponse(body []byte, providerName string) (*type
 				ID:   strings.TrimSpace(item.CallID),
 				Type: "function",
 				Function: types.ToolCallFunctionRef{
-					Name:      strings.TrimSpace(item.Name),
+					Name:      types.DecodeProviderToolName(strings.TrimSpace(item.Name)),
 					Arguments: strings.TrimSpace(item.Arguments),
 				},
 			})
@@ -1087,6 +1087,7 @@ func (p *openAIProvider) completeChatCompletions(ctx context.Context, req *types
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	chatResp.Reasoning = extractOpenAIReasoning(responseBody, p.hooks.name)
+	decodeProviderToolCalls(&chatResp)
 	if len(chatResp.Choices) > 0 {
 		chatResp.Choices[0].Message.Content, chatResp.Reasoning = appendInlineThoughtBlocks(p.hooks.name, chatResp.Choices[0].Message.Content, chatResp.Reasoning)
 	}
@@ -1412,7 +1413,7 @@ func (p *openAIProvider) completeResponsesStream(ctx context.Context, req *types
 				Index:     ev.OutputIndex,
 				ID:        strings.TrimSpace(ev.Item.CallID),
 				ItemID:    strings.TrimSpace(ev.Item.ID),
-				Name:      strings.TrimSpace(ev.Item.Name),
+				Name:      types.DecodeProviderToolName(strings.TrimSpace(ev.Item.Name)),
 				Arguments: strings.TrimSpace(ev.Item.Arguments),
 			}
 			toolCalls[key] = call

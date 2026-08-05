@@ -115,7 +115,7 @@ func TestOpenAICompleteUsesResponsesToolReplay(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"resp_tool","object":"response","created_at":1,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Need fresh balance."}]},{"type":"function_call","call_id":"call_1","name":"monaco.get_balance","arguments":"{\"asset\":\"USDC\"}"}],"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}}`)
+		fmt.Fprint(w, `{"id":"resp_tool","object":"response","created_at":1,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Need fresh balance."}]},{"type":"function_call","call_id":"call_1","name":"monaco_x2e_get_balance","arguments":"{\"asset\":\"USDC\"}"}],"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12}}`)
 	}))
 	defer server.Close()
 
@@ -169,6 +169,15 @@ func TestOpenAICompleteUsesResponsesToolReplay(t *testing.T) {
 	if !ok {
 		t.Fatalf("input = %#v, want array", requestBody["input"])
 	}
+	tools, ok := requestBody["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one tool", requestBody["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	function, _ := tool["function"].(map[string]any)
+	if function["name"] != "monaco_x2e_get_balance" {
+		t.Fatalf("wire tool name = %#v, want monaco_x2e_get_balance", function["name"])
+	}
 	var sawFunctionCall, sawFunctionOutput bool
 	for _, item := range input {
 		entry, ok := item.(map[string]any)
@@ -178,6 +187,9 @@ func TestOpenAICompleteUsesResponsesToolReplay(t *testing.T) {
 		switch entry["type"] {
 		case "function_call":
 			sawFunctionCall = true
+			if entry["name"] != "monaco_x2e_get_balance" {
+				t.Fatalf("replayed function call name = %#v, want monaco_x2e_get_balance", entry["name"])
+			}
 		case "function_call_output":
 			sawFunctionOutput = true
 		}
@@ -529,7 +541,7 @@ func TestOpenAICompleteStreamUsesResponsesSSEForToolCalls(t *testing.T) {
 		fmt.Fprint(w, "event: response.created\n")
 		fmt.Fprint(w, "data: {\"response\":{\"id\":\"resp_stream_tool\"}}\n\n")
 		fmt.Fprint(w, "event: response.output_item.added\n")
-		fmt.Fprint(w, "data: {\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"monaco.get_balance\",\"arguments\":\"\"}}\n\n")
+		fmt.Fprint(w, "data: {\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"monaco_x2e_get_balance\",\"arguments\":\"\"}}\n\n")
 		fmt.Fprint(w, "event: response.function_call_arguments.delta\n")
 		fmt.Fprint(w, "data: {\"item_id\":\"fc_1\",\"call_id\":\"call_1\",\"output_index\":0,\"delta\":\"{\\\"asset\\\":\\\"USDC\\\"}\"}\n\n")
 		fmt.Fprint(w, "event: response.completed\n")
@@ -983,6 +995,67 @@ func TestAnthropicCompleteIncludesServerCompactionAndPreservesCompactionBlocks(t
 	}
 	if !strings.Contains(string(resp.Choices[0].Message.RawContent), `"type":"compaction"`) {
 		t.Fatalf("expected raw content to preserve compaction block, got %s", string(resp.Choices[0].Message.RawContent))
+	}
+}
+
+func TestAnthropicCompleteEncodesProviderToolNames(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"msg_tool","type":"message","role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"tool_x2e_list","input":{"domain":"workspace"}}],"usage":{"input_tokens":3,"output_tokens":2}}`)
+	}))
+	defer server.Close()
+
+	p := &anthropicProvider{
+		client:      server.Client(),
+		apiKey:      "test-key",
+		baseURL:     server.URL,
+		model:       "claude-sonnet-5",
+		idleTimeout: time.Second,
+		hooks:       anthropicHooks(),
+	}
+
+	resp, err := p.Complete(context.Background(), &types.ChatRequest{
+		Tools: []types.Tool{{Type: "function", Function: types.ToolFunction{Name: "tool.list"}}},
+		Messages: []types.Message{{
+			Role: "assistant",
+			ToolCalls: []types.ToolCall{{
+				ID:   "call_prev",
+				Type: "function",
+				Function: types.ToolCallFunctionRef{
+					Name:      "tool.list",
+					Arguments: `{"domain":"workspace"}`,
+				},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	tools, ok := requestBody["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one tool", requestBody["tools"])
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["name"] != "tool_x2e_list" {
+		t.Fatalf("wire tool name = %#v, want tool_x2e_list", tool["name"])
+	}
+	messages, _ := requestBody["messages"].([]any)
+	msg, _ := messages[0].(map[string]any)
+	blocks, _ := msg["content"].([]any)
+	block, _ := blocks[0].(map[string]any)
+	if block["name"] != "tool_x2e_list" {
+		t.Fatalf("wire replay tool name = %#v, want tool_x2e_list", block["name"])
+	}
+	calls := resp.Choices[0].Message.ToolCalls
+	if len(calls) != 1 || calls[0].Function.Name != "tool.list" {
+		t.Fatalf("decoded tool calls = %#v, want tool.list", calls)
+	}
+	if !strings.Contains(string(resp.Choices[0].Message.RawContent), `"name":"tool.list"`) {
+		t.Fatalf("raw content should store canonical name, got %s", string(resp.Choices[0].Message.RawContent))
 	}
 }
 

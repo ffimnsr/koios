@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -129,7 +130,7 @@ func (rp *RoutingProvider) Complete(ctx context.Context, req *types.ChatRequest)
 			return resp, nil
 		}
 		lastErr = err
-		if !isRetryableProviderErr(err) {
+		if !shouldFallbackProviderErr(ctx, err) {
 			break
 		}
 	}
@@ -148,55 +149,39 @@ func (rp *RoutingProvider) CompleteStream(ctx context.Context, req *types.ChatRe
 	// First attempt: stream with the chosen model.
 	first := chain[0]
 	ownerIdentity := providerHandoffIdentity(first.prov, first.model)
+	var err error
 	if !providerSupportsStreaming(first.prov, first.model) {
-		resp, err := first.prov.Complete(ctx, cloneRequestForAttempt(req, first, ownerIdentity))
-		if err != nil {
-			return "", err
+		resp, ferr := first.prov.Complete(ctx, cloneRequestForAttempt(req, first, ownerIdentity))
+		if ferr == nil {
+			return streamFallbackResponse(w, resp)
 		}
-		if len(resp.Choices) == 0 {
-			return "", fmt.Errorf("empty response from provider")
+		err = ferr
+	} else {
+		r := cloneRequestForAttempt(req, first, ownerIdentity)
+		var text string
+		text, err = first.prov.CompleteStream(ctx, r, w)
+		if err == nil {
+			return text, nil
 		}
-		text := resp.Choices[0].Message.Content
-		setSSEHeaders(w)
-		flusher, _ := w.(http.Flusher)
-		fmt.Fprintf(w, "data: [DONE]\n\n")
-		if flusher != nil {
-			flusher.Flush()
-		}
-		return text, nil
 	}
-	r := cloneRequestForAttempt(req, first, ownerIdentity)
-	text, err := first.prov.CompleteStream(ctx, r, w)
-	if err == nil {
-		return text, nil
-	}
-	if !isRetryableProviderErr(err) || len(chain) == 1 {
+	if !shouldFallbackProviderErr(ctx, err) || len(chain) == 1 {
 		return "", err
 	}
 
+	lastErr := err
 	// Fallback attempts: non-streaming to avoid writing partial SSE output.
 	for _, entry := range chain[1:] {
 		r := cloneRequestForAttempt(req, entry, ownerIdentity)
 		resp, ferr := entry.prov.Complete(ctx, r)
 		if ferr == nil {
-			if len(resp.Choices) == 0 {
-				continue
-			}
-			text = resp.Choices[0].Message.Content
-			// Emit a minimal SSE response so the caller receives the text.
-			setSSEHeaders(w)
-			flusher, _ := w.(http.Flusher)
-			fmt.Fprintf(w, "data: [DONE]\n\n")
-			if flusher != nil {
-				flusher.Flush()
-			}
-			return text, nil
+			return streamFallbackResponse(w, resp)
 		}
-		if !isRetryableProviderErr(ferr) {
+		lastErr = ferr
+		if !shouldFallbackProviderErr(ctx, ferr) {
 			break
 		}
 	}
-	return "", err // return original streaming error
+	return "", lastErr
 }
 
 // buildChain returns the ordered list of (provider, model) to try for req.
@@ -244,14 +229,41 @@ func isRetryableProviderErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
-	transient := []string{"429", "500", "502", "503", "504", "too many requests", "rate limit", "overloaded", "timeout", "unavailable"}
+	transient := []string{"429", "500", "502", "503", "504", "too many requests", "rate limit", "overloaded", "timeout", "deadline", "unavailable", "temporary"}
 	for _, t := range transient {
 		if strings.Contains(msg, t) {
 			return true
 		}
 	}
 	return false
+}
+
+func shouldFallbackProviderErr(ctx context.Context, err error) bool {
+	if !isRetryableProviderErr(err) {
+		return false
+	}
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return false
+	}
+	return true
+}
+
+func streamFallbackResponse(w http.ResponseWriter, resp *types.ChatResponse) (string, error) {
+	if resp == nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("empty response from provider")
+	}
+	text := resp.Choices[0].Message.Content
+	setSSEHeaders(w)
+	flusher, _ := w.(http.Flusher)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
+	return text, nil
 }
 
 // cloneRequest returns a shallow copy of req so that each attempt has its own

@@ -159,6 +159,7 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 		} else if m.Role == "assistant" && len(m.RawContent) > 0 {
 			var blocks []anthropicContentBlock
 			if err := json.Unmarshal(m.RawContent, &blocks); err == nil && len(blocks) > 0 {
+				encodeAnthropicToolUseBlocks(blocks)
 				msgs = append(msgs, anthropicMessage{Role: m.Role, Content: blocks})
 				continue
 			}
@@ -174,7 +175,7 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 				blocks = append(blocks, anthropicContentBlock{
 					Type:  "tool_use",
 					ID:    tc.ID,
-					Name:  tc.Function.Name,
+					Name:  types.EncodeProviderToolName(tc.Function.Name),
 					Input: json.RawMessage(tc.Function.Arguments),
 				})
 			}
@@ -188,7 +189,7 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 				blocks = append(blocks, anthropicContentBlock{
 					Type:  "tool_use",
 					ID:    tc.ID,
-					Name:  tc.Function.Name,
+					Name:  types.EncodeProviderToolName(tc.Function.Name),
 					Input: json.RawMessage(tc.Function.Arguments),
 				})
 			}
@@ -233,7 +234,7 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 	}
 	for _, tool := range req.Tools {
 		tools = append(tools, anthropicTool{
-			Name:        tool.Function.Name,
+			Name:        types.EncodeProviderToolName(tool.Function.Name),
 			Description: tool.Function.Description,
 			InputSchema: tool.Function.Parameters,
 		})
@@ -270,13 +271,31 @@ func toAnthropicRequest(req *types.ChatRequest, model string) anthropicRequest {
 	return request
 }
 
+func encodeAnthropicToolUseBlocks(blocks []anthropicContentBlock) {
+	for i := range blocks {
+		if blocks[i].Type == "tool_use" {
+			blocks[i].Name = types.EncodeProviderToolName(blocks[i].Name)
+		}
+	}
+}
+
+func decodeAnthropicToolUseBlocks(blocks []anthropicContentBlock) {
+	for i := range blocks {
+		if blocks[i].Type == "tool_use" {
+			blocks[i].Name = types.DecodeProviderToolName(blocks[i].Name)
+		}
+	}
+}
+
 // toOpenAIResponse converts an Anthropic response to OpenAI format.
 func toOpenAIResponse(ar *anthropicResponse) *types.ChatResponse {
 	var content strings.Builder
 	var toolCalls []types.ToolCall
 	var reasoning []types.ReasoningBlock
-	rawContent, _ := json.Marshal(ar.Content)
-	for _, block := range ar.Content {
+	contentBlocks := append([]anthropicContentBlock(nil), ar.Content...)
+	decodeAnthropicToolUseBlocks(contentBlocks)
+	rawContent, _ := json.Marshal(contentBlocks)
+	for _, block := range contentBlocks {
 		if block.Type == "text" {
 			content.WriteString(block.Text)
 		}

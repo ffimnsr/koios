@@ -2020,13 +2020,16 @@ func (rt *Runtime) shouldRetry(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	for _, code := range rt.retry.StatusCodes {
 		if containsHTTPStatusCode(msg, code) {
 			return true
 		}
 	}
-	retryable := []string{"too many requests", "rate limit", "timeout", "network", "connection", "overloaded", "temporary"}
+	retryable := []string{"too many requests", "rate limit", "timeout", "deadline", "network", "connection", "overloaded", "temporary"}
 	for _, part := range retryable {
 		if strings.Contains(msg, part) {
 			return true

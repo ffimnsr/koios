@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/ffimnsr/koios/internal/types"
@@ -66,6 +67,105 @@ func TestRoutingProviderBuildChainPrefersCompatibleFallbacks(t *testing.T) {
 	}
 	if chain[2].model != "claude-3" {
 		t.Fatalf("second fallback model = %q, want claude-3", chain[2].model)
+	}
+}
+
+func TestRoutingProviderFallbacksOnContextDeadlineExceeded(t *testing.T) {
+	primary := &routingStubProvider{
+		caps:       types.ProviderCapabilities{Name: "gemini", SupportsStreaming: true, SupportsNativeTools: true},
+		handoffKey: "gemini|primary|gemini-3.5-flash-lite",
+		complete: func(context.Context, *types.ChatRequest) (*types.ChatResponse, error) {
+			return nil, context.DeadlineExceeded
+		},
+	}
+	var fallbackModel string
+	fallback := &routingStubProvider{
+		caps:       types.ProviderCapabilities{Name: "nvidia", SupportsStreaming: true, SupportsNativeTools: true},
+		handoffKey: "nvidia|fallback|deepseek-v4-flash",
+		complete: func(_ context.Context, req *types.ChatRequest) (*types.ChatResponse, error) {
+			fallbackModel = req.Model
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "fallback ok"}}}}, nil
+		},
+	}
+
+	rp := NewRoutingProvider(RoutingConfig{
+		Primary:   modelEntry{model: "gemini-3.5-flash-lite", prov: primary},
+		Fallbacks: []modelEntry{{model: "deepseek-v4-flash", prov: fallback}},
+	})
+
+	resp, err := rp.Complete(context.Background(), &types.ChatRequest{})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if fallbackModel != "deepseek-v4-flash" {
+		t.Fatalf("fallback model = %q, want deepseek-v4-flash", fallbackModel)
+	}
+	if resp.Choices[0].Message.Content != "fallback ok" {
+		t.Fatalf("fallback response = %#v", resp)
+	}
+}
+
+func TestRoutingProviderStreamFallbacksOnContextDeadlineExceeded(t *testing.T) {
+	primary := &routingStubProvider{
+		caps:       types.ProviderCapabilities{Name: "gemini", SupportsStreaming: true, SupportsNativeTools: true},
+		handoffKey: "gemini|primary|gemini-3.5-flash-lite",
+		completeStream: func(context.Context, *types.ChatRequest, http.ResponseWriter) (string, error) {
+			return "", context.DeadlineExceeded
+		},
+	}
+	fallback := &routingStubProvider{
+		caps:       types.ProviderCapabilities{Name: "nvidia", SupportsStreaming: true, SupportsNativeTools: true},
+		handoffKey: "nvidia|fallback|deepseek-v4-flash",
+		complete: func(context.Context, *types.ChatRequest) (*types.ChatResponse, error) {
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "stream fallback ok"}}}}, nil
+		},
+	}
+
+	rp := NewRoutingProvider(RoutingConfig{
+		Primary:   modelEntry{model: "gemini-3.5-flash-lite", prov: primary},
+		Fallbacks: []modelEntry{{model: "deepseek-v4-flash", prov: fallback}},
+	})
+
+	rec := httptest.NewRecorder()
+	text, err := rp.CompleteStream(context.Background(), &types.ChatRequest{Stream: true}, rec)
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	if text != "stream fallback ok" {
+		t.Fatalf("text = %q, want stream fallback ok", text)
+	}
+	if rec.Body.String() != "data: [DONE]\n\n" {
+		t.Fatalf("unexpected fallback SSE body: %q", rec.Body.String())
+	}
+}
+
+func TestRoutingProviderStreamFallbacksWhenFirstProviderCannotStream(t *testing.T) {
+	primary := &routingStubProvider{
+		caps:       types.ProviderCapabilities{Name: "local", SupportsNativeTools: true},
+		handoffKey: "local|primary|gemma4:e2b",
+		complete: func(context.Context, *types.ChatRequest) (*types.ChatResponse, error) {
+			return nil, errors.New("upstream request: context deadline exceeded")
+		},
+	}
+	fallback := &routingStubProvider{
+		caps:       types.ProviderCapabilities{Name: "nvidia", SupportsStreaming: true, SupportsNativeTools: true},
+		handoffKey: "nvidia|fallback|deepseek-v4-flash",
+		complete: func(context.Context, *types.ChatRequest) (*types.ChatResponse, error) {
+			return &types.ChatResponse{Choices: []types.ChatChoice{{Message: types.Message{Role: "assistant", Content: "nonstream fallback ok"}}}}, nil
+		},
+	}
+
+	rp := NewRoutingProvider(RoutingConfig{
+		Primary:   modelEntry{model: "gemma4:e2b", prov: primary},
+		Fallbacks: []modelEntry{{model: "deepseek-v4-flash", prov: fallback}},
+	})
+
+	text, err := rp.CompleteStream(context.Background(), &types.ChatRequest{Stream: true}, httptest.NewRecorder())
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	if text != "nonstream fallback ok" {
+		t.Fatalf("text = %q, want nonstream fallback ok", text)
 	}
 }
 
