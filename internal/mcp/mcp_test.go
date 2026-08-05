@@ -331,6 +331,39 @@ func TestHTTPClientPaginatesAndMirrorsToolHeaderAnnotations(t *testing.T) {
 
 func ptrString(v string) *string { return &v }
 
+func TestDefaultRequestMetaUsesMCPClientCapabilityShape(t *testing.T) {
+	params := encodeParams(listParams{Meta: defaultRequestMeta()})
+	var got struct {
+		Meta struct {
+			ProtocolVersion    string         `json:"io.modelcontextprotocol/protocolVersion"`
+			ClientCapabilities map[string]any `json:"io.modelcontextprotocol/clientCapabilities"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(params, &got); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	if got.Meta.ProtocolVersion != ProtocolVersion2026 {
+		t.Fatalf("unexpected protocol version: %q", got.Meta.ProtocolVersion)
+	}
+	capabilities := got.Meta.ClientCapabilities
+	if _, ok := capabilities["tools"]; ok {
+		t.Fatalf("client capabilities must not advertise server-side tools: %#v", capabilities)
+	}
+	if _, ok := capabilities["resources"]; ok {
+		t.Fatalf("client capabilities must not advertise server-side resources: %#v", capabilities)
+	}
+	elicitation, ok := capabilities["elicitation"].(map[string]any)
+	if !ok {
+		t.Fatalf("elicitation capability missing or malformed: %#v", capabilities["elicitation"])
+	}
+	if _, ok := elicitation["form"].(map[string]any); !ok {
+		t.Fatalf("form elicitation capability must be object-shaped: %#v", elicitation["form"])
+	}
+	if _, ok := elicitation["url"].(map[string]any); !ok {
+		t.Fatalf("url elicitation capability must be object-shaped: %#v", elicitation["url"])
+	}
+}
+
 func TestHTTPClientSetsModernHeadersAndReadsResource(t *testing.T) {
 	var gotAccept, gotVersion, gotMethod, gotName string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

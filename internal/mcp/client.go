@@ -301,11 +301,10 @@ func defaultClientInfo() *Implementation {
 
 func defaultClientCapabilities() map[string]any {
 	return map[string]any{
-		"tools":         map[string]any{},
-		"resources":     map[string]any{"read": true, "templates": true, "subscribe": true},
-		"prompts":       map[string]any{},
-		"elicitation":   map[string]any{"form": true, "url": true},
-		"subscriptions": map[string]any{},
+		"elicitation": map[string]any{
+			"form": map[string]any{},
+			"url":  map[string]any{},
+		},
 	}
 }
 
