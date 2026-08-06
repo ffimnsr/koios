@@ -122,7 +122,7 @@ type openAIResponsesUsage struct {
 func marshalOpenAIWireRequest(providerName string, req *types.ChatRequest) ([]byte, error) {
 	wire := openAIWireRequest{
 		Model:            req.Model,
-		Messages:         encodeProviderToolMessages(sanitizeOpenAIWireMessages(providerName, req.Messages)),
+		Messages:         encodeProviderToolMessages(sanitizeOpenAIWireMessages(providerName, req.Model, req.Messages)),
 		Tools:            encodeProviderToolDefinitions(req.Tools),
 		ToolChoice:       req.ToolChoice,
 		Stream:           req.Stream,
@@ -417,11 +417,23 @@ func geminiThinkingLevel(effort string, budget int) string {
 	}
 }
 
-func sanitizeOpenAIWireMessages(providerName string, messages []types.Message) []types.Message {
-	if providerName != "gemini" || len(messages) == 0 {
+func sanitizeOpenAIWireMessages(providerName, model string, messages []types.Message) []types.Message {
+	if len(messages) == 0 {
 		return messages
 	}
-	return sanitizeGeminiReplayMessages(messages)
+	if providerName == "opencode-zen" && strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-") {
+		return messages
+	}
+
+	out := make([]types.Message, len(messages))
+	copy(out, messages)
+	for i := range out {
+		out[i].ReasoningContent = ""
+	}
+	if providerName == "gemini" {
+		return sanitizeGeminiReplayMessages(out)
+	}
+	return out
 }
 
 func sanitizeGeminiReplayMessages(messages []types.Message) []types.Message {
@@ -1090,6 +1102,9 @@ func (p *openAIProvider) completeChatCompletions(ctx context.Context, req *types
 	chatResp.Reasoning = extractOpenAIReasoning(responseBody, p.hooks.name)
 	decodeProviderToolCalls(&chatResp)
 	if len(chatResp.Choices) > 0 {
+		if p.hooks.name != "opencode-zen" || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(req.Model)), "deepseek-") {
+			chatResp.Choices[0].Message.ReasoningContent = ""
+		}
 		chatResp.Choices[0].Message.Content, chatResp.Reasoning = appendInlineThoughtBlocks(p.hooks.name, chatResp.Choices[0].Message.Content, chatResp.Reasoning)
 	}
 	if req.ReasoningVisibility != "off" {

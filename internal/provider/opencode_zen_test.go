@@ -79,6 +79,81 @@ func TestOpenCodeZenRoutesModelsByProtocol(t *testing.T) {
 	}
 }
 
+func TestOpenCodeZenDeepSeekReplaysReasoningContent(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("request path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+
+		if requests == 2 {
+			var body struct {
+				Messages []struct {
+					Role             string `json:"role"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"messages"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if len(body.Messages) != 3 {
+				t.Fatalf("message count = %d, want 3", len(body.Messages))
+			}
+			if body.Messages[1].Role != "assistant" {
+				t.Fatalf("replayed role = %q, want assistant", body.Messages[1].Role)
+			}
+			if body.Messages[1].ReasoningContent != "inspect current state" {
+				t.Fatalf("replayed reasoning_content = %q", body.Messages[1].ReasoningContent)
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			_, _ = w.Write([]byte(`{"id":"chat_1","choices":[{"message":{"role":"assistant","content":"I will inspect it.","reasoning_content":"inspect current state"}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"chat_2","choices":[{"message":{"role":"assistant","content":"done"}}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := New(&config.Config{
+		Provider:       "opencode-zen",
+		APIKey:         "test-key",
+		BaseURL:        server.URL,
+		Model:          "deepseek-v4-flash-free",
+		RequestTimeout: time.Second,
+		LLMIdleTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	first, err := provider.Complete(context.Background(), &types.ChatRequest{
+		Messages: []types.Message{{Role: "user", Content: "inspect it"}},
+	})
+	if err != nil {
+		t.Fatalf("first Complete: %v", err)
+	}
+	if got := first.Choices[0].Message.ReasoningContent; got != "inspect current state" {
+		t.Fatalf("captured reasoning_content = %q", got)
+	}
+
+	_, err = provider.Complete(context.Background(), &types.ChatRequest{
+		Messages: []types.Message{
+			{Role: "user", Content: "inspect it"},
+			first.Choices[0].Message,
+			{Role: "user", Content: "continue"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("second Complete: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("request count = %d, want 2", requests)
+	}
+}
+
 func TestOpenCodeZenRejectsGoogleAndUnknownModels(t *testing.T) {
 	provider, err := New(&config.Config{
 		Provider:       "opencode-zen",

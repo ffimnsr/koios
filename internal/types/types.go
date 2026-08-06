@@ -26,12 +26,13 @@ type ImageURLPart struct {
 // When Parts is non-empty the message carries multimodal content and Parts
 // takes precedence over Content during JSON marshaling.
 type Message struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content"`
-	Parts      []ContentPart   `json:"-"` // multimodal content; overrides Content when non-empty
-	RawContent json.RawMessage `json:"-"` // preserves provider-specific multipart content verbatim when present
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+	Role             string          `json:"role"`
+	Content          string          `json:"content"`
+	Parts            []ContentPart   `json:"-"` // multimodal content; overrides Content when non-empty
+	RawContent       json.RawMessage `json:"-"` // preserves provider-specific multipart content verbatim when present
+	ReasoningContent string          `json:"-"` // provider reasoning required to replay this assistant turn
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
 }
 
 // MarshalJSON serialises a Message. When Parts is non-empty the content field
@@ -40,43 +41,49 @@ type Message struct {
 func (m Message) MarshalJSON() ([]byte, error) {
 	if len(m.RawContent) > 0 {
 		type rawMessage struct {
-			Role       string          `json:"role"`
-			Content    json.RawMessage `json:"content"`
-			ToolCallID string          `json:"tool_call_id,omitempty"`
-			ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+			Role             string          `json:"role"`
+			Content          json.RawMessage `json:"content"`
+			ReasoningContent string          `json:"reasoning_content,omitempty"`
+			ToolCallID       string          `json:"tool_call_id,omitempty"`
+			ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
 		}
 		return json.Marshal(rawMessage{
-			Role:       m.Role,
-			Content:    m.RawContent,
-			ToolCallID: m.ToolCallID,
-			ToolCalls:  m.ToolCalls,
+			Role:             m.Role,
+			Content:          m.RawContent,
+			ReasoningContent: m.ReasoningContent,
+			ToolCallID:       m.ToolCallID,
+			ToolCalls:        m.ToolCalls,
 		})
 	}
 	if len(m.Parts) > 0 {
 		type multipart struct {
-			Role       string        `json:"role"`
-			Content    []ContentPart `json:"content"`
-			ToolCallID string        `json:"tool_call_id,omitempty"`
-			ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
+			Role             string        `json:"role"`
+			Content          []ContentPart `json:"content"`
+			ReasoningContent string        `json:"reasoning_content,omitempty"`
+			ToolCallID       string        `json:"tool_call_id,omitempty"`
+			ToolCalls        []ToolCall    `json:"tool_calls,omitempty"`
 		}
 		return json.Marshal(multipart{
-			Role:       m.Role,
-			Content:    m.Parts,
-			ToolCallID: m.ToolCallID,
-			ToolCalls:  m.ToolCalls,
+			Role:             m.Role,
+			Content:          m.Parts,
+			ReasoningContent: m.ReasoningContent,
+			ToolCallID:       m.ToolCallID,
+			ToolCalls:        m.ToolCalls,
 		})
 	}
 	type plain struct {
-		Role       string     `json:"role"`
-		Content    string     `json:"content"`
-		ToolCallID string     `json:"tool_call_id,omitempty"`
-		ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+		Role             string     `json:"role"`
+		Content          string     `json:"content"`
+		ReasoningContent string     `json:"reasoning_content,omitempty"`
+		ToolCallID       string     `json:"tool_call_id,omitempty"`
+		ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 	}
 	return json.Marshal(plain{
-		Role:       m.Role,
-		Content:    m.Content,
-		ToolCallID: m.ToolCallID,
-		ToolCalls:  m.ToolCalls,
+		Role:             m.Role,
+		Content:          m.Content,
+		ReasoningContent: m.ReasoningContent,
+		ToolCallID:       m.ToolCallID,
+		ToolCalls:        m.ToolCalls,
 	})
 }
 
@@ -84,15 +91,17 @@ func (m Message) MarshalJSON() ([]byte, error) {
 func (m *Message) UnmarshalJSON(data []byte) error {
 	// Use a raw struct to capture the content field as a raw JSON value.
 	var raw struct {
-		Role       string          `json:"role"`
-		Content    json.RawMessage `json:"content"`
-		ToolCallID string          `json:"tool_call_id,omitempty"`
-		ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`
+		Role             string          `json:"role"`
+		Content          json.RawMessage `json:"content"`
+		ReasoningContent string          `json:"reasoning_content,omitempty"`
+		ToolCallID       string          `json:"tool_call_id,omitempty"`
+		ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	m.Role = raw.Role
+	m.ReasoningContent = raw.ReasoningContent
 	m.ToolCallID = raw.ToolCallID
 	m.ToolCalls = raw.ToolCalls
 	if len(raw.Content) == 0 || string(raw.Content) == "null" {

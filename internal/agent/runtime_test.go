@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1810,6 +1811,57 @@ func TestRuntime_EmitsReasoningEvents(t *testing.T) {
 	}
 	if !sawSummary {
 		t.Fatal("expected reasoning summary event")
+	}
+}
+
+func TestRuntimeStreamsOpenCodeZenDeepSeekReasoningIntoSessionHistory(t *testing.T) {
+	store := session.New(20)
+	if err := store.SetPolicy("peer", session.SessionPolicy{ReasoningVisibility: "full"}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+
+	streamCalls := 0
+	prov := &stubProvider{
+		stream: func(ctx context.Context, req *types.ChatRequest, _ http.ResponseWriter) (string, error) {
+			streamCalls++
+			if streamCalls == 2 {
+				found := false
+				for _, message := range req.Messages {
+					if message.Role != "assistant" || message.Content != "first answer" {
+						continue
+					}
+					found = true
+					if message.ReasoningContent != "inspect state" {
+						t.Fatalf("replayed reasoning_content = %q", message.ReasoningContent)
+					}
+				}
+				if !found {
+					t.Fatal("expected prior assistant message in streamed request")
+				}
+			}
+			types.EmitReasoningEvent(ctx, types.ReasoningEvent{Kind: types.ReasoningEventDelta, Provider: "opencode-zen", Text: "inspect state"})
+			types.EmitReasoningEvent(ctx, types.ReasoningEvent{Kind: types.ReasoningEventSummary, Provider: "opencode-zen", Text: "inspect state"})
+			if streamCalls == 1 {
+				return "first answer", nil
+			}
+			return "second answer", nil
+		},
+		caps: types.ProviderCapabilities{Name: "opencode-zen", SupportsStreaming: true},
+	}
+	rt := agent.NewRuntime(store, prov, "deepseek-v4-flash-free", time.Second, agent.RetryPolicy{MaxAttempts: 1})
+
+	for _, message := range []string{"first request", "second request"} {
+		if _, err := rt.RunStream(context.Background(), agent.RunRequest{
+			PeerID:   "peer",
+			Scope:    agent.ScopeMain,
+			Stream:   true,
+			Messages: []types.Message{{Role: "user", Content: message}},
+		}, httptest.NewRecorder()); err != nil {
+			t.Fatalf("RunStream(%q): %v", message, err)
+		}
+	}
+	if streamCalls != 2 {
+		t.Fatalf("stream calls = %d, want 2", streamCalls)
 	}
 }
 

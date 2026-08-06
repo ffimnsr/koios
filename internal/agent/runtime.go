@@ -884,7 +884,21 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			}
 			attemptCtx = context.WithValue(attemptCtx, contextSessionKey{}, sessionKey)
 			attemptCtx = types.WithRequestIdentity(attemptCtx, types.RequestIdentity{PeerID: reqCopy.PeerID, SessionKey: sessionKey})
+			var replayReasoning strings.Builder
+			sawReplayReasoningDelta := false
+			shouldReplayReasoning := caps.Name == "opencode-zen" && strings.HasPrefix(strings.ToLower(strings.TrimSpace(invokeReq.Model)), "deepseek-")
 			attemptCtx = types.WithReasoningSink(attemptCtx, func(re types.ReasoningEvent) {
+				if shouldReplayReasoning {
+					switch re.Kind {
+					case types.ReasoningEventDelta:
+						replayReasoning.WriteString(re.Text)
+						sawReplayReasoningDelta = true
+					case types.ReasoningEventSummary:
+						if !sawReplayReasoningDelta {
+							replayReasoning.WriteString(re.Text)
+						}
+					}
+				}
 				kind := EventReasoningDelta
 				if re.Kind == types.ReasoningEventSummary {
 					kind = EventReasoningSummary
@@ -900,6 +914,9 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			invokeStartedAt := time.Now()
 			assistantText, resp, err := rt.invoke(attemptCtx, &invokeReq, invokeStream, invokeSink, attempt)
 			modelMs += elapsedMilliseconds(invokeStartedAt)
+			if err == nil && invokeStream && replayReasoning.Len() > 0 && resp != nil && len(resp.Choices) > 0 {
+				resp.Choices[0].Message.ReasoningContent = replayReasoning.String()
+			}
 			if err != nil && toolProbe && err.Error() == "nil response from provider" {
 				invokeReq.Stream = built.Request.Stream
 				invokeStream = invokeReq.Stream
