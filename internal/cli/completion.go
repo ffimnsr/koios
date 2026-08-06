@@ -113,14 +113,17 @@ func registerPeerFlagCompletions(cmd *cobra.Command, ctx *commandContext) {
 
 func llmProviderCompletionItems() []completionItem {
 	descriptions := map[string]string{
-		"anthropic":  "Anthropic provider",
-		"gemini":     "Google Gemini provider",
-		"litellm":    "LiteLLM proxy provider",
-		"nvidia":     "NVIDIA NIM provider",
-		"ollama":     "Ollama local provider",
-		"openai":     "OpenAI-compatible provider",
-		"openrouter": "OpenRouter provider",
-		"vllm":       "vLLM local provider",
+		"anthropic":    "Anthropic provider",
+		"gemini":       "Google Gemini provider",
+		"litellm":      "LiteLLM proxy provider",
+		"nvidia":       "NVIDIA NIM provider",
+		"ollama":       "Ollama local provider",
+		"ollama-cloud": "Ollama Cloud provider",
+		"openai":       "OpenAI-compatible provider",
+		"opencode-go":  "OpenCode Go provider",
+		"opencode-zen": "OpenCode Zen multi-protocol provider",
+		"openrouter":   "OpenRouter provider",
+		"vllm":         "vLLM local provider",
 	}
 	items := make([]completionItem, 0, len(descriptions))
 	for _, provider := range config.SupportedLLMProviders() {

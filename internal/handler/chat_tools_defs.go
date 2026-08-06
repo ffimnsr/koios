@@ -3240,6 +3240,21 @@ var toolDefs = []toolDef{
 		argHint: `{"provider_profile":"work-openrouter"}`,
 	},
 	{
+		name:        "provider.models_preview",
+		description: "Fetch a provider-owned dynamic model catalog from temporary provider settings without creating or updating a provider profile. API keys are used only for the upstream request and are never returned.",
+		parameters: mustJSONSchema(map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"provider": map[string]any{"type": "string", "description": "Provider name: " + config.SupportedLLMProvidersHint()},
+				"api_key":  map[string]any{"type": "string", "description": "Optional API key used only for this catalog request."},
+				"base_url": map[string]any{"type": "string", "description": "Optional base URL override."},
+			},
+			"required":             []string{"provider"},
+			"additionalProperties": false,
+		}),
+		argHint: `{"provider":"openai","api_key":"sk-...","base_url":"https://api.openai.com"}`,
+	},
+	{
 		name:        "provider.usage",
 		description: "Fetch provider-owned usage or quota status for the gateway provider or a named peer BYOK provider profile.",
 		parameters: mustJSONSchema(map[string]any{

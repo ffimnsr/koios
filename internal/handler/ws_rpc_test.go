@@ -345,6 +345,99 @@ func TestWS_PeerLLMDeleteClearsDefaultAndSessionReferences(t *testing.T) {
 	}
 }
 
+func TestWS_ManagedLLMProfilesListAndActivate(t *testing.T) {
+	store := session.New(10)
+	prefStore, err := preferences.New(filepath.Join(t.TempDir(), "preferences.db"))
+	if err != nil {
+		t.Fatalf("preferences.New: %v", err)
+	}
+	defer prefStore.Close()
+	peerStore, err := peerllm.New(filepath.Join(t.TempDir(), "peerllm.db"))
+	if err != nil {
+		t.Fatalf("peerllm.New: %v", err)
+	}
+	defer peerStore.Close()
+	if _, err := peerStore.Set(context.Background(), "alice", peerllm.Input{
+		Name:         "byok-openai",
+		Provider:     "ollama",
+		DefaultModel: "byok-model",
+	}); err != nil {
+		t.Fatalf("peerStore.Set: %v", err)
+	}
+	if _, err := prefStore.Set(context.Background(), "alice", preferences.Input{
+		Key:   "peer.llm.default_provider_profile",
+		Value: "byok-openai",
+	}); err != nil {
+		t.Fatalf("prefStore.Set BYOK default: %v", err)
+	}
+
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	h := handler.NewHandler(store, prov, handler.HandlerOptions{
+		Model:           "gateway-model",
+		Timeout:         5 * time.Second,
+		PreferenceStore: prefStore,
+		PeerLLMStore:    peerStore,
+		ManagedLLMProfiles: []handler.ManagedLLMProfileInfo{{
+			Name:     "managed-openai",
+			Provider: "openai",
+			Model:    "gpt-managed",
+		}},
+	})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	conn := dialWS(t, srv, "alice")
+
+	sendRPC(t, conn, "list", "llm.managed_profile.list", nil)
+	msg := readUntilID(t, conn, "list")
+	if msg.Error != nil {
+		t.Fatalf("llm.managed_profile.list error: %+v", msg.Error)
+	}
+	var listed struct {
+		Profiles []handler.ManagedLLMProfileInfo `json:"profiles"`
+		Count    int                             `json:"count"`
+	}
+	if err := json.Unmarshal(msg.Result, &listed); err != nil {
+		t.Fatalf("unmarshal managed profile list: %v", err)
+	}
+	if listed.Count != 1 || len(listed.Profiles) != 1 || listed.Profiles[0].Name != "managed-openai" {
+		t.Fatalf("unexpected managed profile list: %#v", listed)
+	}
+	if strings.Contains(string(msg.Result), "api_key") || strings.Contains(string(msg.Result), "base_url") {
+		t.Fatalf("managed profile list leaked restricted fields: %s", msg.Result)
+	}
+
+	sendRPC(t, conn, "activate", "llm.managed_profile.activate", map[string]any{"name": "managed-openai"})
+	msg = readUntilID(t, conn, "activate")
+	if msg.Error != nil {
+		t.Fatalf("llm.managed_profile.activate error: %+v", msg.Error)
+	}
+	pref, err := prefStore.Get(context.Background(), "alice", agent.ManagedProfilePreferenceKey, "global")
+	if err != nil {
+		t.Fatalf("get active managed profile preference: %v", err)
+	}
+	if pref.Value != "managed-openai" {
+		t.Fatalf("active managed profile = %q, want managed-openai", pref.Value)
+	}
+	if _, err := prefStore.Get(context.Background(), "alice", "peer.llm.default_provider_profile", "global"); err == nil {
+		t.Fatal("expected managed activation to clear BYOK default")
+	}
+
+	sendRPC(t, conn, "byok", "peer.llm_provider.activate", map[string]any{"name": "byok-openai"})
+	msg = readUntilID(t, conn, "byok")
+	if msg.Error != nil {
+		t.Fatalf("peer.llm_provider.activate error: %+v", msg.Error)
+	}
+	if _, err := prefStore.Get(context.Background(), "alice", agent.ManagedProfilePreferenceKey, "global"); err == nil {
+		t.Fatal("expected BYOK activation to clear managed profile selection")
+	}
+
+	sendRPC(t, conn, "invalid", "llm.managed_profile.activate", map[string]any{"name": "missing"})
+	msg = readUntilID(t, conn, "invalid")
+	if msg.Error == nil || msg.Error.Code != -32602 {
+		t.Fatalf("expected invalid params for unknown managed profile, got %+v", msg.Error)
+	}
+}
+
 func TestWS_ServerCapabilities(t *testing.T) {
 	store := session.New(10)
 	prov := &stubProvider{response: &types.ChatResponse{}}

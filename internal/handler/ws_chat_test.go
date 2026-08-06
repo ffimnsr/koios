@@ -21,6 +21,21 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+func TestWS_ProviderModelsPreviewIsRegistered(t *testing.T) {
+	prov := &stubProvider{response: &types.ChatResponse{}}
+	srv, _ := newTestServer(t, prov)
+
+	conn := dialWS(t, srv, "alice")
+	sendRPC(t, conn, "preview", "provider.models_preview", map[string]any{})
+	msg := readUntilID(t, conn, "preview")
+	if msg.Error == nil {
+		t.Fatal("expected invalid params error")
+	}
+	if msg.Error.Code != -32602 {
+		t.Fatalf("expected invalid params code -32602, got %d: %s", msg.Error.Code, msg.Error.Message)
+	}
+}
+
 func TestWS_Chat_EmptyMessages(t *testing.T) {
 	prov := &stubProvider{response: &types.ChatResponse{}}
 	srv, _ := newTestServer(t, prov)

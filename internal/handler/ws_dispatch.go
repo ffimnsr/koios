@@ -37,6 +37,10 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 		wsc.reply(req.ID, map[string]bool{"pong": true})
 	case "server.capabilities":
 		wsc.reply(req.ID, h.serverCapabilities(wsc.peerID))
+	case "llm.managed_profile.list":
+		h.rpcManagedLLMProfileList(ctx, wsc, req)
+	case "llm.managed_profile.activate":
+		h.rpcManagedLLMProfileActivate(ctx, wsc, req)
 
 	// ── Chat ──────────────────────────────────────────────────────────────
 	case "chat":
@@ -667,6 +671,18 @@ func (h *Handler) dispatchOnce(ctx context.Context, wsc *wsConn, req *rpcRequest
 		h.rpcWebFetch(ctx, wsc, req)
 	case "web_browser_run":
 		h.rpcWebBrowserRun(ctx, wsc, req)
+	case "provider.models_preview":
+		args, err := decodeProviderModelsPreviewArgs(req.Params)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeInvalidParams, err.Error())
+			return
+		}
+		result, err := h.providerModelsPreview(ctx, args.Provider, args.APIKey, args.BaseURL)
+		if err != nil {
+			wsc.replyErr(req.ID, errCodeServer, err.Error())
+			return
+		}
+		wsc.reply(req.ID, result)
 
 	// ── Cron ──────────────────────────────────────────────────────────────
 	case "cron.list":

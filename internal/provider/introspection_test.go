@@ -54,7 +54,7 @@ func TestOpenAIListModels(t *testing.T) {
 }
 
 func TestProviderNewOpenAICompatibleIntrospection(t *testing.T) {
-	providers := []string{"openai", "openrouter", "openai-compatible", "opencode-go", "nvidia", "ollama", "vllm", "litellm", "gemini"}
+	providers := []string{"openai", "openrouter", "openai-compatible", "opencode-go", "opencode-zen", "nvidia", "ollama", "vllm", "litellm", "gemini"}
 
 	for _, providerName := range providers {
 		providerName := providerName
@@ -139,6 +139,10 @@ func TestProviderNewOpenAICompatibleIntrospection(t *testing.T) {
 			case "opencode-go":
 				if catalog.Inspection.Family != "opencode_go" || catalog.Inspection.Interface != "openai_compatible" || catalog.Endpoint != "/v1/models" {
 					t.Fatalf("unexpected opencode-go catalog inspection: %#v", catalog)
+				}
+			case "opencode-zen":
+				if catalog.Inspection.Family != "opencode_zen" || catalog.Inspection.Interface != "multi_protocol" || catalog.Endpoint != "/v1/models" {
+					t.Fatalf("unexpected opencode-zen catalog inspection: %#v", catalog)
 				}
 			case "nvidia", "ollama", "vllm", "litellm":
 				if catalog.Inspection.Interface != "openai_compatible" || catalog.Endpoint != "/v1/models" {

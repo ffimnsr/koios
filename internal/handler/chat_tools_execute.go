@@ -233,7 +233,7 @@ func (h *Handler) recordToolResult(
 		SessionKey: toolCtx.SessionKey,
 		ToolCallID: call.ID,
 		ToolName:   call.Name,
-		ArgsJSON:   string(call.Arguments),
+		ArgsJSON:   toolResultArgsJSON(call),
 		ResultJSON: resultJSON,
 		Summary:    summary,
 		IsError:    execErr != nil,
@@ -245,6 +245,23 @@ func (h *Handler) recordToolResult(
 		// Non-fatal: provenance capture should not break tool execution.
 		_ = err
 	}
+}
+
+func toolResultArgsJSON(call agent.ToolCall) string {
+	if call.Name != "provider.models_preview" {
+		return string(call.Arguments)
+	}
+
+	var args providerModelsPreviewParams
+	if err := json.Unmarshal(call.Arguments, &args); err != nil {
+		return `{}`
+	}
+	args.APIKey = ""
+	sanitized, err := json.Marshal(args)
+	if err != nil {
+		return `{}`
+	}
+	return string(sanitized)
 }
 
 func normalizeToolResultMetadata(call agent.ToolCall, execErr error, meta agent.ToolResultMetadata) agent.ToolResultMetadata {

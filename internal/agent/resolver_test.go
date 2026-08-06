@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/peerllm"
 	"github.com/ffimnsr/koios/internal/preferences"
 	"github.com/ffimnsr/koios/internal/session"
@@ -128,6 +129,64 @@ func TestPeerAwareResolverEmptySessionKey(t *testing.T) {
 	}
 	if model != "gpt-4" {
 		t.Fatalf("model = %q", model)
+	}
+}
+
+func TestPeerAwareResolverUsesManagedProfileAfterSessionOverride(t *testing.T) {
+	global := &simpleProvider{}
+	dir := t.TempDir()
+	prefStore, err := preferences.New(filepath.Join(dir, "preferences.db"))
+	if err != nil {
+		t.Fatalf("preferences.New: %v", err)
+	}
+	defer prefStore.Close()
+	peerStore, err := peerllm.New(filepath.Join(dir, "peer_llm.db"))
+	if err != nil {
+		t.Fatalf("peerllm.New: %v", err)
+	}
+	defer peerStore.Close()
+	if _, err := peerStore.Set(context.Background(), "alice", peerllm.Input{
+		Name:         "session-byok",
+		Provider:     "ollama",
+		DefaultModel: "session-model",
+	}); err != nil {
+		t.Fatalf("peerStore.Set: %v", err)
+	}
+	if _, err := prefStore.Set(context.Background(), "alice", preferences.Input{
+		Key:   ManagedProfilePreferenceKey,
+		Value: "managed",
+	}); err != nil {
+		t.Fatalf("prefStore.Set: %v", err)
+	}
+
+	store := session.New(10)
+	resolver := NewPeerAwareResolver(global, "global-model", 0, 0, peerStore, prefStore, store)
+	resolver.SetManagedProfiles([]config.ModelProfile{{
+		Name:     "managed",
+		Provider: "ollama",
+		Model:    "managed-model",
+	}})
+
+	managedProvider, managedModel, err := resolver.ResolveProvider(context.Background(), "alice", "", "")
+	if err != nil {
+		t.Fatalf("ResolveProvider managed: %v", err)
+	}
+	if managedProvider == global || managedModel != "managed-model" {
+		t.Fatalf("managed resolution = (%T, %q), want managed provider and model", managedProvider, managedModel)
+	}
+
+	if err := store.SetPolicy("alice::chat", session.SessionPolicy{ProviderProfile: "session-byok"}); err != nil {
+		t.Fatalf("SetPolicy: %v", err)
+	}
+	providerFromSession, sessionModel, err := resolver.ResolveProvider(context.Background(), "alice", "alice::chat", "")
+	if err != nil {
+		t.Fatalf("ResolveProvider session override: %v", err)
+	}
+	if providerFromSession == global || providerFromSession == managedProvider {
+		t.Fatal("expected session BYOK profile to override managed profile")
+	}
+	if sessionModel != "session-model" {
+		t.Fatalf("session model = %q, want session-model", sessionModel)
 	}
 }
 

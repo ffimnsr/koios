@@ -18,15 +18,18 @@ import (
 // PeerAwareResolver resolves per-request providers from peer-stored profiles.
 // It caches constructed providers and falls back to the global provider when
 // no peer or session override is configured.
+const ManagedProfilePreferenceKey = "peer.llm.active_managed_profile"
+
 type PeerAwareResolver struct {
 	globalProv     Provider
 	globalModel    string
 	requestTimeout time.Duration
 	idleTimeout    time.Duration
 
-	peerStore    *peerllm.Store
-	prefStore    *preferences.Store
-	sessionStore *session.Store
+	managedProfiles map[string]config.ModelProfile
+	peerStore       *peerllm.Store
+	prefStore       *preferences.Store
+	sessionStore    *session.Store
 
 	mu    sync.RWMutex
 	cache map[string]cachedEntry
@@ -49,28 +52,64 @@ func NewPeerAwareResolver(
 	sessionStore *session.Store,
 ) *PeerAwareResolver {
 	return &PeerAwareResolver{
-		globalProv:     globalProv,
-		globalModel:    globalModel,
-		requestTimeout: requestTimeout,
-		idleTimeout:    idleTimeout,
-		peerStore:      peerStore,
-		prefStore:      prefStore,
-		sessionStore:   sessionStore,
-		cache:          make(map[string]cachedEntry),
+		globalProv:      globalProv,
+		globalModel:     globalModel,
+		requestTimeout:  requestTimeout,
+		idleTimeout:     idleTimeout,
+		managedProfiles: make(map[string]config.ModelProfile),
+		peerStore:       peerStore,
+		prefStore:       prefStore,
+		sessionStore:    sessionStore,
+		cache:           make(map[string]cachedEntry),
 	}
+}
+
+// SetManagedProfiles configures operator-managed profiles from [[llm.profiles]].
+// The profiles remain read-only; peer state stores only their selected name.
+func (r *PeerAwareResolver) SetManagedProfiles(profiles []config.ModelProfile) {
+	managedProfiles := make(map[string]config.ModelProfile, len(profiles))
+	for _, profile := range profiles {
+		name := strings.TrimSpace(profile.Name)
+		if name == "" {
+			continue
+		}
+		profile.Name = name
+		profile.APIKeys = append([]string(nil), profile.APIKeys...)
+		managedProfiles[name] = profile
+	}
+	r.mu.Lock()
+	r.managedProfiles = managedProfiles
+	for key := range r.cache {
+		if strings.HasPrefix(key, "managed::") {
+			delete(r.cache, key)
+		}
+	}
+	r.mu.Unlock()
 }
 
 // ResolveProvider implements ProviderResolver.
 func (r *PeerAwareResolver) ResolveProvider(ctx context.Context, peerID, sessionKey, modelOverride string) (Provider, string, error) {
 	// 1. Check session policy for explicit provider_profile override.
 	profileName := r.resolveSessionProfile(sessionKey)
-	fromSession := profileName != ""
-	if profileName == "" {
-		// 2. Fall back to peer default provider profile from preferences.
-		profileName = r.resolvePeerDefault(ctx, peerID)
+	if profileName != "" {
+		if r.peerStore == nil {
+			if modelOverride != "" {
+				return r.globalProv, modelOverride, nil
+			}
+			return r.globalProv, r.globalModel, nil
+		}
+		return r.resolveNamedProfile(ctx, peerID, sessionKey, profileName, modelOverride, true)
 	}
+
+	// 2. A peer-selected managed profile takes precedence over its BYOK default.
+	if profileName = r.resolveManagedProfile(ctx, peerID); profileName != "" {
+		return r.resolveManagedProfileProvider(profileName, modelOverride)
+	}
+
+	// 3. Fall back to peer default provider profile from preferences.
+	profileName = r.resolvePeerDefault(ctx, peerID)
 	if profileName == "" {
-		// 3. No override — use global provider.
+		// 4. No override — use global provider.
 		if modelOverride != "" {
 			return r.globalProv, modelOverride, nil
 		}
@@ -85,7 +124,70 @@ func (r *PeerAwareResolver) ResolveProvider(ctx context.Context, peerID, session
 		}
 		return r.globalProv, r.globalModel, nil
 	}
-	return r.resolveNamedProfile(ctx, peerID, sessionKey, profileName, modelOverride, fromSession)
+	return r.resolveNamedProfile(ctx, peerID, sessionKey, profileName, modelOverride, false)
+}
+
+func (r *PeerAwareResolver) resolveManagedProfile(ctx context.Context, peerID string) string {
+	if r.prefStore == nil || strings.TrimSpace(peerID) == "" {
+		return ""
+	}
+	pref, err := r.prefStore.Get(ctx, peerID, ManagedProfilePreferenceKey, "global")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(pref.Value)
+}
+
+func (r *PeerAwareResolver) resolveManagedProfileProvider(profileName, modelOverride string) (Provider, string, error) {
+	r.mu.RLock()
+	profile, ok := r.managedProfiles[profileName]
+	r.mu.RUnlock()
+	if !ok {
+		slog.Warn("resolver: managed profile not found, falling back to global", "profile", profileName)
+		if modelOverride != "" {
+			return r.globalProv, modelOverride, nil
+		}
+		return r.globalProv, r.globalModel, nil
+	}
+
+	cacheKey := "managed::" + profileName
+	r.mu.RLock()
+	entry, cached := r.cache[cacheKey]
+	r.mu.RUnlock()
+	if cached {
+		model := entry.model
+		if modelOverride != "" && modelOverride != r.globalModel {
+			model = modelOverride
+		}
+		return entry.prov, model, nil
+	}
+
+	defaultModel := strings.TrimSpace(profile.Model)
+	if defaultModel == "" {
+		defaultModel = r.globalModel
+	}
+	cfg := &config.Config{
+		Provider:       profile.Provider,
+		APIKey:         profile.APIKey,
+		APIKeys:        append([]string(nil), profile.APIKeys...),
+		BaseURL:        profile.BaseURL,
+		Model:          defaultModel,
+		RequestTimeout: r.requestTimeout,
+		LLMIdleTimeout: r.idleTimeout,
+	}
+	p, err := provider.New(cfg)
+	if err != nil {
+		return nil, "", fmt.Errorf("build managed profile %q: %w", profileName, err)
+	}
+	prov := p.(Provider)
+	r.mu.Lock()
+	r.cache[cacheKey] = cachedEntry{prov: prov, model: defaultModel}
+	r.mu.Unlock()
+
+	if modelOverride != "" && modelOverride != r.globalModel {
+		defaultModel = modelOverride
+	}
+	return prov, defaultModel, nil
 }
 
 // resolveSessionProfile checks the session policy for a provider_profile override.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ffimnsr/koios/internal/agent"
+	"github.com/ffimnsr/koios/internal/peerllm"
 	"github.com/ffimnsr/koios/internal/provider"
 	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/session"
@@ -83,11 +84,38 @@ func (h *Handler) providerRuntime(ctx context.Context, peerID, providerProfile s
 	}, nil
 }
 
+const providerModelsPreviewDefaultModel = "catalog-preview"
+
+func (h *Handler) providerModelsPreview(ctx context.Context, providerName, apiKey, baseURL string) (map[string]any, error) {
+	profile := &peerllm.ProviderProfile{
+		Provider:     strings.TrimSpace(providerName),
+		APIKeyEnc:    apiKey,
+		BaseURL:      strings.TrimSpace(baseURL),
+		DefaultModel: providerModelsPreviewDefaultModel,
+		Enabled:      true,
+	}
+	cfg := provider.BuildConfigFromPeerProfile(profile, h.timeout, 5*time.Second)
+	runtime, err := provider.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("build preview provider: %w", err)
+	}
+	return providerModelsFromRuntime(ctx, runtime, map[string]any{
+		"scope":         "preview",
+		"provider":      profile.Provider,
+		"base_url":      profile.BaseURL,
+		"default_model": profile.DefaultModel,
+	}, "")
+}
+
 func (h *Handler) providerModels(ctx context.Context, peerID, providerProfile string) (map[string]any, error) {
 	runtime, meta, err := h.providerRuntime(ctx, peerID, providerProfile)
 	if err != nil {
 		return nil, err
 	}
+	return providerModelsFromRuntime(ctx, runtime, meta, providerProfile)
+}
+
+func providerModelsFromRuntime(ctx context.Context, runtime any, meta map[string]any, providerProfile string) (map[string]any, error) {
 	inspector, ok := runtime.(remoteModelCatalogInspector)
 	if !ok {
 		return nil, fmt.Errorf("provider does not support dynamic model catalogs")

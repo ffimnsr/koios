@@ -356,6 +356,7 @@ func RunGateway(build BuildInfo) error {
 	// Wire peer-aware provider resolver for BYOK support.
 	if peerLLMStore != nil {
 		resolver := agent.NewPeerAwareResolver(prov, cfg.Model, cfg.RequestTimeout, cfg.LLMIdleTimeout, peerLLMStore, preferenceStore, store)
+		resolver.SetManagedProfiles(cfg.ModelProfiles)
 		agentRuntime.SetProviderResolver(resolver)
 	}
 	agentCoord = agent.NewCoordinator(agentRuntime)
@@ -521,6 +522,17 @@ func RunGateway(build BuildInfo) error {
 				return profiles
 			}(),
 		},
+		ManagedLLMProfiles: func() []handler.ManagedLLMProfileInfo {
+			profiles := make([]handler.ManagedLLMProfileInfo, 0, len(cfg.ModelProfiles))
+			for _, p := range cfg.ModelProfiles {
+				profiles = append(profiles, handler.ManagedLLMProfileInfo{
+					Name:     p.Name,
+					Provider: p.Provider,
+					Model:    p.Model,
+				})
+			}
+			return profiles
+		}(),
 		Timeout:             cfg.RequestTimeout,
 		MemStore:            memStore,
 		TaskStore:           taskStore,

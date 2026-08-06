@@ -1199,9 +1199,12 @@ Koios currently supports these `provider` values in config and BYOK provider pro
 | `openai` | [OpenAI](https://platform.openai.com/) | Default |
 | `anthropic` | [Anthropic](https://www.anthropic.com/) | Uses the native Anthropic API |
 | `openrouter` | [OpenRouter](https://openrouter.ai/) | OpenAI-compatible; supports models from many providers |
+| `opencode-go` | [OpenCode Go](https://opencode.ai/docs/providers) | OpenAI-compatible curated open-model subscription |
+| `opencode-zen` | [OpenCode Zen](https://opencode.ai/docs/zen) | Routes supported Chat Completions, Responses, and Anthropic Messages model families |
 | `nvidia` | [NVIDIA NIM](https://build.nvidia.com/) | OpenAI-compatible |
 | `gemini` | [Google Gemini](https://ai.google.dev/) | Uses Gemini's OpenAI-compatible endpoint |
 | `ollama` | [Ollama](https://ollama.com/) | Local provider; no API key required by default |
+| `ollama-cloud` | [Ollama Cloud](https://docs.ollama.com/cloud) | Direct native Ollama Cloud API; requires an API key |
 | `vllm` | [vLLM](https://github.com/vllm-project/vllm) | Local OpenAI-compatible server |
 | `litellm` | [LiteLLM](https://www.litellm.ai/) | OpenAI-compatible proxy/gateway |
 
@@ -1217,6 +1220,18 @@ provider = "ollama"
 base_url = "http://localhost:11434"
 model = "llama3.2"
 ```
+
+Example direct Ollama Cloud profile:
+
+```toml
+[[llm.profiles]]
+name = "ollama-cloud"
+provider = "ollama-cloud"
+model = "gpt-oss:120b"
+api_key = "your-ollama-api-key"
+```
+
+`ollama-cloud` calls `https://ollama.com/api/chat` and lists models through `/api/tags`. It is distinct from local `ollama`, which connects to the local OpenAI-compatible server on port `11434`.
 
 Example vLLM profile:
 
@@ -1238,6 +1253,18 @@ base_url = "http://localhost:4000"
 api_key = "your-litellm-key"
 model = "gpt-4o"
 ```
+
+Example OpenCode Zen profile:
+
+```toml
+[[llm.profiles]]
+name = "opencode-zen"
+provider = "opencode-zen"
+model = "deepseek-v4-flash-free"
+api_key = "your-opencode-zen-key"
+```
+
+Zen routes models by API protocol: `deepseek-*`, `minimax-*`, `glm-*`, `kimi-*`, and free models use Chat Completions; `gpt-*` and `grok-*` use Responses; `claude-*` and `qwen*` use Anthropic Messages. Zen Gemini models are currently rejected because Koios does not implement Zen's Google-native transport.
 
 For concurrent peer traffic, the same profile can expose a key ring instead:
 

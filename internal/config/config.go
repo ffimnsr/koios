@@ -109,9 +109,11 @@ var supportedLLMProviders = []string{
 	"litellm",
 	"nvidia",
 	"ollama",
+	"ollama-cloud",
 	"openai",
 	"openai-compatible",
 	"opencode-go",
+	"opencode-zen",
 	"openrouter",
 	"vllm",
 }

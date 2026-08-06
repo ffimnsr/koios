@@ -10,6 +10,48 @@ import (
 	"github.com/ffimnsr/koios/internal/types"
 )
 
+type providerModelsPreviewParams struct {
+	Provider string `json:"provider"`
+	APIKey   string `json:"api_key,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+}
+
+func decodeProviderModelsPreviewArgs(raw json.RawMessage) (providerModelsPreviewParams, error) {
+	var args providerModelsPreviewParams
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return args, fmt.Errorf("invalid arguments: %w", err)
+	}
+	for field, value := range fields {
+		switch field {
+		case "provider", "api_key", "base_url":
+		default:
+			return args, fmt.Errorf("invalid arguments: unknown field %q", field)
+		}
+		if strings.TrimSpace(string(value)) == "null" {
+			return args, fmt.Errorf("invalid arguments: %s must be a string", field)
+		}
+		var stringValue string
+		if err := json.Unmarshal(value, &stringValue); err != nil {
+			return args, fmt.Errorf("invalid arguments: %s must be a string", field)
+		}
+		switch field {
+		case "provider":
+			args.Provider = stringValue
+		case "api_key":
+			args.APIKey = stringValue
+		case "base_url":
+			args.BaseURL = stringValue
+		}
+	}
+	args.Provider = strings.TrimSpace(args.Provider)
+	if args.Provider == "" {
+		return args, fmt.Errorf("invalid arguments: provider is required")
+	}
+	args.BaseURL = strings.TrimSpace(args.BaseURL)
+	return args, nil
+}
+
 func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call agent.ToolCall) (any, error) {
 	switch call.Name {
 	case "message", "message.send":
@@ -612,6 +654,12 @@ func (h *Handler) executeRuntimeTool(ctx context.Context, peerID string, call ag
 			}
 		}
 		return h.providerModels(ctx, peerID, args.ProviderProfile)
+	case "provider.models_preview":
+		args, err := decodeProviderModelsPreviewArgs(call.Arguments)
+		if err != nil {
+			return nil, err
+		}
+		return h.providerModelsPreview(ctx, args.Provider, args.APIKey, args.BaseURL)
 	case "provider.usage":
 		var args struct {
 			ProviderProfile string `json:"provider_profile"`

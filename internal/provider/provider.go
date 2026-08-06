@@ -56,8 +56,12 @@ func openAICompatibleHooks(name string) transportHooks {
 }
 
 func anthropicHooks() transportHooks {
+	return anthropicCompatibleHooks("anthropic")
+}
+
+func anthropicCompatibleHooks(name string) transportHooks {
 	return transportHooks{
-		name: "anthropic",
+		name: name,
 		capabilities: types.ProviderCapabilities{
 			Name:                "anthropic",
 			SupportsStreaming:   true,
@@ -150,6 +154,13 @@ func New(cfg *config.Config) (Provider, error) {
 			hooks:       openAICompatibleHooks("opencode-go"),
 		}, nil
 
+	case "opencode-zen":
+		base := cfg.BaseURL
+		if base == "" {
+			base = "https://opencode.ai/zen"
+		}
+		return newOpenCodeZenProvider(client, selector, stripV1(base), cfg.Model, cfg.LLMIdleTimeout), nil
+
 	case "anthropic":
 		base := cfg.BaseURL
 		if base == "" {
@@ -193,6 +204,19 @@ func New(cfg *config.Config) (Provider, error) {
 			model:       cfg.Model,
 			idleTimeout: cfg.LLMIdleTimeout,
 			hooks:       openAICompatibleHooks("ollama"),
+		}, nil
+
+	case "ollama-cloud":
+		base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+		if base == "" {
+			base = ollamaCloudBaseURL
+		}
+		return &ollamaCloudProvider{
+			client:      client,
+			selector:    selector,
+			baseURL:     base,
+			model:       cfg.Model,
+			idleTimeout: cfg.LLMIdleTimeout,
 		}, nil
 
 	case "vllm":

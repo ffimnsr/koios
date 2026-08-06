@@ -37,6 +37,7 @@
 //
 //	ping
 //	server.capabilities
+//	llm.managed_profile.list / .activate
 //	chat
 //	brief.generate
 //	session.history
@@ -234,6 +235,7 @@ type Handler struct {
 	timeout                 time.Duration
 	model                   string
 	modelCatalog            ModelCatalog
+	managedLLMProfiles      []ManagedLLMProfileInfo
 	memStore                *memory.Store
 	taskStore               *tasks.Store
 	bookmarkStore           *bookmarks.Store
@@ -333,8 +335,11 @@ type Handler struct {
 
 // HandlerOptions holds all optional subsystem references.
 type HandlerOptions struct {
-	Model               string
-	ModelCatalog        ModelCatalog
+	Model        string
+	ModelCatalog ModelCatalog
+	// ManagedLLMProfiles are operator-configured profiles available for
+	// peer-local selection through llm.managed_profile.* RPCs.
+	ManagedLLMProfiles  []ManagedLLMProfileInfo
 	Timeout             time.Duration
 	MemStore            *memory.Store
 	TaskStore           *tasks.Store
@@ -455,6 +460,7 @@ func NewHandler(store *session.Store, prov llmProvider, opts HandlerOptions) *Ha
 		timeout:                 timeout,
 		model:                   opts.Model,
 		modelCatalog:            opts.ModelCatalog,
+		managedLLMProfiles:      append([]ManagedLLMProfileInfo(nil), opts.ManagedLLMProfiles...),
 		memStore:                opts.MemStore,
 		taskStore:               opts.TaskStore,
 		bookmarkStore:           opts.BookmarkStore,

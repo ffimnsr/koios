@@ -1013,13 +1013,14 @@ func firstGeminiReplayMarker(text string, markers []string) (int, string) {
 }
 
 type openAIProvider struct {
-	client      *http.Client
-	selector    *credentialSelector
-	apiKey      string
-	baseURL     string
-	model       string
-	idleTimeout time.Duration
-	hooks       transportHooks
+	client         *http.Client
+	selector       *credentialSelector
+	apiKey         string
+	baseURL        string
+	model          string
+	idleTimeout    time.Duration
+	hooks          transportHooks
+	forceResponses bool
 }
 
 func (p *openAIProvider) Capabilities(string) types.ProviderCapabilities {
@@ -1046,7 +1047,7 @@ func (p *openAIProvider) Complete(ctx context.Context, req *types.ChatRequest) (
 		req.Model = p.model
 	}
 	req.Stream = false
-	if shouldUseOpenAIResponses(req, p.hooks.name) {
+	if p.forceResponses || shouldUseOpenAIResponses(req, p.hooks.name) {
 		return p.completeResponses(ctx, req)
 	}
 	return p.completeChatCompletions(ctx, req)
@@ -1142,7 +1143,7 @@ func (p *openAIProvider) completeResponses(ctx context.Context, req *types.ChatR
 }
 
 func (p *openAIProvider) CompleteStream(ctx context.Context, req *types.ChatRequest, w http.ResponseWriter) (string, error) {
-	if shouldUseOpenAIResponses(req, p.hooks.name) {
+	if p.forceResponses || shouldUseOpenAIResponses(req, p.hooks.name) {
 		return p.completeResponsesStream(ctx, req, w)
 	}
 	return p.completeChatCompletionsStream(ctx, req, w)

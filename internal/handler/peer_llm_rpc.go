@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/agent"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/peerllm"
 	"github.com/ffimnsr/koios/internal/preferences"
@@ -460,12 +461,14 @@ func (h *Handler) rpcPeerLLMActivate(ctx context.Context, wsc *wsConn, req *rpcR
 		})
 		return
 	}
-	pref, err := h.preferenceStore.Set(ctx, wsc.peerID, preferencesInput("peer.llm.default_provider_profile", name))
-	if err != nil {
+	if _, err := h.preferenceStore.Set(ctx, wsc.peerID, preferencesInput("peer.llm.default_provider_profile", name)); err != nil {
 		wsc.replyErr(req.ID, errCodeServer, fmt.Sprintf("activate: %s", err))
 		return
 	}
-	_ = pref
+	if err := h.preferenceStore.Delete(ctx, wsc.peerID, agent.ManagedProfilePreferenceKey, "global"); err != nil {
+		wsc.replyErr(req.ID, errCodeServer, fmt.Sprintf("clear managed profile selection: %s", err))
+		return
+	}
 	wsc.reply(req.ID, map[string]any{
 		"ok":             true,
 		"active_profile": name,
