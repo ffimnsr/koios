@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-08-06
+
+### Added
+
+- add new providers (`a9f24d3`)
+
 ## [0.8.3] - 2026-08-05
 
 ### Added
@@ -464,7 +470,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/ffimnsr/koios/releases/tag/v0.8.4
 [0.8.3]: https://github.com/ffimnsr/koios/releases/tag/v0.8.3
 [0.8.2]: https://github.com/ffimnsr/koios/releases/tag/v0.8.2
 [0.8.1]: https://github.com/ffimnsr/koios/releases/tag/v0.8.1
