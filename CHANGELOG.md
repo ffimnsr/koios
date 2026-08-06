@@ -12,6 +12,12 @@ changelog together.
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-08-06
+
+### Added
+
+- update opencode-zen error on reasoning (`9cb2160`)
+
 ## [0.8.4] - 2026-08-06
 
 ### Added
@@ -470,7 +476,8 @@ changelog together.
 - Cobra-based operator CLI for health checks, agent execution, state inspection, and configuration bootstrap.
 - Release and versioning scripts built around the repository `VERSION` file.
 
-[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.4...HEAD
+[Unreleased]: https://github.com/ffimnsr/koios/compare/v0.8.5...HEAD
+[0.8.5]: https://github.com/ffimnsr/koios/releases/tag/v0.8.5
 [0.8.4]: https://github.com/ffimnsr/koios/releases/tag/v0.8.4
 [0.8.3]: https://github.com/ffimnsr/koios/releases/tag/v0.8.3
 [0.8.2]: https://github.com/ffimnsr/koios/releases/tag/v0.8.2
