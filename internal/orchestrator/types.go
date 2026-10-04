@@ -197,11 +197,18 @@ type FanOutRequest struct {
 	// ParentSessionKey is the session that receives announcements and the final
 	// aggregated reply.
 	ParentSessionKey string `json:"parent_session_key,omitempty"`
+	// Depth is the orchestration nesting depth: 1 for a top-level fan-out, one
+	// more for every enclosing orchestration. Runs beyond
+	// MaxOrchestrationDepth are rejected.
+	Depth int `json:"depth,omitempty"`
 	// Tasks is the list of child tasks to spawn.
 	Tasks []ChildTask `json:"tasks"`
 	// MaxConcurrency limits how many children run simultaneously (<=0 = unlimited).
 	MaxConcurrency int `json:"max_concurrency,omitempty"`
-	// Timeout is the wall-clock deadline for the entire orchestration.
+	// Timeout is the wall-clock deadline for the entire orchestration. The run
+	// context is detached from the caller: without a Timeout the run continues
+	// in the background (each child is still bounded by its own timeout) until
+	// all children finish or Cancel is called.
 	Timeout time.Duration `json:"timeout,omitempty"`
 	// ChildTimeout is the per-child execution timeout when not specified inline.
 	ChildTimeout time.Duration `json:"child_timeout,omitempty"`

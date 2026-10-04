@@ -25,6 +25,13 @@ import (
 )
 
 const (
+	// ProtocolVersion2026 is the MCP protocol revision Koios targets on the
+	// wire, matching the official Go SDK's latest supported version (v1.8).
+	// Version negotiation itself is SDK-owned: newer-revision servers negotiate
+	// down over server/discover, and servers that only speak older revisions
+	// fall back to the legacy initialize handshake at their newest supported
+	// version. Koios pins the revision deliberately so a future SDK release
+	// adding newer revisions does not silently change the negotiated surface.
 	ProtocolVersion2026 = "2026-07-28"
 	clientName          = "koios"
 	clientVersion       = "1.0"

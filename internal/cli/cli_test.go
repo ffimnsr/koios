@@ -22,12 +22,12 @@ import (
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/handler"
-	"github.com/ffimnsr/koios/internal/mcp"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/tasks"
 	"github.com/ffimnsr/koios/internal/workflow"
 	"github.com/ffimnsr/koios/internal/workspace"
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestResolveRepoState(t *testing.T) {
@@ -1959,6 +1959,19 @@ func TestDoctorDeepProbesGatewayAndMonitor(t *testing.T) {
 }
 
 func TestDoctorDeepProbesMCPHTTPServer(t *testing.T) {
+	// The MCP endpoint is an official-SDK-backed server: the same protocol
+	// stack (server/discover negotiation, tools/list) the doctor probe drives
+	// against real servers.
+	mcpServer := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "demo", Version: "1.0.0"}, nil)
+	sdkmcp.AddTool(mcpServer, &sdkmcp.Tool{
+		Name:        "echo",
+		Description: "echo input",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ *sdkmcp.CallToolRequest, _ map[string]any) (*sdkmcp.CallToolResult, any, error) {
+		return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "echo"}}}, nil, nil
+	})
+	mcpHandler := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return mcpServer }, nil)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/healthz":
@@ -1966,57 +1979,14 @@ func TestDoctorDeepProbesMCPHTTPServer(t *testing.T) {
 		case "/":
 			_ = json.NewEncoder(w).Encode(map[string]any{"version": "0.1.0", "git_hash": "abc", "build_time": "now"})
 		case "/v1/monitor":
-			_ = json.NewEncoder(w).Encode(map[string]any{"stale": false, "subsystems": map[string]any{}})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"stale": false,
+				"subsystems": map[string]any{
+					"scheduler": map[string]any{"restarts": 1},
+				},
+			})
 		case "/mcp":
-			// The SDK-backed Streamable HTTP client requires JSON responses.
-			w.Header().Set("Content-Type", "application/json")
-			var req map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode mcp request: %v", err)
-			}
-			method, _ := req["method"].(string)
-			switch method {
-			case "server/discover":
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"jsonrpc": "2.0",
-					"id":      req["id"],
-					"result": map[string]any{
-						"supportedVersions": []string{mcp.ProtocolVersion2026, "2025-11-25"},
-						"capabilities":      map[string]any{"tools": map[string]any{}},
-						"_meta": map[string]any{
-							"io.modelcontextprotocol/serverInfo": map[string]any{"name": "demo", "version": "1.0.0"},
-						},
-					},
-				})
-			case "initialize":
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"jsonrpc": "2.0",
-					"id":      req["id"],
-					"result": map[string]any{
-						"protocolVersion": "2024-11-05",
-						"capabilities":    map[string]any{},
-						"serverInfo":      map[string]any{"name": "demo", "version": "1.0.0"},
-					},
-				})
-			case "tools/list":
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"jsonrpc": "2.0",
-					"id":      req["id"],
-					"result": map[string]any{
-						"tools": []map[string]any{{
-							"name":        "echo",
-							"description": "echo input",
-							"inputSchema": map[string]any{"type": "object"},
-						}},
-					},
-				})
-			default:
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"jsonrpc": "2.0",
-					"id":      req["id"],
-					"error":   map[string]any{"code": -32601, "message": "method not found"},
-				})
-			}
+			mcpHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -2439,71 +2409,35 @@ func writeExtensionTestManifest(t *testing.T, dir, content string) {
 
 func newTestExtensionMCPServer(t *testing.T, tools []map[string]any, call func(name string, args map[string]any) string) *httptest.Server {
 	t.Helper()
+	// The fixture MCP endpoint is an official-SDK-backed server, so extension
+	// CLI tests exercise the same protocol stack (server/discover negotiation,
+	// tools/list, tools/call) as production.
+	mcpServer := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "demo", Version: "1.0.0"}, nil)
+	for _, raw := range tools {
+		toolRaw, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatalf("marshal tool: %v", err)
+		}
+		var tool sdkmcp.Tool
+		if err := json.Unmarshal(toolRaw, &tool); err != nil {
+			t.Fatalf("decode tool: %v", err)
+		}
+		name := tool.Name
+		sdkmcp.AddTool(mcpServer, &tool, func(_ context.Context, _ *sdkmcp.CallToolRequest, args map[string]any) (*sdkmcp.CallToolResult, any, error) {
+			text := ""
+			if call != nil {
+				text = call(name, args)
+			}
+			return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: text}}}, nil, nil
+		})
+	}
+	handler := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return mcpServer }, nil)
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/mcp" {
 			http.NotFound(w, r)
 			return
 		}
-		// The SDK-backed Streamable HTTP client requires JSON responses.
-		w.Header().Set("Content-Type", "application/json")
-		var req map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode mcp request: %v", err)
-		}
-		method, _ := req["method"].(string)
-		switch method {
-		case "server/discover":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"jsonrpc": "2.0",
-				"id":      req["id"],
-				"result": map[string]any{
-					"supportedVersions": []string{mcp.ProtocolVersion2026, "2025-11-25", "2025-03-26"},
-					"capabilities":      map[string]any{"tools": map[string]any{}},
-					"_meta": map[string]any{
-						"io.modelcontextprotocol/serverInfo": map[string]any{"name": "demo", "version": "1.0.0"},
-					},
-				},
-			})
-		case "initialize":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"jsonrpc": "2.0",
-				"id":      req["id"],
-				"result": map[string]any{
-					"protocolVersion": mcp.ProtocolVersion2026,
-					"capabilities":    map[string]any{},
-					"serverInfo":      map[string]any{"name": "demo", "version": "1.0.0"},
-				},
-			})
-		case "tools/list":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"jsonrpc": "2.0",
-				"id":      req["id"],
-				"result": map[string]any{
-					"tools": tools,
-				},
-			})
-		case "tools/call":
-			params, _ := req["params"].(map[string]any)
-			name, _ := params["name"].(string)
-			arguments, _ := params["arguments"].(map[string]any)
-			text := "ok"
-			if call != nil {
-				text = call(name, arguments)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"jsonrpc": "2.0",
-				"id":      req["id"],
-				"result": map[string]any{
-					"content": []map[string]any{{"type": "text", "text": text}},
-				},
-			})
-		default:
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"jsonrpc": "2.0",
-				"id":      req["id"],
-				"error":   map[string]any{"code": -32601, "message": "method not found"},
-			})
-		}
+		handler.ServeHTTP(w, r)
 	}))
 }
 

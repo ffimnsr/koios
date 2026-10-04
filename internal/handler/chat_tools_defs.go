@@ -3447,7 +3447,7 @@ var toolDefs = []toolDef{
 	// ── orchestrator.* ───────────────────────────────────────────────────────
 	{
 		name:        "orchestrator.start",
-		description: "Start a multi-session fan-out: spawn N child agents in parallel, then aggregate their replies. Returns immediately with an orchestration run ID.",
+		description: "Start a multi-session fan-out: spawn N child agents in parallel, then aggregate their replies. Returns immediately with an orchestration run ID. The run continues in the background after the current turn ends; poll it with orchestrator.status, await it with orchestrator.wait, and abort it with orchestrator.cancel.",
 		parameters: mustJSONSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{

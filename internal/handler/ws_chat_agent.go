@@ -159,16 +159,23 @@ func (h *Handler) rpcChat(ctx context.Context, wsc *wsConn, req *rpcRequest) {
 			return
 		}
 		visibleText, _ := h.userVisibleReply(wsc.peerID, result)
+		// Buffered runs (e.g. non-streaming tool probes) emit no live deltas;
+		// send a single final delta as the complete-text echo. It is marked
+		// final so clients can render it in place of reply.assistant_text.
 		if !sw.HasDeltas() && visibleText != "" {
 			wsc.notify("stream.delta", map[string]any{
 				"req_id":  req.ID,
 				"content": visibleText,
+				"final":   true,
 			})
 		}
 		if h.usageStore != nil {
 			h.usageStore.Add(wsc.peerID, result.Usage)
 		}
-		wsc.reply(req.ID, map[string]any{"assistant_text": visibleText, "usage": result.Usage, "done": true, "suppressed_reply": result.SuppressedReply})
+		// streamed tells the client whether progressive deltas were emitted; when
+		// false, reply.assistant_text (or the single final delta) is the whole
+		// text.
+		wsc.reply(req.ID, map[string]any{"assistant_text": visibleText, "usage": result.Usage, "done": true, "suppressed_reply": result.SuppressedReply, "streamed": sw.HasDeltas()})
 		return
 	}
 
@@ -621,10 +628,13 @@ func (h *Handler) rpcAgentRun(ctx context.Context, wsc *wsConn, req *rpcRequest)
 			return
 		}
 		visibleText, visibleResp := h.userVisibleReply(wsc.peerID, result)
+		// Buffered runs get a single final delta as the complete-text echo; see
+		// rpcChat for the contract.
 		if !sw.HasDeltas() && visibleText != "" {
 			wsc.notify("stream.delta", map[string]any{
 				"req_id":  req.ID,
 				"content": visibleText,
+				"final":   true,
 			})
 		}
 		if h.usageStore != nil {
@@ -633,7 +643,13 @@ func (h *Handler) rpcAgentRun(ctx context.Context, wsc *wsConn, req *rpcRequest)
 		visible := *result
 		visible.AssistantText = visibleText
 		visible.Response = visibleResp
-		wsc.reply(req.ID, visible)
+		// Mirror the non-stream reply shape so the caller gets the run_id it can
+		// use with agent.cancel, plus the streamed marker.
+		wsc.reply(req.ID, map[string]any{
+			"run_id":   runID,
+			"result":   visible,
+			"streamed": sw.HasDeltas(),
+		})
 		return
 	}
 

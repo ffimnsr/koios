@@ -127,19 +127,22 @@ func (c *sdkClient) Initialize(ctx context.Context) error {
 	}
 
 	notifications := make(chan Notification, 64)
+	// No client capabilities are declared beyond an empty set: Koios fulfills
+	// MRTR input-required results itself through CallToolWithInput (the agent
+	// supplies the responses), so declaring the elicitation capability would
+	// overstate the client — a server honoring it would send
+	// elicitation/request, which this client has no handler for and would fail
+	// with method-not-found. Servers fall back to the input_required result
+	// type when the client declares no elicitation support, which is exactly
+	// the flow Koios implements. (The empty value also keeps the SDK from
+	// advertising roots support, which Koios does not provide either.)
 	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: clientName, Version: clientVersion},
 		&sdkmcp.ClientOptions{
-			Capabilities: &sdkmcp.ClientCapabilities{
-				Elicitation: &sdkmcp.ElicitationCapabilities{
-					Form: &sdkmcp.FormElicitationCapabilities{},
-					URL:  &sdkmcp.URLElicitationCapabilities{},
-				},
-			},
-			// Koios drives the MRTR retry loop itself through
-			// CallToolWithInput (the agent fulfills input requests), so the
-			// SDK's automatic input-request middleware must not swallow
+			Capabilities: &sdkmcp.ClientCapabilities{},
+			// The SDK's automatic input-request middleware must not swallow
 			// input_required results or fail because no elicitation/sampling
-			// handlers are registered.
+			// handlers are registered: Koios drives the MRTR retry loop itself
+			// through CallToolWithInput.
 			MultiRoundTrip:             &sdkmcp.MultiRoundTripOptions{Disabled: true},
 			ToolListChangedHandler:     newSDKNotificationHandler[*sdkmcp.ToolListChangedRequest](notifications, "notifications/tools/list_changed", nil),
 			PromptListChangedHandler:   newSDKNotificationHandler[*sdkmcp.PromptListChangedRequest](notifications, "notifications/prompts/list_changed", nil),
@@ -156,7 +159,7 @@ func (c *sdkClient) Initialize(ctx context.Context) error {
 	var transport sdkmcp.Transport
 	switch c.transport {
 	case "stdio":
-		transport = newSDKCommandTransport(c.cfg)
+		transport = newSDKCommandTransport(ctx, c.cfg)
 	default:
 		transport = newSDKHTTPTransport(c.cfg)
 	}
@@ -177,9 +180,14 @@ func (c *sdkClient) Initialize(ctx context.Context) error {
 }
 
 // newSDKCommandTransport builds the SDK stdio transport from the server config.
-// The subprocess is spawned on first use (Client.Connect).
-func newSDKCommandTransport(c config.MCPServerConfig) sdkmcp.Transport {
-	cmd := exec.Command(c.Command, c.Args...)
+// The subprocess is spawned on first use (Client.Connect). The command context
+// is detached from the Initialize handshake because the subprocess outlives it:
+// teardown is driven by Close through the SDK transport, which closes stdin and
+// escalates to SIGTERM/SIGKILL.
+func newSDKCommandTransport(ctx context.Context, c config.MCPServerConfig) sdkmcp.Transport {
+	// Command and Args come from the operator-owned koios.config.toml; spawning
+	// the configured MCP server process is the intended behavior.
+	cmd := exec.CommandContext(context.WithoutCancel(ctx), c.Command, c.Args...) // #nosec G204 -- operator-configured MCP stdio server
 	if len(c.Env) > 0 {
 		cmd.Env = append([]string(nil), os.Environ()...)
 		for k, v := range c.Env {

@@ -189,17 +189,17 @@ func TestFromSDKGetPromptResultConversion(t *testing.T) {
 // ─── SDK-backed asset requests over HTTP ──────────────────────────────────────
 
 // minimalAssetClient connects a client to the minimal asset-serving server.
-func minimalAssetClient(t *testing.T) (Client, *minimalMCPServer) {
+func minimalAssetClient(t *testing.T) Client {
 	t.Helper()
 	server := newMinimalMCPServerWithAssets(t)
 	client := NewSDKClient(configForMinimalServer(server))
 	t.Cleanup(func() { _ = client.Close() })
 	initializeFixture(t, client)
-	return client, server
+	return client
 }
 
 func TestSDKClientListResourcesOverHTTP(t *testing.T) {
-	client, _ := minimalAssetClient(t)
+	client := minimalAssetClient(t)
 
 	resources, err := client.ListResources(context.Background())
 	if err != nil {
@@ -221,7 +221,7 @@ func TestSDKClientListResourcesOverHTTP(t *testing.T) {
 }
 
 func TestSDKClientListResourceTemplatesOverHTTP(t *testing.T) {
-	client, _ := minimalAssetClient(t)
+	client := minimalAssetClient(t)
 
 	templates, err := client.ListResourceTemplates(context.Background())
 	if err != nil {
@@ -240,7 +240,7 @@ func TestSDKClientListResourceTemplatesOverHTTP(t *testing.T) {
 }
 
 func TestSDKClientReadResourceOverHTTP(t *testing.T) {
-	client, _ := minimalAssetClient(t)
+	client := minimalAssetClient(t)
 
 	result, err := client.ReadResource(context.Background(), "mach1://strategy-spec/schema.json")
 	if err != nil {
@@ -264,7 +264,7 @@ func TestSDKClientReadResourceOverHTTP(t *testing.T) {
 // TestSDKClientReadResourceTTLMetadataOverHTTP verifies the TTL/cache-scope
 // metadata the manager relies on reaches the Koios read result over the wire.
 func TestSDKClientReadResourceTTLMetadataOverHTTP(t *testing.T) {
-	client, _ := minimalAssetClient(t)
+	client := minimalAssetClient(t)
 
 	result, err := client.ReadResource(context.Background(), "mach1://strategy-spec/schema.json")
 	if err != nil {
@@ -276,7 +276,7 @@ func TestSDKClientReadResourceTTLMetadataOverHTTP(t *testing.T) {
 }
 
 func TestSDKClientListPromptsOverHTTP(t *testing.T) {
-	client, _ := minimalAssetClient(t)
+	client := minimalAssetClient(t)
 
 	prompts, err := client.ListPrompts(context.Background())
 	if err != nil {
@@ -301,7 +301,7 @@ func TestSDKClientListPromptsOverHTTP(t *testing.T) {
 }
 
 func TestSDKClientGetPromptOverHTTP(t *testing.T) {
-	client, _ := minimalAssetClient(t)
+	client := minimalAssetClient(t)
 
 	result, err := client.GetPrompt(context.Background(), "greet", map[string]any{"name": "acme"})
 	if err != nil {

@@ -470,13 +470,42 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 				return sb.String(), err
 			}
 
+		case "content_block_start":
+			// tool_use blocks open a streamed tool call; forward them as
+			// OpenAI-style tool_calls chunks so the runtime's capture can execute
+			// the call after the stream ends.
+			var cbs struct {
+				Index        int `json:"index"`
+				ContentBlock struct {
+					Type string `json:"type"`
+					ID   string `json:"id,omitempty"`
+					Name string `json:"name,omitempty"`
+				} `json:"content_block"`
+			}
+			if err := json.Unmarshal([]byte(data), &cbs); err != nil {
+				continue
+			}
+			if cbs.ContentBlock.Type != "tool_use" {
+				continue
+			}
+			call := &openAIResponsesStreamToolCall{
+				Index: cbs.Index,
+				ID:    cbs.ContentBlock.ID,
+				Name:  cbs.ContentBlock.Name,
+			}
+			if err := writeOpenAIToolCallChunk(w, flusher, msgID, p.model, created, call, ""); err != nil {
+				return sb.String(), err
+			}
+
 		case "content_block_delta":
 			var cbd struct {
+				Index int `json:"index"`
 				Delta struct {
-					Type      string `json:"type"`
-					Text      string `json:"text,omitempty"`
-					Thinking  string `json:"thinking,omitempty"`
-					Signature string `json:"signature,omitempty"`
+					Type        string `json:"type"`
+					Text        string `json:"text,omitempty"`
+					Thinking    string `json:"thinking,omitempty"`
+					Signature   string `json:"signature,omitempty"`
+					PartialJSON string `json:"partial_json,omitempty"`
 				} `json:"delta"`
 			}
 			if err := json.Unmarshal([]byte(data), &cbd); err != nil {
@@ -495,6 +524,14 @@ func (p *anthropicProvider) CompleteStream(ctx context.Context, req *types.ChatR
 				reasoningBuffer.WriteString(cbd.Delta.Thinking)
 				if req.ReasoningVisibility == "full" {
 					types.EmitReasoningEvent(streamCtx, types.ReasoningEvent{Kind: types.ReasoningEventDelta, Provider: "anthropic", Text: cbd.Delta.Thinking})
+				}
+			case "input_json_delta":
+				if cbd.Delta.PartialJSON == "" {
+					continue
+				}
+				call := &openAIResponsesStreamToolCall{Index: cbd.Index}
+				if err := writeOpenAIToolCallChunk(w, flusher, msgID, p.model, created, call, cbd.Delta.PartialJSON); err != nil {
+					return sb.String(), err
 				}
 			}
 

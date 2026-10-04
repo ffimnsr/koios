@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -552,12 +553,21 @@ type minimalMCPRecord struct {
 // When assets is true it also serves resources, resource templates, and
 // prompts; otherwise those methods fail with -32601 method not found, matching
 // servers that do not implement the capability.
+//
+// When versions is set, server/discover advertises exactly those protocol
+// versions, and the legacy initialize handshake negotiates against them, so
+// multi-version negotiation can be exercised for servers that only speak older
+// protocol revisions. When noDiscover is set, server/discover answers with
+// method not found, matching pre-2026-07-28 servers that do not know the
+// stateless discovery RPC.
 type minimalMCPServer struct {
-	mu      sync.Mutex
-	records []minimalMCPRecord
-	srv     *httptest.Server
-	url     string
-	assets  bool
+	mu         sync.Mutex
+	records    []minimalMCPRecord
+	srv        *httptest.Server
+	url        string
+	assets     bool
+	versions   []string
+	noDiscover bool
 	// paging, when true, makes tools/list serve two pages so client-side
 	// cursor pagination is exercised end to end.
 	paging bool
@@ -573,7 +583,32 @@ func newMinimalMCPServerWithAssets(t *testing.T) *minimalMCPServer {
 
 func newMinimalMCPServerMode(t *testing.T, assets bool) *minimalMCPServer {
 	t.Helper()
-	m := &minimalMCPServer{assets: assets}
+	m := &minimalMCPServer{assets: assets, versions: []string{ProtocolVersion2026}}
+	m.srv = httptest.NewServer(http.HandlerFunc(m.serveHTTP))
+	t.Cleanup(m.srv.Close)
+	m.url = m.srv.URL
+	return m
+}
+
+// newMinimalMCPServerWithVersions builds a server that advertises exactly the
+// given protocol versions (newest first) in server/discover and negotiates the
+// legacy initialize handshake against them, for multi-version tests.
+func newMinimalMCPServerWithVersions(t *testing.T, versions []string) *minimalMCPServer {
+	t.Helper()
+	m := &minimalMCPServer{versions: versions}
+	m.srv = httptest.NewServer(http.HandlerFunc(m.serveHTTP))
+	t.Cleanup(m.srv.Close)
+	m.url = m.srv.URL
+	return m
+}
+
+// newMinimalMCPServerLegacyOnly builds a server that does not implement the
+// stateless server/discover RPC at all (answering method not found, as real
+// pre-2026-07-28 servers do) and negotiates the legacy initialize handshake
+// against the given versions.
+func newMinimalMCPServerLegacyOnly(t *testing.T, versions []string) *minimalMCPServer {
+	t.Helper()
+	m := &minimalMCPServer{versions: versions, noDiscover: true}
 	m.srv = httptest.NewServer(http.HandlerFunc(m.serveHTTP))
 	t.Cleanup(m.srv.Close)
 	m.url = m.srv.URL
@@ -584,7 +619,7 @@ func newMinimalMCPServerMode(t *testing.T, assets bool) *minimalMCPServer {
 // across two pages.
 func newMinimalMCPServerPaged(t *testing.T) *minimalMCPServer {
 	t.Helper()
-	m := &minimalMCPServer{paging: true}
+	m := &minimalMCPServer{paging: true, versions: []string{ProtocolVersion2026}}
 	m.srv = httptest.NewServer(http.HandlerFunc(m.serveHTTP))
 	t.Cleanup(m.srv.Close)
 	m.url = m.srv.URL
@@ -618,18 +653,57 @@ func (m *minimalMCPServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	m.records = append(m.records, minimalMCPRecord{rpcMethod: req.Method, rpcParams: req.Params, header: r.Header.Clone()})
 	m.mu.Unlock()
 
+	if len(req.ID) == 0 || string(req.ID) == "null" {
+		// JSON-RPC notifications (e.g. notifications/initialized) carry no id;
+		// acknowledge them without a response body.
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	if m.noDiscover && req.Method == "server/discover" {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"error":   map[string]any{"code": -32601, "message": "method not found"},
+		})
+		return
+	}
+	versions := m.versions
+	if len(versions) == 0 {
+		versions = []string{ProtocolVersion2026}
+	}
 	switch req.Method {
 	case "server/discover":
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"jsonrpc": "2.0",
 			"id":      req.ID,
 			"result": map[string]any{
-				"supportedVersions": []string{ProtocolVersion2026},
+				"supportedVersions": versions,
 				"capabilities":      map[string]any{"tools": map[string]any{"listChanged": false}},
 				"_meta": map[string]any{
 					"io.modelcontextprotocol/serverInfo": map[string]any{"name": "minimal-fixture", "version": "1.0.0"},
 				},
+			},
+		})
+	case "initialize":
+		// Legacy handshake: echo the requested version when it is supported,
+		// otherwise answer with the newest version the fixture supports.
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(req.Params, &params)
+		negotiated := params.ProtocolVersion
+		if !slices.Contains(versions, negotiated) {
+			negotiated = versions[0]
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result": map[string]any{
+				"protocolVersion": negotiated,
+				"capabilities":    map[string]any{},
+				"serverInfo":      map[string]any{"name": "minimal-fixture", "version": "1.0.0"},
 			},
 		})
 	case "tools/list":

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ffimnsr/koios/internal/eventbus"
 	"github.com/ffimnsr/koios/internal/redact"
 	"github.com/ffimnsr/koios/internal/runledger"
 	"github.com/ffimnsr/koios/internal/subagent"
@@ -92,6 +93,13 @@ func (o *Orchestrator) execute(ctx context.Context, cancel context.CancelFunc, r
 // spawnAndPoll launches one subagent run and blocks until it reaches a
 // terminal state or ctx is cancelled. It registers the spawn run ID in
 // run.childRunIDs so killActiveChildren can reach it during cancellation.
+//
+// Completion is event-driven: the subagent runtime publishes terminal
+// lifecycle events on the event bus (subagent.completed / errored / killed /
+// cancelled), so children are observed as soon as they finish instead of being
+// polled. The subscription is opened before Spawn so a fast-finishing child
+// cannot be missed; a slow watchdog guards against dropped events or a nil
+// bus.
 func (o *Orchestrator) spawnAndPoll(ctx context.Context, run *Run, req FanOutRequest, idx int, task ChildTask) childOutcome {
 	peerID := task.PeerID
 	if peerID == "" {
@@ -123,7 +131,26 @@ func (o *Orchestrator) spawnAndPoll(ctx context.Context, run *Run, req FanOutReq
 		AnnounceSkip:     true,
 		ReplyBack:        false,
 		ReplySkip:        true,
+		// Children run enclosed by this orchestration; the depth threads into
+		// their tool run context so their own orchestrator.start calls stay
+		// within MaxOrchestrationDepth.
+		Depth: req.Depth,
 	}
+
+	// Subscribe before spawning so terminal events for a fast-finishing child
+	// cannot be missed. The channel is buffered generously; if it ever fills,
+	// the watchdog below still observes the terminal state.
+	events := make(chan eventbus.Event, 64)
+	unsubscribe := func() {}
+	if o.bus != nil {
+		unsubscribe = o.bus.Subscribe(func(ev eventbus.Event) {
+			select {
+			case events <- ev:
+			default:
+			}
+		})
+	}
+	defer unsubscribe()
 
 	rec, err := o.subRuntime.Spawn(ctx, spawnReq)
 	if err != nil {
@@ -137,6 +164,11 @@ func (o *Orchestrator) spawnAndPoll(ctx context.Context, run *Run, req FanOutReq
 
 	run.appendTimeline("child.queued", run.Children[idx].Label, idx, map[string]any{"run_id": rec.ID})
 
+	// The watchdog is a safety net for dropped events (a full channel buffer or
+	// a nil bus); the event path is the primary completion signal.
+	watchdog := time.NewTicker(childCompletionWatchdog)
+	defer watchdog.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -147,28 +179,64 @@ func (o *Orchestrator) spawnAndPoll(ctx context.Context, run *Run, req FanOutReq
 				status:     subagent.StatusKilled,
 				err:        "context cancelled",
 			}
-		case <-time.After(500 * time.Millisecond):
-		}
-		current, ok := o.subRuntime.Get(rec.ID)
-		if !ok {
-			break
-		}
-		switch current.Status {
-		case subagent.StatusCompleted, subagent.StatusErrored, subagent.StatusKilled:
-			return childOutcome{
-				runID:      rec.ID,
-				sessionKey: rec.SessionKey,
-				startedAt:  rec.CreatedAt,
-				status:     current.Status,
-				finalReply: redact.String(current.FinalReply),
-				err:        current.Error,
-				steps:      current.SubTurn.Steps,
-				toolCalls:  current.SubTurn.ToolCalls,
-				finishedAt: current.FinishedAt,
+		case ev := <-events:
+			if ev.RunID != rec.ID || !terminalSubagentEvent(ev.Kind) {
+				continue
+			}
+			return o.childOutcomeFor(rec.ID)
+		case <-watchdog.C:
+			current, ok := o.subRuntime.Get(rec.ID)
+			if !ok {
+				return childOutcome{status: subagent.StatusErrored, err: "child record disappeared"}
+			}
+			if terminalSubagentStatus(current.Status) {
+				return o.childOutcomeFor(rec.ID)
 			}
 		}
 	}
-	return childOutcome{status: subagent.StatusErrored, err: "poll loop exited unexpectedly"}
+}
+
+// childCompletionWatchdog is how long the event-driven child waiter waits
+// before re-checking the registry, guarding against dropped or missed events.
+const childCompletionWatchdog = 2 * time.Second
+
+// terminalSubagentEvent reports whether a subagent lifecycle event kind is a
+// terminal state.
+func terminalSubagentEvent(kind string) bool {
+	switch kind {
+	case "subagent.completed", "subagent.errored", "subagent.killed", "subagent.cancelled":
+		return true
+	}
+	return false
+}
+
+// terminalSubagentStatus reports whether a subagent run status is terminal.
+func terminalSubagentStatus(s subagent.Status) bool {
+	switch s {
+	case subagent.StatusCompleted, subagent.StatusErrored, subagent.StatusKilled:
+		return true
+	}
+	return false
+}
+
+// childOutcomeFor reads the (terminal) subagent record and converts it into
+// the child outcome consumed by the aggregation stage.
+func (o *Orchestrator) childOutcomeFor(recID string) childOutcome {
+	current, ok := o.subRuntime.Get(recID)
+	if !ok {
+		return childOutcome{status: subagent.StatusErrored, err: "child record disappeared"}
+	}
+	return childOutcome{
+		runID:      recID,
+		sessionKey: current.SessionKey,
+		startedAt:  current.CreatedAt,
+		status:     current.Status,
+		finalReply: redact.String(current.FinalReply),
+		err:        current.Error,
+		steps:      current.SubTurn.Steps,
+		toolCalls:  current.SubTurn.ToolCalls,
+		finishedAt: current.FinishedAt,
+	}
 }
 
 // runChild executes one child slot with support for retry, hedging, and fallback.

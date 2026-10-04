@@ -119,6 +119,10 @@ type SpawnRequest struct {
 	ReplyBack    bool `json:"reply_back,omitempty"`
 	AnnounceSkip bool `json:"announce_skip,omitempty"`
 	ReplySkip    bool `json:"reply_skip,omitempty"`
+	// Depth is the number of orchestrations enclosing this child; it is
+	// threaded into the underlying agent run so nested orchestrator.start calls
+	// remain depth-bounded.
+	Depth int `json:"depth,omitempty"`
 }
 
 // RunRecord is the persisted representation of a spawned subagent.

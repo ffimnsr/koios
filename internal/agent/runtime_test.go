@@ -416,7 +416,7 @@ func TestRuntime_MeasuresModelTimingInResult(t *testing.T) {
 	}
 	// The timing aggregate is internal to the runtime; it must not leak into
 	// client-facing JSON serialization of the result.
-	encoded, err := json.Marshal(res)
+	encoded, err := json.Marshal(res) // #nosec G117 -- SessionKey is an identifier, not a credential.
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

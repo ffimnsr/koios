@@ -38,7 +38,7 @@ var sdkHelperServers = map[string]func(){
 func runSDKHelperServer(name string) int {
 	run, ok := sdkHelperServers[name]
 	if !ok {
-		log.Printf("unknown sdk test helper server %q", name)
+		log.Printf("unknown sdk test helper server %q", name) // #nosec G706 -- %q escapes the value
 		return 1
 	}
 	run()

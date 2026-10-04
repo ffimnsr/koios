@@ -95,6 +95,10 @@ type RunRequest struct {
 	EventSink     func(Event)
 	Timeout       time.Duration
 	ActiveProfile string
+	// OrchestrationDepth is the number of orchestrations enclosing this run. It
+	// is surfaced in the tool run context so nested orchestrator.start calls can
+	// be depth-bounded.
+	OrchestrationDepth int
 }
 
 // EventKind identifies a lifecycle or streaming event emitted by the runtime.
@@ -280,12 +284,24 @@ func ProviderOverrideFromContext(ctx context.Context) Provider {
 type ToolRunContext struct {
 	SessionKey    string
 	ActiveProfile string
+	// OrchestrationDepth is the number of orchestrations enclosing the current
+	// agent run. Tool calls use it to bound nested orchestrator.start fan-outs.
+	OrchestrationDepth int
 }
 
+// WithToolRunContext attaches a tool run context with no enclosing
+// orchestration to ctx.
 func WithToolRunContext(ctx context.Context, sessionKey, activeProfile string) context.Context {
+	return WithToolRunContextDepth(ctx, sessionKey, activeProfile, 0)
+}
+
+// WithToolRunContextDepth attaches a tool run context to ctx, including the
+// enclosing orchestration depth so orchestrator tools can bound nested fan-out.
+func WithToolRunContextDepth(ctx context.Context, sessionKey, activeProfile string, orchestrationDepth int) context.Context {
 	return context.WithValue(ctx, toolRunContextKey{}, ToolRunContext{
-		SessionKey:    strings.TrimSpace(sessionKey),
-		ActiveProfile: strings.TrimSpace(activeProfile),
+		SessionKey:         strings.TrimSpace(sessionKey),
+		ActiveProfile:      strings.TrimSpace(activeProfile),
+		OrchestrationDepth: orchestrationDepth,
 	})
 }
 
@@ -869,7 +885,14 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			invokeReq := *built.Request
 			invokeStream := invokeReq.Stream
 			invokeSink := sink
-			toolProbe := reqCopy.Stream && reqCopy.ToolExecutor != nil && len(invokeReq.Tools) > 0
+			// Streamed tool-call turns are live only for providers with native tool
+			// support: their streamed chunks carry tool calls that the capture
+			// writer accumulates (see captureResponseWriter.toolCalls), so the
+			// client sees token deltas while the tool loop still runs. Text-
+			// protocol providers (XML-envelope tool calls) first probe with a
+			// non-streaming call so the envelope is never streamed to the client;
+			// their tool turns stay buffered.
+			toolProbe := reqCopy.Stream && reqCopy.ToolExecutor != nil && len(invokeReq.Tools) > 0 && !caps.SupportsNativeTools
 			if toolProbe {
 				invokeReq.Stream = false
 				invokeStream = false
@@ -917,6 +940,21 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 			if err == nil && invokeStream && replayReasoning.Len() > 0 && resp != nil && len(resp.Choices) > 0 {
 				resp.Choices[0].Message.ReasoningContent = replayReasoning.String()
 			}
+			// Streamed responses carry tool calls only in the chunk stream, not in
+			// the text returned by CompleteStream; recover them from the capture
+			// writer so the tool loop can execute them after the stream ends.
+			if err == nil && invokeStream && sink != nil {
+				if calls := sink.capturedToolCalls(); len(calls) > 0 {
+					if resp == nil {
+						resp = &types.ChatResponse{Choices: []types.ChatChoice{{}}}
+					} else if len(resp.Choices) == 0 {
+						resp.Choices = append(resp.Choices, types.ChatChoice{})
+					}
+					if len(resp.Choices[0].Message.ToolCalls) == 0 {
+						resp.Choices[0].Message.ToolCalls = calls
+					}
+				}
+			}
 			if err != nil && toolProbe && err.Error() == "nil response from provider" {
 				invokeReq.Stream = built.Request.Stream
 				invokeStream = invokeReq.Stream
@@ -954,7 +992,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				// Tool calls are handled after the provider attempt completes, so they
 				// must inherit the run-scoped context rather than the provider-attempt
 				// context, which is canceled immediately after invoke returns.
-				toolExecCtx := WithToolRunContext(callCtx, sessionKey, reqCopy.ActiveProfile)
+				toolExecCtx := WithToolRunContextDepth(callCtx, sessionKey, reqCopy.ActiveProfile, reqCopy.OrchestrationDepth)
 				if reqCopy.ToolExecutor != nil && resp != nil {
 					if toolCalls := nativeToolCalls(resp); len(toolCalls) > 0 {
 						baseAssistantMsg, _ := assistantMessage(assistantText, resp)
@@ -1018,7 +1056,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 					emitStepFinish(true, "steered", nil)
 					break
 				}
-				if reqCopy.Stream && sink != nil {
+				if reqCopy.Stream {
 					rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRunBlock, SessionKey: sessionKey, Step: step, Message: assistantText})
 				}
 				if assistantMsg, ok := assistantMessage(assistantText, resp); ok {
@@ -1040,6 +1078,7 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 				rt.emitEvent(result, reqCopy.EventSink, Event{Kind: EventRetry, SessionKey: sessionKey, Attempt: attempt + 1, Step: step})
 				select {
 				case <-ctx.Done():
+					rt.persistPartialTurn(ctx, sessionKey, workingMessages)
 					return result, ctx.Err()
 				case <-time.After(rt.backoff(attempt)):
 				}
@@ -1056,6 +1095,10 @@ func (rt *Runtime) run(ctx context.Context, req RunRequest, sink *captureRespons
 	if lastErr == nil {
 		lastErr = fmt.Errorf("agent run failed")
 	}
+	// The turn is ending without a completed reply (error, cancellation, or
+	// step exhaustion); persist whatever the run produced so far so the
+	// partial transcript survives in session history.
+	rt.persistPartialTurn(ctx, sessionKey, workingMessages)
 	return result, lastErr
 }
 
@@ -1500,6 +1543,22 @@ func (rt *Runtime) repairTranscriptMessages(messages []types.Message) []types.Me
 	}
 	flushPending()
 	return out
+}
+
+// persistPartialTurn records the transcript a run produced before it was
+// interrupted (provider failure, cancellation, or step exhaustion) so the turn
+// survives in session history instead of vanishing: the request messages plus
+// whatever the run produced (assistant tool calls, tool results, steered user
+// messages). This mirrors what a completed turn persists — the completion path
+// appends the request thread each turn and the store trims/compacts, so no new
+// duplication class is introduced — minus the completion tail. Memory
+// candidate/entity extraction stays completion-only; interrupted turns do not
+// drive memory proposals.
+func (rt *Runtime) persistPartialTurn(ctx context.Context, sessionKey string, workingMessages []types.Message) {
+	if len(workingMessages) == 0 {
+		return
+	}
+	rt.store.AppendCtx(ctx, sessionKey, workingMessages...)
 }
 
 func (rt *Runtime) persistTurn(ctx context.Context, peerID, sessionKey, model string, transcript, workingMessages []types.Message, assistantText string, suppressed bool) {
@@ -2475,7 +2534,20 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// captureResponseWriter buffers SSE output for retryable streaming calls.
+// capturedToolCall accumulates one streamed tool call from OpenAI-style SSE
+// chunks: the index identifies the tool-call slot, and arguments fragments are
+// concatenated as they arrive (they may be split across chunks).
+type capturedToolCall struct {
+	index int
+	id    string
+	kind  string
+	name  string
+	args  strings.Builder
+}
+
+// captureResponseWriter buffers SSE output for retryable streaming calls and
+// captures streamed tool calls so the runtime can execute them after a
+// streamed provider turn.
 type captureResponseWriter struct {
 	header      http.Header
 	status      int
@@ -2484,6 +2556,7 @@ type captureResponseWriter struct {
 	downstream  http.ResponseWriter
 	headersSent bool
 	liveEmitted bool
+	toolCalls   []capturedToolCall
 }
 
 func (w *captureResponseWriter) Header() http.Header {
@@ -2507,6 +2580,7 @@ func (w *captureResponseWriter) Write(p []byte) (int, error) {
 	if _, err := w.buf.Write(p); err != nil {
 		return 0, err
 	}
+	w.captureToolCallsLocked()
 	if w.downstream != nil {
 		if !w.headersSent {
 			copyHeaders(w.downstream.Header(), w.header)
@@ -2520,6 +2594,95 @@ func (w *captureResponseWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return len(p), nil
+}
+
+// captureToolCallsLocked consumes complete SSE lines from the raw buffer and
+// accumulates tool_calls deltas from OpenAI-compatible chunks. The line-based
+// parsing matches the stream format providers write (data: <json>). Incomplete
+// trailing lines stay buffered for the next Write.
+func (w *captureResponseWriter) captureToolCallsLocked() {
+	for {
+		data := w.buf.Bytes()
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			return
+		}
+		line := strings.TrimRight(string(data[:idx]), "\r")
+		w.buf.Next(idx + 1)
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimSpace(line[6:])
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					ToolCalls []struct {
+						Index    *int   `json:"index"`
+						ID       string `json:"id"`
+						Type     string `json:"type"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		for _, tc := range chunk.Choices[0].Delta.ToolCalls {
+			idx := 0
+			if tc.Index != nil {
+				idx = *tc.Index
+			}
+			for idx >= len(w.toolCalls) {
+				w.toolCalls = append(w.toolCalls, capturedToolCall{index: len(w.toolCalls)})
+			}
+			slot := &w.toolCalls[idx]
+			if tc.ID != "" {
+				slot.id = tc.ID
+			}
+			if tc.Type != "" {
+				slot.kind = tc.Type
+			}
+			if tc.Function.Name != "" {
+				slot.name = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				slot.args.WriteString(tc.Function.Arguments)
+			}
+		}
+	}
+}
+
+// capturedToolCalls returns the tool calls captured from the streamed chunks
+// so far, in ascending index order. Slots without a name (e.g. an argument
+// fragment arriving before the name fragment) are pruned.
+func (w *captureResponseWriter) capturedToolCalls() []types.ToolCall {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []types.ToolCall
+	for _, c := range w.toolCalls {
+		if c.name == "" {
+			continue
+		}
+		out = append(out, types.ToolCall{
+			ID:   c.id,
+			Type: c.kind,
+			Function: types.ToolCallFunctionRef{
+				Name:      c.name,
+				Arguments: c.args.String(),
+			},
+		})
+	}
+	return out
 }
 
 func (w *captureResponseWriter) Flush() {
@@ -2536,6 +2699,7 @@ func (w *captureResponseWriter) reset() {
 	w.buf.Reset()
 	w.headersSent = false
 	w.liveEmitted = false
+	w.toolCalls = nil
 }
 
 func (w *captureResponseWriter) liveWritten() bool {

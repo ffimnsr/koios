@@ -1264,6 +1264,8 @@ func (p *openAIProvider) completeChatCompletionsStream(ctx context.Context, req 
 		}
 
 		// Accumulate assistant text and optional reasoning text for session storage.
+		// Tool-call deltas are preserved verbatim so streamed native tool calls
+		// survive the sanitization re-marshal and reach the runtime's capture.
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
@@ -1272,6 +1274,7 @@ func (p *openAIProvider) completeChatCompletionsStream(ctx context.Context, req 
 					ReasoningContent string                  `json:"reasoning_content,omitempty"`
 					Thinking         string                  `json:"thinking,omitempty"`
 					ReasoningDetails []openAIReasoningDetail `json:"reasoning_details,omitempty"`
+					ToolCalls        []openAIStreamToolCall  `json:"tool_calls,omitempty"`
 				} `json:"delta"`
 			} `json:"choices"`
 		}
@@ -1550,6 +1553,19 @@ type openAIResponsesStreamToolCall struct {
 	ItemID    string
 	Name      string
 	Arguments string
+}
+
+// openAIStreamToolCall mirrors one delta.tool_calls fragment as emitted by
+// chat-completions streaming. Argument fragments are partial JSON strings that
+// the runtime-side capture concatenates per tool-call index.
+type openAIStreamToolCall struct {
+	Index    *int   `json:"index,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
 }
 
 func openAIResponsesToolCallKey(itemID, callID string, outputIndex int) string {

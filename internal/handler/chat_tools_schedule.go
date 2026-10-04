@@ -180,6 +180,12 @@ func (h *Handler) orchestratorStart(ctx context.Context, peerID string, raw json
 	if sessionKey == "" {
 		sessionKey = peerID
 	}
+	depth := 1
+	if toolCtx, ok := agent.ToolRunContextFromContext(ctx); ok {
+		// A fan-out started by an agent run nested inside orchestrations is one
+		// level deeper; the run rejects depths past MaxOrchestrationDepth.
+		depth = toolCtx.OrchestrationDepth + 1
+	}
 	req := orchestrator.FanOutRequest{
 		PeerID:           peerID,
 		ParentSessionKey: sessionKey,
@@ -189,6 +195,7 @@ func (h *Handler) orchestratorStart(ctx context.Context, peerID string, raw json
 		Aggregation:      orchestrator.AggregationMode(p.Aggregation),
 		ReducerPrompt:    p.ReducerPrompt,
 		AnnounceStart:    p.AnnounceStart,
+		Depth:            depth,
 	}
 	if p.Timeout > 0 {
 		req.Timeout = time.Duration(p.Timeout) * time.Second

@@ -113,6 +113,10 @@ func (o *Orchestrator) aggregateReducer(ctx context.Context, run *Run, req FanOu
 			{Role: "user", Content: task},
 		},
 		Model: req.Model,
+		// The reducer pass is enclosed by this orchestration; its tool run
+		// context depth prevents it from starting nested orchestrations past
+		// MaxOrchestrationDepth.
+		OrchestrationDepth: req.Depth,
 	})
 	if err != nil {
 		slog.Warn("orchestrator reducer failed, falling back to concat", "id", run.ID, "error", err)
@@ -210,6 +214,10 @@ func (o *Orchestrator) aggregateVote(ctx context.Context, run *Run, req FanOutRe
 			SessionKey: sessionKey,
 			Messages:   []types.Message{{Role: "user", Content: task}},
 			Model:      model,
+			// Like the reducer pass, the tie-breaker is enclosed by this
+			// orchestration; its tool run context depth keeps nested
+			// orchestrator.start calls within MaxOrchestrationDepth.
+			OrchestrationDepth: req.Depth,
 		})
 		if err != nil {
 			slog.Warn("orchestrator vote tiebreaker failed, using largest cluster", "id", run.ID, "error", err)

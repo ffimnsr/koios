@@ -13,6 +13,11 @@ import (
 	"github.com/ffimnsr/koios/internal/subagent"
 )
 
+// MaxOrchestrationDepth bounds how deeply orchestrator.start fan-outs can
+// nest. Each level spawns full agent runs that could start further
+// orchestrations; the cap keeps the fan-out tree finite.
+const MaxOrchestrationDepth = 3
+
 // New creates an Orchestrator. agentRT is only required when reducer aggregation
 // is used; it may be nil if only collect/concat modes are needed.
 func New(subRuntime *subagent.Runtime, agentRT *agent.Runtime, bus *eventbus.Bus) *Orchestrator {
@@ -42,6 +47,9 @@ func (o *Orchestrator) SetLedger(ledger OrchestratorLedger) {
 func (o *Orchestrator) Start(ctx context.Context, req FanOutRequest) (*Run, error) {
 	if req.PeerID == "" {
 		return nil, fmt.Errorf("peer_id is required")
+	}
+	if req.Depth > MaxOrchestrationDepth {
+		return nil, fmt.Errorf("max orchestration depth %d exceeded (depth %d)", MaxOrchestrationDepth, req.Depth)
 	}
 
 	isMultiStage := len(req.Stages) > 0 || req.VerifierTask != nil || req.ArbiterTask != nil
@@ -150,12 +158,20 @@ func (o *Orchestrator) Start(ctx context.Context, req FanOutRequest) (*Run, erro
 		ledger.LedgerMetadata(run.ID, req.ParentRunID, 0)
 	}
 
+	// The run context is detached from the caller: the tool-call context that
+	// reaches Start dies when the invoking agent turn ends (chat timeout or
+	// client reply), but orchestration runs are async records addressed by run
+	// ID (orchestrator.status/wait/cancel, run ledger) and must outlive the
+	// turn. Deriving from a parent-free context keeps the run alive in the
+	// background; the optional req.Timeout still bounds wall-clock, and Cancel
+	// via the cancels map remains the only other terminal path.
+	baseCtx := context.WithoutCancel(ctx)
 	var orchCtx context.Context
 	var cancel context.CancelFunc
 	if req.Timeout > 0 {
-		orchCtx, cancel = context.WithTimeout(ctx, req.Timeout)
+		orchCtx, cancel = context.WithTimeout(baseCtx, req.Timeout)
 	} else {
-		orchCtx, cancel = context.WithCancel(ctx)
+		orchCtx, cancel = context.WithCancel(baseCtx)
 	}
 	o.mu.Lock()
 	o.cancels[runID] = cancel

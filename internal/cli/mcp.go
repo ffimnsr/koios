@@ -502,7 +502,7 @@ func testMCPServer(ctx context.Context, rec *mcpregistry.ServerRecord) map[strin
 
 func testMCPServerWithTimeout(ctx context.Context, rec *mcpregistry.ServerRecord, timeout time.Duration) map[string]any {
 	transport := strings.ToLower(strings.TrimSpace(rec.Transport))
-	client := probeMCPClient(ctx, config.MCPServerConfig{
+	client := probeMCPClient(config.MCPServerConfig{
 		Name:    rec.Name,
 		Command: rec.Command,
 		Args:    rec.Args,
@@ -540,7 +540,7 @@ func testMCPServerWithTimeout(ctx context.Context, rec *mcpregistry.ServerRecord
 // probeMCPClient creates a transport client for probing a user-managed server.
 // The official SDK adapter is the only client implementation; the probe
 // timeout is carried in the config so per-request deadlines match the probe.
-func probeMCPClient(ctx context.Context, server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
+func probeMCPClient(server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
 	cfg := server
 	cfg.Transport = transport
 	cfg.Timeout = timeout.String()

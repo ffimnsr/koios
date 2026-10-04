@@ -184,6 +184,9 @@ func (r *Runtime) execute(ctx context.Context, id string, req SpawnRequest, pare
 		EventSink: func(ev agent.Event) {
 			r.onAgentEvent(id, ev)
 		},
+		// Propagate the enclosing orchestration depth so the child's own
+		// orchestrator.start calls are bound by the same depth limit.
+		OrchestrationDepth: req.Depth,
 	}
 	// Correlate the underlying agent run's model performance logs with this
 	// subagent run's ledger record.

@@ -257,7 +257,7 @@ func toolResultArgsJSON(call agent.ToolCall) string {
 		return `{}`
 	}
 	args.APIKey = ""
-	sanitized, err := json.Marshal(args)
+	sanitized, err := json.Marshal(args) // #nosec G117 -- APIKey was just cleared; marshaling is the sanitization step.
 	if err != nil {
 		return `{}`
 	}
