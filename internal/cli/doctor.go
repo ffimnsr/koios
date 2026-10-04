@@ -887,13 +887,11 @@ func probeDoctorMCPServer(ctx context.Context, server config.MCPServerConfig, pr
 	}
 }
 
-func newDoctorMCPClient(ctx context.Context, server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
-	switch transport {
-	case "stdio":
-		return mcp.NewStdioClientWithContext(ctx, server.Name, server.Command, server.Args, server.Env)
-	default:
-		return mcp.NewHTTPClient(server.Name, server.URL, server.Headers, timeout)
-	}
+func newDoctorMCPClient(_ context.Context, server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
+	cfg := server
+	cfg.Transport = transport
+	cfg.Timeout = timeout.String()
+	return mcp.NewSDKClient(cfg)
 }
 
 func doctorMCPPath(server config.MCPServerConfig, transport string) string {

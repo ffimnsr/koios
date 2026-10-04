@@ -538,11 +538,11 @@ func testMCPServerWithTimeout(ctx context.Context, rec *mcpregistry.ServerRecord
 }
 
 // probeMCPClient creates a transport client for probing a user-managed server.
+// The official SDK adapter is the only client implementation; the probe
+// timeout is carried in the config so per-request deadlines match the probe.
 func probeMCPClient(ctx context.Context, server config.MCPServerConfig, transport string, timeout time.Duration) mcp.Client {
-	switch transport {
-	case "stdio":
-		return mcp.NewStdioClientWithContext(ctx, server.Name, server.Command, server.Args, server.Env)
-	default:
-		return mcp.NewHTTPClient(server.Name, server.URL, server.Headers, timeout)
-	}
+	cfg := server
+	cfg.Transport = transport
+	cfg.Timeout = timeout.String()
+	return mcp.NewSDKClient(cfg)
 }

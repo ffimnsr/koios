@@ -32,6 +32,11 @@ type serverEntry struct {
 	resourceReads     map[string]cachedResourceRead
 	cacheFresh        bool
 	listenCancel      context.CancelFunc
+	// connecting is true while connectServer is initializing this entry. It is
+	// guarded by the Manager mutex; mutations wait on the Manager cond (and
+	// cancel connectCancel) before closing or replacing the client.
+	connecting    bool
+	connectCancel context.CancelFunc
 }
 
 type cachedResourceRead struct {
@@ -44,6 +49,7 @@ type cachedResourceRead struct {
 // to the handler layer.
 type Manager struct {
 	mu            sync.RWMutex
+	cond          *sync.Cond
 	servers       []*serverEntry
 	clientFactory func(config.MCPServerConfig) Client
 }
@@ -59,6 +65,7 @@ func NewManagerWithFactory(cfgs []config.MCPServerConfig, factory func(config.MC
 		factory = newClient
 	}
 	m := &Manager{clientFactory: factory}
+	m.cond = sync.NewCond(&m.mu)
 	for _, c := range cfgs {
 		if !c.Enabled {
 			continue
@@ -80,18 +87,11 @@ func NewManagerWithFactory(cfgs []config.MCPServerConfig, factory func(config.MC
 	return m
 }
 
-// newClient builds the appropriate transport client from the server config.
+// newClient builds the SDK-backed MCP client from the server config. The
+// official go-sdk implementation owns protocol-version negotiation and the
+// server/discover + initialize handshakes.
 func newClient(c config.MCPServerConfig) Client {
-	timeout, _ := time.ParseDuration(c.Timeout)
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	switch strings.ToLower(strings.TrimSpace(c.Transport)) {
-	case "stdio":
-		return NewStdioClient(c.Name, c.Command, c.Args, c.Env)
-	default:
-		return NewHTTPClient(c.Name, c.URL, c.Headers, timeout)
-	}
+	return NewSDKClient(c)
 }
 
 // Start connects to all configured servers and discovers their assets.
@@ -201,6 +201,7 @@ func (m *Manager) StopServer(kind, profile string) (ServerStatus, error) {
 		s.listenCancel()
 		s.listenCancel = nil
 	}
+	m.waitForConnectLocked(s)
 	if s.client != nil {
 		if err := s.client.Close(); err != nil {
 			s.lastError = err.Error()
@@ -528,6 +529,7 @@ func (m *Manager) RemoveServer(name string) error {
 			if s.listenCancel != nil {
 				s.listenCancel()
 			}
+			m.waitForConnectLocked(s)
 			if s.client != nil {
 				_ = s.client.Close()
 			}
@@ -556,6 +558,7 @@ func (m *Manager) UpdateServer(ctx context.Context, cfg config.MCPServerConfig) 
 		target.listenCancel()
 		target.listenCancel = nil
 	}
+	m.waitForConnectLocked(target)
 	_ = target.client.Close()
 	target.cfg = cfg
 	target.name = cfg.Name
@@ -605,6 +608,7 @@ func (m *Manager) Close() {
 			s.listenCancel()
 			s.listenCancel = nil
 		}
+		m.waitForConnectLocked(s)
 		if err := s.client.Close(); err != nil {
 			slog.Warn("mcp: close error", "server", s.name, "err", err)
 		}
@@ -619,54 +623,78 @@ func (m *Manager) connectServer(ctx context.Context, s *serverEntry) error {
 	if s == nil {
 		return fmt.Errorf("mcp: nil server entry")
 	}
+	// Serialize connection attempts per entry: a second concurrent connect
+	// waits for the first and then re-checks the entry, and mutations
+	// (StopServer, RemoveServer, UpdateServer, Close) cancel an in-flight
+	// attempt and wait for it to unwind before closing or replacing the
+	// client. The connect runs against a cancelable context so those mutations
+	// can abort it promptly instead of racing it.
+	m.mu.Lock()
+	for s.connecting {
+		m.cond.Wait()
+	}
+	if s.connected {
+		m.mu.Unlock()
+		return nil
+	}
 	if s.client == nil {
 		s.client = m.clientFactory(s.cfg)
 	}
-	if err := s.client.Initialize(ctx); err != nil {
-		if s.client != nil {
-			_ = s.client.Close()
-		}
-		s.client = m.clientFactory(s.cfg)
+	client := s.client
+	connectCtx, cancelConnect := context.WithCancel(ctx)
+	s.connectCancel = cancelConnect
+	s.connecting = true
+	m.mu.Unlock()
+
+	// failConnect records a failed connect, replaces the connecting client with
+	// a fresh uninitialized one on the entry, clears the in-flight marker, and
+	// wakes any mutation waiting on the Manager cond. It must be called while
+	// holding no locks.
+	failConnect := func(err error) error {
 		m.mu.Lock()
+		// While connecting, no mutation can have replaced the client (they wait
+		// for the in-flight marker to clear first), so the entry always holds
+		// the client that just failed; swap in a fresh uninitialized one so a
+		// later reconnect or the closing mutation operates on a clean client.
+		s.client = m.clientFactory(s.cfg)
+		s.connecting = false
+		if s.connectCancel != nil {
+			s.connectCancel()
+			s.connectCancel = nil
+		}
 		s.connected = false
 		s.lastError = err.Error()
 		s.protocolVersion = ""
 		clearServerCaches(s)
+		m.cond.Broadcast()
 		m.mu.Unlock()
 		return err
 	}
 
-	discover, err := s.client.Discover(ctx)
+	if err := client.Initialize(connectCtx); err != nil {
+		_ = client.Close()
+		return failConnect(err)
+	}
+
+	discover, err := client.Discover(connectCtx)
+	var discoveredVersion string
+	var discoveredCaps json.RawMessage
 	if err == nil && discover != nil {
-		if strings.TrimSpace(discover.ProtocolVersion) != "" {
-			s.protocolVersion = strings.TrimSpace(discover.ProtocolVersion)
-		}
-		s.capabilities = append(json.RawMessage(nil), discover.Capabilities...)
-	} else if err != nil && !isMethodNotFoundError(err) {
+		discoveredVersion = strings.TrimSpace(discover.ProtocolVersion)
+		discoveredCaps = append(json.RawMessage(nil), discover.Capabilities...)
+	} else if err != nil {
 		slog.Debug("mcp: discover after initialize failed", "server", s.name, "err", err)
 	}
-	if s.protocolVersion == "" {
-		s.protocolVersion = ProtocolVersion2026
-	}
 
-	tools, err := s.client.ListTools(ctx)
+	tools, err := client.ListTools(connectCtx)
 	if err != nil {
-		if s.client != nil {
-			_ = s.client.Close()
-		}
-		s.client = m.clientFactory(s.cfg)
-		m.mu.Lock()
-		s.connected = false
-		s.lastError = err.Error()
-		s.protocolVersion = ""
-		clearServerCaches(s)
-		m.mu.Unlock()
-		return err
+		_ = client.Close()
+		return failConnect(err)
 	}
 
-	resources, resourceTemplates, prompts := loadOptionalServerAssets(ctx, s)
+	resources, resourceTemplates, prompts := loadOptionalServerAssets(connectCtx, client, s.name)
 
-	notifications, listenCtx, listenCancel, listenErr := startClientListener(ctx, s.client)
+	notifications, listenCtx, listenCancel, listenErr := startClientListener(connectCtx, client)
 	if listenErr != nil {
 		slog.Debug("mcp: listen unavailable", "server", s.name, "err", listenErr)
 	}
@@ -675,8 +703,13 @@ func (m *Manager) connectServer(ctx context.Context, s *serverEntry) error {
 	if s.listenCancel != nil {
 		s.listenCancel()
 	}
-	s.connected = true
-	s.lastError = ""
+	if discoveredVersion != "" {
+		s.protocolVersion = discoveredVersion
+	}
+	if s.protocolVersion == "" {
+		s.protocolVersion = ProtocolVersion2026
+	}
+	s.capabilities = discoveredCaps
 	s.tools = tools
 	s.resources = resources
 	s.resourceTemplates = resourceTemplates
@@ -687,12 +720,32 @@ func (m *Manager) connectServer(ctx context.Context, s *serverEntry) error {
 	if listenErr == nil {
 		s.listenCancel = listenCancel
 	}
+	s.connected = true
+	s.lastError = ""
+	s.connecting = false
+	if s.connectCancel != nil {
+		s.connectCancel()
+		s.connectCancel = nil
+	}
+	m.cond.Broadcast()
 	m.mu.Unlock()
 	if listenErr == nil {
 		go m.consumeNotifications(listenCtx, s.name, notifications)
 	}
 	slog.Info("mcp: server connected", "server", s.name, "tools", len(tools), "resources", len(resources), "prompts", len(prompts))
 	return nil
+}
+
+// waitForConnectLocked cancels and awaits any in-flight connection attempt on
+// the entry so callers can safely close or replace its client. m.mu must be
+// held; it is released while waiting and reacquired before returning.
+func (m *Manager) waitForConnectLocked(s *serverEntry) {
+	for s.connecting {
+		if s.connectCancel != nil {
+			s.connectCancel()
+		}
+		m.cond.Wait()
+	}
 }
 
 func startClientListener(parent context.Context, client Client) (<-chan Notification, context.Context, context.CancelFunc, error) {
@@ -705,24 +758,24 @@ func startClientListener(parent context.Context, client Client) (<-chan Notifica
 	return notifications, listenCtx, listenCancel, nil
 }
 
-func loadOptionalServerAssets(ctx context.Context, s *serverEntry) ([]Resource, []ResourceTemplate, []Prompt) {
+func loadOptionalServerAssets(ctx context.Context, client Client, serverName string) ([]Resource, []ResourceTemplate, []Prompt) {
 	var resources []Resource
-	if listed, err := s.client.ListResources(ctx); err == nil {
+	if listed, err := client.ListResources(ctx); err == nil {
 		resources = listed
 	} else if !isOptionalCapabilityError(err) {
-		slog.Debug("mcp: resources/list failed", "server", s.name, "err", err)
+		slog.Debug("mcp: resources/list failed", "server", serverName, "err", err)
 	}
 	var templates []ResourceTemplate
-	if listed, err := s.client.ListResourceTemplates(ctx); err == nil {
+	if listed, err := client.ListResourceTemplates(ctx); err == nil {
 		templates = listed
 	} else if !isOptionalCapabilityError(err) {
-		slog.Debug("mcp: resources/templates/list failed", "server", s.name, "err", err)
+		slog.Debug("mcp: resources/templates/list failed", "server", serverName, "err", err)
 	}
 	var prompts []Prompt
-	if listed, err := s.client.ListPrompts(ctx); err == nil {
+	if listed, err := client.ListPrompts(ctx); err == nil {
 		prompts = listed
 	} else if !isOptionalCapabilityError(err) {
-		slog.Debug("mcp: prompts/list failed", "server", s.name, "err", err)
+		slog.Debug("mcp: prompts/list failed", "server", serverName, "err", err)
 	}
 	return resources, templates, prompts
 }

@@ -13,13 +13,16 @@ import (
 )
 
 type captureMCPClient struct {
-	tools        []mcp.Tool
-	resources    []mcp.Resource
-	prompts      []mcp.Prompt
-	readResult   *mcp.ResourceReadResult
-	promptResult *mcp.PromptGetResult
-	lastName     string
-	lastArgs     map[string]any
+	tools              []mcp.Tool
+	resources          []mcp.Resource
+	prompts            []mcp.Prompt
+	readResult         *mcp.ResourceReadResult
+	promptResult       *mcp.PromptGetResult
+	toolResult         *mcp.ToolResult
+	lastName           string
+	lastArgs           map[string]any
+	lastInputResponses json.RawMessage
+	lastRequestState   json.RawMessage
 }
 
 func (c *captureMCPClient) Discover(context.Context) (*mcp.DiscoverResult, error) {
@@ -36,9 +39,14 @@ func (c *captureMCPClient) CallTool(ctx context.Context, name string, args map[s
 	return c.CallToolWithInput(ctx, name, args, nil, nil)
 }
 
-func (c *captureMCPClient) CallToolWithInput(_ context.Context, name string, args map[string]any, _, _ json.RawMessage) (*mcp.ToolResult, error) {
+func (c *captureMCPClient) CallToolWithInput(_ context.Context, name string, args map[string]any, inputResponses, requestState json.RawMessage) (*mcp.ToolResult, error) {
 	c.lastName = name
 	c.lastArgs = args
+	c.lastInputResponses = inputResponses
+	c.lastRequestState = requestState
+	if c.toolResult != nil {
+		return c.toolResult, nil
+	}
 	return &mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "ok"}}}, nil
 }
 

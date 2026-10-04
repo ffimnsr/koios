@@ -12,6 +12,18 @@ import (
 // runtime use. It is shared by the static config loader, extension manifests,
 // and the user-managed MCP registry.
 func ValidateServerConfig(server config.MCPServerConfig) error {
+	return validateServerConfig(server, true)
+}
+
+// validateUserServerConfig validates a config derived from a user-managed
+// registry record (mcpregistry.ServerRecord.ToMCPServerConfig). User-managed
+// runtime names own the "u_" namespace, so the reserved-prefix rule for that
+// prefix is skipped; every other rule applies unchanged.
+func validateUserServerConfig(server config.MCPServerConfig) error {
+	return validateServerConfig(server, false)
+}
+
+func validateServerConfig(server config.MCPServerConfig, rejectUserPrefix bool) error {
 	name := strings.TrimSpace(server.Name)
 	if name == "" {
 		return fmt.Errorf("mcp: server name is required")
@@ -48,7 +60,7 @@ func ValidateServerConfig(server config.MCPServerConfig) error {
 	if strings.HasPrefix(strings.ToLower(name), "mcp_plug_") {
 		return fmt.Errorf("mcp: server name %q uses reserved prefix \"mcp_plug_\"", name)
 	}
-	if strings.HasPrefix(strings.ToLower(name), "u_") {
+	if rejectUserPrefix && strings.HasPrefix(strings.ToLower(name), "u_") {
 		return fmt.Errorf("mcp: server name %q uses reserved prefix \"u_\"", name)
 	}
 	if strings.HasPrefix(strings.ToLower(name), "browser_") {

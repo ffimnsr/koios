@@ -1,16 +1,23 @@
-// Package mcp provides a Model Context Protocol (MCP) client that connects to
-// external MCP servers and exposes their tools, resources, and prompts to the
-// Koios agent runtime.
+// Package mcp provides a Model Context Protocol (MCP) integration layer that
+// connects to external MCP servers and exposes their tools, resources, and
+// prompts to the Koios agent runtime.
 //
-// Koios targets the MCP 2026-07-28 protocol revision. It prefers the modern
-// `server/discover` handshake and falls back to the legacy `initialize`
-// handshake only for compatibility with older servers.
+// Client transport and protocol handling are delegated to the official MCP Go
+// SDK (github.com/modelcontextprotocol/go-sdk): the SDK owns protocol-version
+// negotiation, the server/discover and initialize handshakes, transport
+// lifecycle, and JSON-RPC framing. Koios targets the MCP 2026-07-28 protocol
+// revision and relies on the SDK's own negotiation for servers that only speak
+// older revisions.
+//
+// This package owns the pieces the SDK does not: Koios-facing DTOs, the
+// Manager's server lifecycle, runtime names and cache state, config validation
+// and merging, tool-header annotation filtering, and the conversion helpers
+// between SDK values and Koios types.
 package mcp
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -18,11 +25,9 @@ import (
 )
 
 const (
-	JSONRPCVersion        = "2.0"
-	ProtocolVersion2026   = "2026-07-28"
-	legacyProtocolVersion = "2024-11-05"
-	clientName            = "koios"
-	clientVersion         = "1.0"
+	ProtocolVersion2026 = "2026-07-28"
+	clientName          = "koios"
+	clientVersion       = "1.0"
 )
 
 var httpHeaderNameRE = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+$`)
@@ -67,16 +72,6 @@ type ToolResult struct {
 	RequestState      json.RawMessage `json:"requestState,omitempty"`
 	InputResponses    json.RawMessage `json:"inputResponses,omitempty"`
 	Elicitation       json.RawMessage `json:"elicitation,omitempty"`
-}
-
-// InputRequiredResult represents a modern MRTR follow-up response.
-type InputRequiredResult struct {
-	ResultType   string          `json:"resultType,omitempty"`
-	RequestID    string          `json:"requestId,omitempty"`
-	RequestState json.RawMessage `json:"requestState,omitempty"`
-	Elicitation  json.RawMessage `json:"elicitation,omitempty"`
-	TTLMs        int64           `json:"ttlMs,omitempty"`
-	CacheScope   string          `json:"cacheScope,omitempty"`
 }
 
 // Resource describes one server resource.
@@ -183,202 +178,27 @@ type Client interface {
 	Close() error
 }
 
-// ─── JSON-RPC 2.0 helpers ────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-type rpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type rpcResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-}
-
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-func (e *rpcError) Error() string {
-	return fmt.Sprintf("MCP RPC error %d: %s", e.Code, e.Message)
-}
-
-// ─── Protocol types ──────────────────────────────────────────────────────────
-
-type requestMeta struct {
-	ProtocolVersion    string          `json:"io.modelcontextprotocol/protocolVersion,omitempty"`
-	ClientCapabilities map[string]any  `json:"io.modelcontextprotocol/clientCapabilities,omitempty"`
-	ClientInfo         *Implementation `json:"io.modelcontextprotocol/clientInfo,omitempty"`
-}
-
-type discoverParams struct {
-	Meta requestMeta `json:"_meta,omitempty"`
-}
-
-type initializeParams struct {
-	ProtocolVersion string            `json:"protocolVersion"`
-	Capabilities    map[string]any    `json:"capabilities"`
-	ClientInfo      map[string]string `json:"clientInfo"`
-}
-
-type initializeResult struct {
-	ProtocolVersion string            `json:"protocolVersion"`
-	Capabilities    map[string]any    `json:"capabilities"`
-	ServerInfo      map[string]string `json:"serverInfo"`
-}
-
-type listParams struct {
-	Cursor *string     `json:"cursor,omitempty"`
-	Meta   requestMeta `json:"_meta,omitempty"`
-}
-
-type toolsListResult struct {
-	Tools      []Tool  `json:"tools"`
-	NextCursor *string `json:"nextCursor,omitempty"`
-	ResultType string  `json:"resultType,omitempty"`
-	TTLMs      int64   `json:"ttlMs,omitempty"`
-	CacheScope string  `json:"cacheScope,omitempty"`
-}
-
-type toolsCallParams struct {
-	Name           string          `json:"name"`
-	Arguments      map[string]any  `json:"arguments,omitempty"`
-	InputResponses json.RawMessage `json:"inputResponses,omitempty"`
-	RequestState   json.RawMessage `json:"requestState,omitempty"`
-	Meta           requestMeta     `json:"_meta,omitempty"`
-}
-
-type resourcesListResult struct {
-	Resources  []Resource `json:"resources"`
-	NextCursor *string    `json:"nextCursor,omitempty"`
-	ResultType string     `json:"resultType,omitempty"`
-	TTLMs      int64      `json:"ttlMs,omitempty"`
-	CacheScope string     `json:"cacheScope,omitempty"`
-}
-
-type resourceTemplatesListResult struct {
-	ResourceTemplates []ResourceTemplate `json:"resourceTemplates"`
-	NextCursor        *string            `json:"nextCursor,omitempty"`
-	ResultType        string             `json:"resultType,omitempty"`
-	TTLMs             int64              `json:"ttlMs,omitempty"`
-	CacheScope        string             `json:"cacheScope,omitempty"`
-}
-
-type resourceReadParams struct {
-	URI  string      `json:"uri"`
-	Meta requestMeta `json:"_meta,omitempty"`
-}
-
-type promptsListResult struct {
-	Prompts    []Prompt `json:"prompts"`
-	NextCursor *string  `json:"nextCursor,omitempty"`
-	ResultType string   `json:"resultType,omitempty"`
-	TTLMs      int64    `json:"ttlMs,omitempty"`
-	CacheScope string   `json:"cacheScope,omitempty"`
-}
-
-type promptGetParams struct {
-	Name      string         `json:"name"`
-	Arguments map[string]any `json:"arguments,omitempty"`
-	Meta      requestMeta    `json:"_meta,omitempty"`
-}
-
-type cancelledNotificationParams struct {
-	RequestID any         `json:"requestId"`
-	Reason    string      `json:"reason,omitempty"`
-	Meta      requestMeta `json:"_meta,omitempty"`
-}
-
-func defaultClientInfo() *Implementation {
-	return &Implementation{Name: clientName, Version: clientVersion}
-}
-
-func defaultClientCapabilities() map[string]any {
-	return map[string]any{
-		"elicitation": map[string]any{
-			"form": map[string]any{},
-			"url":  map[string]any{},
-		},
-	}
-}
-
-func defaultRequestMeta() requestMeta {
-	return requestMeta{
-		ProtocolVersion:    ProtocolVersion2026,
-		ClientCapabilities: defaultClientCapabilities(),
-		ClientInfo:         defaultClientInfo(),
-	}
-}
-
-func defaultLegacyInitializeParams() initializeParams {
-	return initializeParams{
-		ProtocolVersion: legacyProtocolVersion,
-		Capabilities:    defaultClientCapabilities(),
-		ClientInfo: map[string]string{
-			"name":    clientName,
-			"version": clientVersion,
-		},
-	}
-}
-
-func isMethodNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var rpcErr *rpcError
-	if AsRPCError(err, &rpcErr) {
-		return rpcErr.Code == -32601 || strings.Contains(strings.ToLower(rpcErr.Message), "method not found")
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "method not found")
-}
-
-func isOptionalCapabilityError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if isMethodNotFoundError(err) {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "unsupported") || strings.Contains(msg, "not supported")
-}
-
-func AsRPCError(err error, target **rpcError) bool {
-	if err == nil || target == nil {
-		return false
-	}
-	var rpcErr *rpcError
-	if errors.As(err, &rpcErr) {
-		*target = rpcErr
-		return true
-	}
-	return false
-}
-
-// encodeParams marshals v to json.RawMessage. All callers pass JSON-derived
-// or static struct values so marshaling should never fail. If it does, an
-// error is logged and an empty object is returned so the server keeps running.
-func encodeParams(v any) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		slog.Error("mcp: encodeParams: cannot marshal params", "err", err)
-		return json.RawMessage("{}")
-	}
-	return b
-}
-
+// normalizeResultType maps an empty SDK result type to the complete marker.
 func normalizeResultType(resultType string) string {
 	resultType = strings.TrimSpace(resultType)
 	if resultType == "" {
 		return "complete"
 	}
 	return resultType
+}
+
+// isOptionalCapabilityError reports whether err indicates a server that does
+// not implement an optional MCP capability. The SDK surfaces method-not-found
+// and unsupported-capability errors from the server's JSON-RPC layer; Koios
+// treats them as absent capabilities rather than connection failures.
+func isOptionalCapabilityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "method not found") || strings.Contains(msg, "unsupported") || strings.Contains(msg, "not supported")
 }
 
 func validateToolHeaderAnnotations(tool Tool) error {

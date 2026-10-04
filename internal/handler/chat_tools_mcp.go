@@ -567,22 +567,18 @@ func mcpServerDetailPayload(rec *mcpregistry.ServerRecord, showSecrets bool) map
 func probeManagedMCPServer(ctx context.Context, rec *mcpregistry.ServerRecord, timeout time.Duration) map[string]any {
 	transport := strings.ToLower(strings.TrimSpace(rec.Transport))
 	cfg := config.MCPServerConfig{
-		Name:    rec.Name,
-		Command: rec.Command,
-		Args:    rec.Args,
-		Env:     rec.Env,
-		URL:     rec.URL,
-		Headers: rec.Headers,
-		Timeout: rec.Timeout,
+		Name:      rec.Name,
+		Transport: transport,
+		Command:   rec.Command,
+		Args:      rec.Args,
+		Env:       rec.Env,
+		URL:       rec.URL,
+		Headers:   rec.Headers,
+		// The probe deadline doubles as the per-request timeout so requests
+		// fail within the caller-visible window.
+		Timeout: timeout.String(),
 	}
-
-	var client mcp.Client
-	switch transport {
-	case "stdio":
-		client = mcp.NewStdioClientWithContext(ctx, cfg.Name, cfg.Command, cfg.Args, cfg.Env)
-	default:
-		client = mcp.NewHTTPClient(cfg.Name, cfg.URL, cfg.Headers, timeout)
-	}
+	client := mcp.NewSDKClient(cfg)
 	if client == nil {
 		return map[string]any{"success": false, "error": "could not create client"}
 	}

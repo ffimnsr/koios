@@ -57,7 +57,9 @@ func MergeServerConfigs(
 	for _, rec := range userRecords {
 		cfg := rec.ToMCPServerConfig()
 		runtimeName := cfg.Name
-		if err := ValidateServerConfig(cfg); err != nil {
+		// User-managed configs own the "u_" runtime-name namespace, so they
+		// are validated with that reserved prefix rule relaxed.
+		if err := validateUserServerConfig(cfg); err != nil {
 			return nil, fmt.Errorf("user MCP server %q (owner %q): %w", rec.Name, rec.OwnerPeerID, err)
 		}
 		if prev, conflict := seen[runtimeName]; conflict {

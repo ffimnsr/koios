@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/ffimnsr/koios/internal/agent"
@@ -147,5 +148,89 @@ func TestMCPResourceReadUsesRuntimeServerName(t *testing.T) {
 	}
 	if payload["server"] != "monaco" || payload["uri"] != "mach1://strategy-spec/schema.json" {
 		t.Fatalf("unexpected payload: %#v", payload)
+	}
+}
+
+// TestMCPToolCallPassesInputResponsesAndRequestState verifies mcp.call
+// forwards input_responses and request_state into
+// Manager.CallToolResultWithInput unchanged.
+func TestMCPToolCallPassesInputResponsesAndRequestState(t *testing.T) {
+	client := &captureMCPClient{tools: []mcp.Tool{{Name: "approve_transfer", Description: "approve a transfer"}}}
+	server := config.MCPServerConfig{Name: "monaco", Transport: "stdio", Command: "/app/bin/monaco-mcp", Enabled: true}
+	mgr := mcp.NewManagerWithFactory([]config.MCPServerConfig{server}, func(config.MCPServerConfig) mcp.Client { return client })
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	h := NewHandler(session.New(10), noopProvider{}, HandlerOptions{Model: "test-model", MCPManager: mgr, ConfigMCPServers: []config.MCPServerConfig{server}})
+	fullName := mcp.ToolName("monaco", "approve_transfer")
+
+	result, err := h.executeMCPToolCall(context.Background(), "mach1:alice", agent.ToolCall{Name: "mcp.tool.call", Arguments: []byte(`{
+		"name": "` + fullName + `",
+		"arguments": {"amount": 100},
+		"input_responses": {"q1":{"action":"accept"}},
+		"request_state": "rs-1"
+	}`)})
+	if err != nil {
+		t.Fatalf("executeMCPToolCall: %v", err)
+	}
+	if client.lastName != "approve_transfer" {
+		t.Fatalf("unexpected tool called: %q", client.lastName)
+	}
+	if string(client.lastInputResponses) != `{"q1":{"action":"accept"}}` {
+		t.Fatalf("input_responses not forwarded: %s", client.lastInputResponses)
+	}
+	if string(client.lastRequestState) != `"rs-1"` {
+		t.Fatalf("request_state not forwarded: %s", client.lastRequestState)
+	}
+	if result.(map[string]any)["ok"] != true {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+// TestMCPToolCallSurfacesInputRequiredMetadata verifies that an
+// input-required result returned by the manager is visible in the mcp.call
+// handler response with its resultType, requestState, and elicitation fields.
+func TestMCPToolCallSurfacesInputRequiredMetadata(t *testing.T) {
+	client := &captureMCPClient{
+		tools: []mcp.Tool{{Name: "approve_transfer", Description: "approve a transfer"}},
+		toolResult: &mcp.ToolResult{
+			ResultType:   "input_required",
+			RequestState: json.RawMessage(`"rs-1"`),
+			Elicitation:  json.RawMessage(`{"q1":{"method":"elicitation/create","params":{"mode":"form","message":"Approve?"}}}`),
+		},
+	}
+	server := config.MCPServerConfig{Name: "monaco", Transport: "stdio", Command: "/app/bin/monaco-mcp", Enabled: true}
+	mgr := mcp.NewManagerWithFactory([]config.MCPServerConfig{server}, func(config.MCPServerConfig) mcp.Client { return client })
+	if err := mgr.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	h := NewHandler(session.New(10), noopProvider{}, HandlerOptions{Model: "test-model", MCPManager: mgr, ConfigMCPServers: []config.MCPServerConfig{server}})
+	fullName := mcp.ToolName("monaco", "approve_transfer")
+
+	result, err := h.executeMCPToolCall(context.Background(), "mach1:alice", agent.ToolCall{Name: "mcp.tool.call", Arguments: []byte(`{"name":"` + fullName + `","arguments":{"amount":100}}`)})
+	if err != nil {
+		t.Fatalf("executeMCPToolCall: %v", err)
+	}
+	payload := result.(map[string]any)
+	raw, err := json.Marshal(payload["result"])
+	if err != nil {
+		t.Fatalf("marshal handler result: %v", err)
+	}
+	var toolResult struct {
+		ResultType   string          `json:"resultType"`
+		RequestState json.RawMessage `json:"requestState"`
+		Elicitation  json.RawMessage `json:"elicitation"`
+	}
+	if err := json.Unmarshal(raw, &toolResult); err != nil {
+		t.Fatalf("decode handler result: %v", err)
+	}
+	if toolResult.ResultType != "input_required" {
+		t.Fatalf("resultType not visible: %#v", toolResult)
+	}
+	if string(toolResult.RequestState) != `"rs-1"` {
+		t.Fatalf("requestState not visible: %s", toolResult.RequestState)
+	}
+	if !json.Valid(toolResult.Elicitation) || !strings.Contains(string(toolResult.Elicitation), "elicitation/create") {
+		t.Fatalf("elicitation not visible: %s", toolResult.Elicitation)
 	}
 }

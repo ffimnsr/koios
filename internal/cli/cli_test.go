@@ -22,6 +22,7 @@ import (
 	"github.com/ffimnsr/koios/internal/calendar"
 	"github.com/ffimnsr/koios/internal/config"
 	"github.com/ffimnsr/koios/internal/handler"
+	"github.com/ffimnsr/koios/internal/mcp"
 	"github.com/ffimnsr/koios/internal/scheduler"
 	"github.com/ffimnsr/koios/internal/session"
 	"github.com/ffimnsr/koios/internal/tasks"
@@ -1967,12 +1968,26 @@ func TestDoctorDeepProbesMCPHTTPServer(t *testing.T) {
 		case "/v1/monitor":
 			_ = json.NewEncoder(w).Encode(map[string]any{"stale": false, "subsystems": map[string]any{}})
 		case "/mcp":
+			// The SDK-backed Streamable HTTP client requires JSON responses.
+			w.Header().Set("Content-Type", "application/json")
 			var req map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode mcp request: %v", err)
 			}
 			method, _ := req["method"].(string)
 			switch method {
+			case "server/discover":
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req["id"],
+					"result": map[string]any{
+						"supportedVersions": []string{mcp.ProtocolVersion2026, "2025-11-25"},
+						"capabilities":      map[string]any{"tools": map[string]any{}},
+						"_meta": map[string]any{
+							"io.modelcontextprotocol/serverInfo": map[string]any{"name": "demo", "version": "1.0.0"},
+						},
+					},
+				})
 			case "initialize":
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"jsonrpc": "2.0",
@@ -2429,18 +2444,32 @@ func newTestExtensionMCPServer(t *testing.T, tools []map[string]any, call func(n
 			http.NotFound(w, r)
 			return
 		}
+		// The SDK-backed Streamable HTTP client requires JSON responses.
+		w.Header().Set("Content-Type", "application/json")
 		var req map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode mcp request: %v", err)
 		}
 		method, _ := req["method"].(string)
 		switch method {
+		case "server/discover":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req["id"],
+				"result": map[string]any{
+					"supportedVersions": []string{mcp.ProtocolVersion2026, "2025-11-25", "2025-03-26"},
+					"capabilities":      map[string]any{"tools": map[string]any{}},
+					"_meta": map[string]any{
+						"io.modelcontextprotocol/serverInfo": map[string]any{"name": "demo", "version": "1.0.0"},
+					},
+				},
+			})
 		case "initialize":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      req["id"],
 				"result": map[string]any{
-					"protocolVersion": "2024-11-05",
+					"protocolVersion": mcp.ProtocolVersion2026,
 					"capabilities":    map[string]any{},
 					"serverInfo":      map[string]any{"name": "demo", "version": "1.0.0"},
 				},
